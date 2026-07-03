@@ -9,7 +9,10 @@ const { makeRaceServer, setDb } = require("./race");
 const db = require("./db");
 
 const app = express();
-app.use(cors());
+app.use(cors({
+  origin: ['https://pandatype.org', 'https://www.pandatype.org'],
+  credentials: true
+}));
 app.use(express.json({ limit: "10mb" }));
 
 app.use("/api", storageRoutes);
