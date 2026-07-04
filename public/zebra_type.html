@@ -37,42 +37,10 @@
   *{box-sizing:border-box;}
   html,body{margin:0;padding:0;}
   body{
-    /* Soft, out-of-focus panda spots instead of a flat black background.
-       True CSS blur() doesn't apply to background-image, so the "blur"
-       here is faked the standard way: wide diagonal bands with feathered
-       (soft-edged) gradient stops instead of hard black/white spots. Two
-       overlapping spot layers at slightly different angles/spacing
-       keep it from reading as one flat repeating tile, the way real
-       panda spots vary instead of repeating identically. Kept dark
-       overall (the panels sitting on top stay the visual focus) but with
-       enough contrast that the spots actually read as spots rather
-       than disappearing into noise. background-attachment:fixed keeps it
-       from scrolling oddly on long pages.
-    */
+    /* Site background image — tiled panda-spot texture. */
     background-color:#0A0B0D;
-    background-image:
-      repeating-linear-gradient(
-        124deg,
-        rgba(230,228,222,0) 0px,
-        rgba(230,228,222,0.22) 35px,
-        rgba(230,228,222,0.22) 75px,
-        rgba(230,228,222,0) 115px,
-        rgba(230,228,222,0) 170px,
-        rgba(230,228,222,0.16) 200px,
-        rgba(230,228,222,0.16) 215px,
-        rgba(230,228,222,0) 260px
-      ),
-      repeating-linear-gradient(
-        58deg,
-        rgba(0,0,0,0) 0px,
-        rgba(0,0,0,0.45) 30px,
-        rgba(0,0,0,0.45) 90px,
-        rgba(0,0,0,0) 140px,
-        rgba(0,0,0,0) 210px,
-        rgba(0,0,0,0.35) 245px,
-        rgba(0,0,0,0.35) 270px,
-        rgba(0,0,0,0) 330px
-      );
+    background-image:url('background');
+    background-repeat:repeat;
     background-attachment:fixed;
     color:var(--text);
     font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
@@ -105,6 +73,11 @@
     font-size:22px;
     margin:0;
     color:var(--text);
+  }
+  .brand img.site-logo{
+    height:44px;
+    width:auto;
+    display:block;
   }
 
   /* ── NAV BAR ─────────────────────────────────── */
@@ -1855,7 +1828,7 @@ const AntiCheat = (() => {
     const impliedWPM = mean > 0 ? Math.round((60000 / mean) / 5) : 0;
     // Human physiological ceiling: ~220 WPM for world-record typists.
     // 250+ WPM is physically impossible without automation.
-    const physicallyImpossible = impliedWPM >= 300;
+    const physicallyImpossible = impliedWPM >= 250;
     const extremelyFast        = impliedWPM >= 180 && impliedWPM < 250;
 
     return {
@@ -4987,7 +4960,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
       ? '<button id="backToAdminPill" style="position:fixed;top:14px;right:14px;z-index:9999;background:var(--amber);color:#0A0B0D;border:none;border-radius:999px;padding:8px 16px;font-weight:700;font-size:13px;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,0.3);">\u2699\uFE0F Back to Admin</button>'
       : '';
     return '<div class="brand">' +
-      '<div><h1>ZEBRA TYPE</h1></div>' +
+      '<div><img class="site-logo" src="logo" alt="Panda Type"></div>' +
       '</div>' + adminBackPill;
   }
 
