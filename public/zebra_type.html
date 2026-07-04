@@ -7294,7 +7294,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
         var avgWpm = races ? Math.round((otherAcc.sumWpm||0) / races) : 0;
         return '<div style="display:flex;gap:40px;flex:0 0 auto;text-align:center;">' +
             '<div><div style="font-weight:700;font-style:italic;font-size:30px;">' + avgWpm + '</div><div style="font-size:20px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;">Avg WPM</div></div>' +
-            '<div><div style="font-weight:700;font-style:italic;font-size:30px;">' + races + '</div><div style="font-size:20px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;">Races</div></div>' +
+            '<div><div style="font-weight:700;font-style:italic;font-size:30px;">' + races.toLocaleString() + '</div><div style="font-size:20px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;">Races</div></div>' +
           '</div>';
       }
 
