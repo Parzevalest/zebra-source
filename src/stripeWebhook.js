@@ -5,6 +5,26 @@ function getStripe() {
   return require("stripe")(process.env.STRIPE_SECRET_KEY);
 }
 
+// Stripe moved subscription billing periods off the top-level Subscription
+// object and onto each subscription item individually (API version
+// 2025-03-31 "basil" and later) -- sub.current_period_end no longer
+// exists on current API versions. This reads it from the right place,
+// while still falling back to the old top-level field just in case this
+// ever runs against an older API version.
+function getSubscriptionPeriodEnd(sub) {
+  var itemPeriodEnd = sub.items && sub.items.data && sub.items.data[0] && sub.items.data[0].current_period_end;
+  return itemPeriodEnd || sub.current_period_end || null;
+}
+
+// Stripe also moved the invoice-to-subscription link into a nested
+// "parent" field on the same API version bump -- invoice.subscription no
+// longer exists on current API versions either.
+function getInvoiceSubscriptionId(invoice) {
+  return (invoice.parent && invoice.parent.subscription_details && invoice.parent.subscription_details.subscription)
+    || invoice.subscription
+    || null;
+}
+
 // Grants (or renews) premium on a player's account, and remembers which
 // Stripe customer maps to which username -- future webhook events (renewal,
 // cancellation) only carry the Stripe customer/subscription IDs, not the
@@ -75,7 +95,12 @@ async function handleStripeWebhook(req, res) {
         const username = session.client_reference_id || (session.metadata && session.metadata.username);
         if (username && session.subscription) {
           const sub = await stripe.subscriptions.retrieve(session.subscription);
-          await grantPremiumToUsername(username, sub.current_period_end * 1000, session.customer, sub.id);
+          const periodEnd = getSubscriptionPeriodEnd(sub);
+          if (periodEnd) {
+            await grantPremiumToUsername(username, periodEnd * 1000, session.customer, sub.id);
+          } else {
+            console.error("[stripe webhook] could not determine period end for subscription:", sub.id);
+          }
         }
         break;
       }
@@ -85,7 +110,12 @@ async function handleStripeWebhook(req, res) {
         if (sub.status === "active" || sub.status === "trialing") {
           const mapResult = await store.get("system", "stripe_customer_" + sub.customer, true);
           if (mapResult && mapResult.value) {
-            await grantPremiumToUsername(mapResult.value, sub.current_period_end * 1000, sub.customer, sub.id);
+            const periodEnd = getSubscriptionPeriodEnd(sub);
+            if (periodEnd) {
+              await grantPremiumToUsername(mapResult.value, periodEnd * 1000, sub.customer, sub.id);
+            } else {
+              console.error("[stripe webhook] could not determine period end for subscription:", sub.id);
+            }
           }
         } else if (sub.status === "canceled" || sub.status === "unpaid" || sub.status === "past_due") {
           await revokePremiumForCustomer(sub.customer);
@@ -102,11 +132,17 @@ async function handleStripeWebhook(req, res) {
       case "invoice.payment_succeeded": {
         // Fires on renewal each billing cycle -- extend the expiry.
         const invoice = event.data.object;
-        if (invoice.subscription) {
-          const sub = await stripe.subscriptions.retrieve(invoice.subscription);
+        const invoiceSubId = getInvoiceSubscriptionId(invoice);
+        if (invoiceSubId) {
+          const sub = await stripe.subscriptions.retrieve(invoiceSubId);
           const mapResult = await store.get("system", "stripe_customer_" + sub.customer, true);
           if (mapResult && mapResult.value) {
-            await grantPremiumToUsername(mapResult.value, sub.current_period_end * 1000, sub.customer, sub.id);
+            const periodEnd = getSubscriptionPeriodEnd(sub);
+            if (periodEnd) {
+              await grantPremiumToUsername(mapResult.value, periodEnd * 1000, sub.customer, sub.id);
+            } else {
+              console.error("[stripe webhook] could not determine period end for subscription:", sub.id);
+            }
           }
         }
         break;
