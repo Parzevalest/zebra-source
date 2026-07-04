@@ -3,9 +3,9 @@ const store = require("./db");
 
 const router = express.Router();
 
-// Your Premium Pass monthly subscription price, from the Stripe dashboard
-// (Product catalog -> Premium Pass -> the recurring monthly price).
-const PREMIUM_PRICE_ID = "price_1TpWU4DkfpMWyCeGggNMaddU";
+// Premium Pass monthly subscription price, from the Stripe dashboard
+// (Product catalog -> Premium Pass -> the recurring yearly price).
+const PREMIUM_PRICE_ID = "price_1TpXcvDkfpMWyCeG6WF0jh5p";
 
 // Stripe client is created lazily (not at module load) so a missing or
 // not-yet-configured STRIPE_SECRET_KEY doesn't crash the whole server at
