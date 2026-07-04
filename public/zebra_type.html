@@ -5036,6 +5036,34 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
 
   // Shared nav bar — rendered on every logged-in screen.
   // activeTab: "garage" | "shop" | "leaderboard" | "achievements" | "blackMarket" | "season" | "guilds" | "friends"
+  // ── Premium subscription (real payment, via Stripe) ────────────────────
+  // Starts a Stripe-hosted checkout page for the Premium Pass subscription.
+  // Redirects the whole page there -- Stripe redirects back afterward to
+  // either ?premium=success or ?premium=cancelled (handled at boot, below).
+  async function startPremiumCheckout(){
+    var res = await fetch(SERVER_URL + "/api/create-checkout-session", {
+      method: "POST",
+      headers: { "x-session-token": currentToken || "" }
+    });
+    var data = await res.json().catch(function(){ return {}; });
+    if(!res.ok || !data.url) throw new Error(data.error || "checkout_failed");
+    window.location.href = data.url;
+  }
+
+  // Opens Stripe's hosted "manage my subscription" page (cancel, update
+  // card, view invoices) for a player who already has an active
+  // subscription. Requires the Customer Portal to be turned on once in
+  // the Stripe dashboard (Settings -> Billing -> Customer portal).
+  async function openBillingPortal(){
+    var res = await fetch(SERVER_URL + "/api/create-billing-portal-session", {
+      method: "POST",
+      headers: { "x-session-token": currentToken || "" }
+    });
+    var data = await res.json().catch(function(){ return {}; });
+    if(!res.ok || !data.url) throw new Error(data.error || "portal_failed");
+    window.location.href = data.url;
+  }
+
   function renderAccount(){
     var acc = state.user;
     if(!acc){ state.screen = "auth"; renderApp(); return; }
@@ -5097,18 +5125,50 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
         '</div>' +
 
         '<div style="font-weight:700;font-size:15px;color:var(--text);margin-bottom:10px;">Premium Pass</div>' +
-        '<div style="display:flex;align-items:center;gap:12px;background:var(--panel-2);border:1px solid var(--line);border-radius:10px;padding:14px;">' +
+        '<div style="display:flex;align-items:center;gap:12px;background:var(--panel-2);border:1px solid var(--line);border-radius:10px;padding:14px;flex-wrap:wrap;">' +
           '<div style="font-size:28px;">' + (premiumActive ? "\u2B50" : "\uD83D\uDD12") + '</div>' +
-          '<div style="flex:1;">' +
+          '<div style="flex:1;min-width:160px;">' +
             '<div style="font-weight:700;font-size:15px;color:' + (premiumActive ? "var(--amber)" : "var(--muted)") + ';">' + (premiumActive ? "Active" : "Not Active") + '</div>' +
-            '<div style="font-size:13px;color:var(--muted);">' + (premiumActive ? (premiumExpiry ? "Expires " + premiumExpiry : "No expiry") : "Premium unlocks the bonus season reward track.") + '</div>' +
+            '<div style="font-size:13px;color:var(--muted);">' + (premiumActive ? (premiumExpiry ? "Renews " + premiumExpiry : "No expiry") : "Premium unlocks the bonus season reward track.") + '</div>' +
           '</div>' +
+          (premiumActive
+            ? '<button class="btn btn-ghost" id="manageSubscriptionBtn">Manage Subscription</button>'
+            : '<button class="btn btn-primary" id="subscribePremiumBtn">Subscribe to Premium</button>') +
         '</div>' +
+        '<div class="error-text" id="premiumBtnError" style="margin-top:8px;"></div>' +
       '</div>';
 
     attachNavListeners();
     document.getElementById("backFromAccountBtn").addEventListener("click", function(){
       navigate(SCREEN_TO_PATH[state.accountReturnScreen] || "/");
+    });
+    var subscribeBtn = document.getElementById("subscribePremiumBtn");
+    if(subscribeBtn) subscribeBtn.addEventListener("click", async function(){
+      var errEl = document.getElementById("premiumBtnError");
+      errEl.textContent = "";
+      subscribeBtn.disabled = true;
+      subscribeBtn.textContent = "Redirecting\u2026";
+      try{
+        await startPremiumCheckout();
+      }catch(e){
+        errEl.textContent = "Couldn't start checkout \u2014 please try again in a moment.";
+        subscribeBtn.disabled = false;
+        subscribeBtn.textContent = "Subscribe to Premium";
+      }
+    });
+    var manageBtn = document.getElementById("manageSubscriptionBtn");
+    if(manageBtn) manageBtn.addEventListener("click", async function(){
+      var errEl = document.getElementById("premiumBtnError");
+      errEl.textContent = "";
+      manageBtn.disabled = true;
+      manageBtn.textContent = "Redirecting\u2026";
+      try{
+        await openBillingPortal();
+      }catch(e){
+        errEl.textContent = "Couldn't open subscription management \u2014 please try again in a moment.";
+        manageBtn.disabled = false;
+        manageBtn.textContent = "Manage Subscription";
+      }
     });
     document.getElementById("saveAccountDisplayNameBtn").addEventListener("click", async function(){
       var msgEl = document.getElementById("accountDisplayNameMsg");
@@ -7294,7 +7354,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
         var avgWpm = races ? Math.round((otherAcc.sumWpm||0) / races) : 0;
         return '<div style="display:flex;gap:40px;flex:0 0 auto;text-align:center;">' +
             '<div><div style="font-weight:700;font-style:italic;font-size:30px;">' + avgWpm + '</div><div style="font-size:20px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;">Avg WPM</div></div>' +
-            '<div><div style="font-weight:700;font-style:italic;font-size:30px;">' + races.toLocaleString() + '</div><div style="font-size:20px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;">Races</div></div>' +
+            '<div><div style="font-weight:700;font-style:italic;font-size:30px;">' + races + '</div><div style="font-size:20px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;">Races</div></div>' +
           '</div>';
       }
 
@@ -16501,6 +16561,32 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
         }
       }
     }catch(e){ currentToken = null; /* session restore failed */ }
+
+    // If we're being redirected back from Stripe checkout, the webhook
+    // that actually flips hasPremiumPass on the account can take a moment
+    // to land -- poll a few times (up to ~7.5s total) rather than showing
+    // a stale "not active" state right after a successful payment.
+    try{
+      var postCheckoutQs = window.location.search;
+      if(postCheckoutQs.indexOf("premium=success") !== -1 && state.user && currentToken){
+        for(var premiumPollAttempt = 0; premiumPollAttempt < 5; premiumPollAttempt++){
+          await new Promise(function(r){ setTimeout(r, 1500); });
+          try{
+            var refreshRes = await fetch(SERVER_URL + "/api/session", { headers: { "x-session-token": currentToken } });
+            if(refreshRes.ok){
+              var refreshData = await refreshRes.json();
+              if(refreshData.account){
+                state.user = refreshData.account;
+                if(state.user.hasPremiumPass) break;
+              }
+            }
+          }catch(e){}
+        }
+      }
+      if(postCheckoutQs.indexOf("premium=") !== -1){
+        window.history.replaceState({}, "", window.location.pathname);
+      }
+    }catch(e){}
 
     // Pre-warm season config cache before rendering any screen,
     // so the leaderboard never shows zeroed season stats from a cache miss.
