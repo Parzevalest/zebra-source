@@ -10667,6 +10667,12 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
             '<span id="deduplicateGuildsMsg" style="font-size:13px;margin-left:10px;"></span>' +
           '</div>' +
           '<div style="border-top:1px solid var(--line);padding-top:14px;margin-top:14px;">' +
+            '<div class="garage-title" style="color:var(--green);font-size:15px;margin-bottom:6px;">\u2692\uFE0F Clean Up Expired Logins</div>' +
+            '<div class="hint-text" style="margin-top:0;margin-bottom:10px;">Deletes expired session and login-challenge records from the database. These are already cleaned up automatically once an hour, but you can run it manually here to reclaim space right away instead of waiting.</div>' +
+            '<button class="btn btn-ghost" id="cleanupAuthKeysBtn" style="color:var(--green);border-color:var(--green);">\u2692\uFE0F Clean Up Now</button>' +
+            '<span id="cleanupAuthKeysMsg" style="font-size:13px;margin-left:10px;"></span>' +
+          '</div>' +
+          '<div style="border-top:1px solid var(--line);padding-top:14px;margin-top:14px;">' +
             '<div class="garage-title" style="color:var(--green);font-size:15px;margin-bottom:6px;">\u2692\uFE0F Repair Season Race Counts</div>' +
             '<div class="hint-text" style="margin-top:0;margin-bottom:10px;">Recalculates each player\u2019s season races from their all-time race count minus their season offset. Use this to restore correct race counts after an accidental season reset.</div>' +
             '<button class="btn btn-ghost" id="repairSeasonRacesBtn" style="color:var(--green);border-color:var(--green);">\u2692\uFE0F Repair Season Race Counts</button>' +
@@ -11022,6 +11028,31 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
           setMsg("Error: " + (e&&e.message?e.message:String(e)), "var(--red)");
         }
         resetGuildPointsBaselineBtn.disabled = false;
+      });
+
+      var cleanupAuthKeysBtn = document.getElementById("cleanupAuthKeysBtn");
+      if(cleanupAuthKeysBtn) cleanupAuthKeysBtn.addEventListener("click", async function(){
+        var msg = document.getElementById("cleanupAuthKeysMsg");
+        cleanupAuthKeysBtn.disabled = true;
+        msg.textContent = "Working..."; msg.style.color = "var(--muted)";
+        try{
+          var res = await fetch(SERVER_URL + "/api/admin/cleanup-auth-keys", {
+            method: "POST",
+            headers: { "x-session-token": currentToken || "" }
+          });
+          var data = await res.json().catch(function(){ return {}; });
+          if(res.ok && data.ok){
+            msg.textContent = "Removed " + data.sessionsDeleted + " expired session(s), " + data.challengesDeleted + " expired login challenge(s).";
+            msg.style.color = "var(--green)";
+          } else {
+            msg.textContent = "Error: " + (data.message || data.error || "unknown");
+            msg.style.color = "var(--red)";
+          }
+        }catch(e){
+          msg.textContent = "Error: " + (e && e.message ? e.message : String(e));
+          msg.style.color = "var(--red)";
+        }
+        cleanupAuthKeysBtn.disabled = false;
       });
 
       var deduplicateGuildsBtn = document.getElementById("deduplicateGuildsBtn");
