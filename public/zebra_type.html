@@ -4796,6 +4796,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
   var raceState = null; // built fresh each race
   var customCarsCache = []; // last-fetched custom car catalog, shared across all players' garages
   var avatarCatalogCache = []; // last-fetched avatar piece catalog, shared across all players' avatar pages
+  var garageCachesLoaded = false; // tracks whether the initial fetch has completed at all -- NOT the same as "cache has items", since a fresh server with zero custom cars/avatars uploaded yet is a legitimate empty result, not an unfetched one
   var tracksCache = []; // last-fetched track catalog — a random one is picked from this at race start
   var wheelPrizesCache = []; // last-fetched spin wheel prize list
   var wheelConfigsCache = DEFAULT_WHEEL_CONFIGS.slice(); // last-fetched configs for all 3 wheels
@@ -6283,8 +6284,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
 
     // If both caches are still empty (first load), fetch them first so the
     // garage never flashes the default car/avatar before showing the real ones.
-    var needsCaches = !customCarsCache.length && !avatarCatalogCache.length;
-    if(needsCaches){
+    if(!garageCachesLoaded){
       app.innerHTML =
         brandHeader() +
         renderNavBar("garage") +
@@ -6293,6 +6293,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
       Promise.all([fetchCustomCars(), fetchAvatarCatalog()]).then(function(results){
         customCarsCache = results[0];
         avatarCatalogCache = results[1];
+        garageCachesLoaded = true;
         if(state.screen === "garageCars" || state.screen === "dashboard") renderGarageCars();
       });
       return;
