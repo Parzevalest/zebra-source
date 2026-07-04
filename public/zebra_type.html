@@ -3082,19 +3082,43 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
       id: "bad", label: "Beginner Wheel",
       tiers: ["Common", "Rare", "Ultra Rare", "Legendary"],
       weights: { "Common": 60, "Rare": 28, "Ultra Rare": 10, "Legendary": 2 },
-      costCoins: 150
+      costCoins: 150,
+      allowedTypes: ["car", "nameTag", "avatar"]
     },
     {
       id: "decent", label: "Advanced Wheel",
       tiers: ["Common", "Rare", "Ultra Rare", "Legendary", "Mythic", "Ascended"],
       weights: { "Common": 48.9, "Rare": 29.4, "Ultra Rare": 15.7, "Legendary": 5, "Mythic": 0.9, "Ascended": 0.1 },
-      costCoins: 500
+      costCoins: 500,
+      allowedTypes: ["car", "nameTag", "avatar"]
     },
     {
       id: "great", label: "Champion Wheel",
       tiers: ["Common", "Rare", "Ultra Rare", "Legendary", "Mythic", "Ascended", "Unobtainable"],
       weights: { "Common": 10, "Rare": 49.1, "Ultra Rare": 32.7, "Legendary": 5.7, "Mythic": 1.6, "Ascended": 0.8, "Unobtainable": 0.1 },
-      costCoins: 1500
+      costCoins: 1500,
+      allowedTypes: ["car", "nameTag", "avatar"]
+    },
+    {
+      id: "titles_bad", label: "Beginner Titles Wheel",
+      tiers: ["Common", "Rare", "Ultra Rare", "Legendary"],
+      weights: { "Common": 60, "Rare": 28, "Ultra Rare": 10, "Legendary": 2 },
+      costCoins: 150,
+      allowedTypes: ["title"]
+    },
+    {
+      id: "titles_decent", label: "Advanced Titles Wheel",
+      tiers: ["Common", "Rare", "Ultra Rare", "Legendary", "Mythic", "Ascended"],
+      weights: { "Common": 48.9, "Rare": 29.4, "Ultra Rare": 15.7, "Legendary": 5, "Mythic": 0.9, "Ascended": 0.1 },
+      costCoins: 500,
+      allowedTypes: ["title"]
+    },
+    {
+      id: "titles_great", label: "Champion Titles Wheel",
+      tiers: ["Common", "Rare", "Ultra Rare", "Legendary", "Mythic", "Ascended", "Unobtainable"],
+      weights: { "Common": 10, "Rare": 49.1, "Ultra Rare": 32.7, "Legendary": 5.7, "Mythic": 1.6, "Ascended": 0.8, "Unobtainable": 0.1 },
+      costCoins: 1500,
+      allowedTypes: ["title"]
     }
   ];
 
@@ -3125,6 +3149,14 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
         rewardAvatarPieceId: p.rewardAvatarPieceId,
         rewardAvatarSlot: p.rewardAvatarSlot,
         rewardAvatarName: p.rewardAvatarName || "Avatar Piece"
+      };
+    }
+    if(p.rewardType === "title" && p.rewardTitleId){
+      return {
+        id: p.id, wheelId: p.wheelId || "great", rarity: p.rarity,
+        rewardType: "title",
+        rewardTitleId: p.rewardTitleId,
+        rewardTitleText: p.rewardTitleText || "Title"
       };
     }
     var carId = p.rewardCarId || p.carId || null;
@@ -4036,7 +4068,11 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     // Seasonal items must never be added to the wheel
     if(item.isSeasonal) return { addedTo: [], reason: "seasonal" };
     var configs = await fetchWheelConfigs();
-    var eligibleWheels = configs.filter(function(w){ return w.tiers.indexOf(item.rarity) !== -1; });
+    var eligibleWheels = configs.filter(function(w){
+      if(w.tiers.indexOf(item.rarity) === -1) return false;
+      if(w.allowedTypes && w.allowedTypes.indexOf(itemType) === -1) return false;
+      return true;
+    });
     if(!eligibleWheels.length) return { addedTo: [], reason: "no-eligible-wheel" };
 
     var prizes = await fetchWheelPrizes();
@@ -4046,6 +4082,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
         if(p.wheelId !== w.id) return false;
         if(itemType === "car") return p.rewardType === "car" && p.rewardCarId === item.id;
         if(itemType === "avatar") return p.rewardType === "avatar" && p.rewardAvatarPieceId === item.id;
+        if(itemType === "title") return p.rewardType === "title" && p.rewardTitleId === item.id;
         return p.rewardType === "nameTag" && p.rewardNameTagImage === item.image;
       });
       if(alreadyThere) return;
@@ -4062,6 +4099,10 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
         entry.rewardAvatarPieceId = item.id;
         entry.rewardAvatarSlot = item.slot;
         entry.rewardAvatarName = item.name;
+      } else if(itemType === "title"){
+        entry.rewardType = "title";
+        entry.rewardTitleId = item.id;
+        entry.rewardTitleText = item.text;
       } else {
         entry.rewardType = "nameTag";
         entry.rewardNameTagImage = item.image;
@@ -4086,6 +4127,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     var matches = prizes.filter(function(p){
       if(itemType === "car") return p.rewardType === "car" && p.rewardCarId === item.id;
       if(itemType === "avatar") return p.rewardType === "avatar" && p.rewardAvatarPieceId === item.id;
+      if(itemType === "title") return p.rewardType === "title" && p.rewardTitleId === item.id;
       return p.rewardType === "nameTag" && p.rewardNameTagImage === item.image;
     });
     if(!matches.length) return { removedCount: 0, reason: "not-present" };
@@ -4140,7 +4182,34 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
               migrated = true;
             }
           });
-          if(migrated){
+          // The single "titles" wheel (id: "titles") was an earlier design
+          // that's now replaced by three tiered title wheels. If it was
+          // already saved from that earlier version, drop it -- and if it
+          // ever gained any prizes, roll them into "titles_decent" (the
+          // closest equivalent tier) rather than losing them.
+          var legacyTitlesIdx = saved.findIndex(function(w){ return w.id === "titles"; });
+          var removedLegacyTitles = false;
+          if(legacyTitlesIdx !== -1){
+            saved.splice(legacyTitlesIdx, 1);
+            removedLegacyTitles = true;
+            try{
+              var legacyPrizes = await fetchWheelPrizes();
+              var touchedPrizes = false;
+              legacyPrizes.forEach(function(p){
+                if(p.wheelId === "titles"){ p.wheelId = "titles_decent"; touchedPrizes = true; }
+              });
+              if(touchedPrizes) await saveWheelPrizes(legacyPrizes);
+            }catch(e){}
+          }
+          var addedNewDefaults = false;
+          DEFAULT_WHEEL_CONFIGS.forEach(function(def){
+            var already = saved.some(function(w){ return w.id === def.id; });
+            if(!already){
+              saved.push(JSON.parse(JSON.stringify(def)));
+              addedNewDefaults = true;
+            }
+          });
+          if(migrated || addedNewDefaults || removedLegacyTitles){
             try{ await shimSet(WHEEL_CONFIGS_KEY, JSON.stringify(saved), true); }catch(e){}
           }
           wheelConfigsCache = saved;
@@ -5461,7 +5530,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
   // 256x64) which become the player's equipped tag once earned.
   var DEFAULT_NAME_TAG = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAQAAAABACAYAAAD1Xam+AAAAAXNSR0IArs4c6QAAAERlWElmTU0AKgAAAAgAAYdpAAQAAAABAAAAGgAAAAAAA6ABAAMAAAABAAEAAKACAAQAAAABAAABAKADAAQAAAABAAAAQAAAAAD0RZGlAAAChUlEQVR4Ae3WwXGjQBQEUMmxkQCRkgC5yTWu4s5gtam2ni7eg+bTvF/Tq8fDhwABAgQIECBAgAABAgQIECBAgACBfy3wvPp267q+rp51jgCB9wps23bpLl86dFz+ZVne+xamESAwLbDv+8+ZKyUwXQDj8rv40ztygEBcYBTBbAlMFYDLH9+hBxD4lcBsCXydfdrxs//s932PAIF7BGbu6ukCGK/ip/89C/VUAmcFZu/oVAGcDeF7BAh0CCiAjj1JSSAioAAirIYS6BBQAB17kpJAREABRFgNJdAhoAA69iQlgYiAAoiwGkqgQ0ABdOxJSgIRAQUQYTWUQIeAAujYk5QEIgIKIMJqKIEOAQXQsScpCUQEFECE1VACHQIKoGNPUhKICCiACKuhBDoEFEDHnqQkEBFQABFWQwl0CCiAjj1JSSAioAAirIYS6BBQAB17kpJAREABRFgNJdAhoAA69iQlgYiAAoiwGkqgQ0ABdOxJSgIRAQUQYTWUQIeAAujYk5QEIgIKIMJqKIEOAQXQsScpCUQEFECE1VACHQIKoGNPUhKICCiACKuhBDoEFEDHnqQkEBFQABFWQwl0CCiAjj1JSSAioAAirIYS6BBQAB17kpJAREABRFgNJdAhoAA69iQlgYiAAoiwGkqgQ0ABdOxJSgIRAQUQYTWUQIeAAujYk5QEIgIKIMJqKIEOgakC2Pe9462kJPChArN39HQBbNv2/FBTr02gSmDmrk5f6nVdX8uyVIEIS+ATBMb//jOXf5hMF8A4NEpg/FUEQ8GHwL0Cx8/+2cs/Ul8qgHHwKIHxbx8CBO4VuHL5703s6QQIECBAgAABAgQIECBAgAABAgQI/InAN1j6OWYeW4CrAAAAAElFTkSuQmCC";
   var DEFAULT_TITLE_ID = "zebra_typist_default";
-  var DEFAULT_TITLE = { id: "panda_typist_default", text: "Panda Typer", rarity: "Common", isDefault: true };
+  var DEFAULT_TITLE = { id: "zebra_typist_default", text: "Panda Typist", rarity: "Common", isDefault: true };
 
   // Names get cut short on the small in-race tag rather than overflowing —
   // longer names end in "..." once they exceed this length. Doubled
@@ -9820,6 +9889,18 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
       }).join("") +
     '</div>';
 
+    var ALL_WHEEL_PRIZE_TYPES = [
+      { value: "car", label: "Car" },
+      { value: "nameTag", label: "Name Tag" },
+      { value: "avatar", label: "Avatar Piece" },
+      { value: "title", label: "Title" }
+    ];
+    var allowedTypesForThisWheel = wheelConfig.allowedTypes || ["car", "nameTag", "avatar", "title"];
+    var prizeTypeOptionsHtml = ALL_WHEEL_PRIZE_TYPES
+      .filter(function(o){ return allowedTypesForThisWheel.indexOf(o.value) !== -1; })
+      .map(function(o){ return '<option value="' + o.value + '">' + o.label + '</option>'; })
+      .join("");
+
     var oddsInputsHtml = wheelConfig.tiers.map(function(t){
       return '<div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;">' +
         '<div style="flex:1;">' + rarityTextHtml(t) + '</div>' +
@@ -9855,7 +9936,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
 
       '<div class="panel" style="margin-top:18px;">' +
         '<div class="garage-title" style="color:var(--text);font-size:18px;margin-bottom:4px;">Add a Prize to ' + escapeHtml(wheelConfig.label) + '</div>' +
-        '<div class="hint-text" style="margin-top:0;margin-bottom:16px;">Add as many prizes per rarity as you like \u2014 they share that tier\u2019s odds. Every wheel prize is a car, name tag, or avatar piece.</div>' +
+        '<div class="hint-text" style="margin-top:0;margin-bottom:16px;">Add as many prizes per rarity as you like \u2014 they share that tier\u2019s odds. Every wheel prize is a car, name tag, avatar piece, or title.</div>' +
 
         '<div class="field">' +
           '<label for="prizeRarity">Rarity</label>' +
@@ -9867,9 +9948,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
         '<div class="field">' +
           '<label for="prizeType">Prize Type</label>' +
           '<select id="prizeType" style="width:100%;background:var(--panel-2);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:11px 12px;font-size:14px;margin-bottom:8px;">' +
-            '<option value="car">Car</option>' +
-            '<option value="nameTag">Name Tag</option>' +
-            '<option value="avatar">Avatar Piece</option>' +
+            prizeTypeOptionsHtml +
           '</select>' +
           '<div id="prizeCarWrap">' +
             '<input id="prizeCarSearch" type="text" placeholder="Search cars\u2026" autocomplete="off" style="width:100%;background:var(--panel-2);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:9px 12px;font-size:13px;margin-bottom:6px;" />' +
@@ -9889,6 +9968,15 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
             '<select id="prizeAvatarSelect" style="width:100%;background:var(--panel-2);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:11px 12px;font-size:14px;">' +
               '<option value="">Loading...</option>' +
             '</select>' +
+          '</div>' +
+          '<div id="prizeTitleWrap" style="display:none;">' +
+            '<input id="prizeTitleSearch" placeholder="Search titles\u2026" autocomplete="off" style="width:100%;background:var(--panel-2);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:9px 12px;font-size:13px;margin-bottom:6px;" />' +
+            '<div id="prizeTitleList" style="max-height:200px;overflow-y:auto;display:flex;flex-direction:column;gap:4px;"></div>' +
+            '<div id="prizeTitleSelected" style="display:none;margin-top:8px;">' +
+              '<div style="font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--muted);margin-bottom:4px;">Selected</div>' +
+              '<div style="background:var(--panel-2);border:1px solid var(--line);border-radius:8px;padding:10px;font-weight:700;font-size:13px;" id="prizeTitleSelectedText"></div>' +
+            '</div>' +
+            '<input type="hidden" id="prizeRewardTitleId" value="" />' +
           '</div>' +
         '</div>' +
 
@@ -9976,6 +10064,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
       document.getElementById("prizeCarWrap").style.display = (v === "car") ? "" : "none";
       document.getElementById("prizeNameTagWrap").style.display = (v === "nameTag") ? "" : "none";
       document.getElementById("prizeAvatarWrap").style.display = (v === "avatar") ? "" : "none";
+      document.getElementById("prizeTitleWrap").style.display = (v === "title") ? "" : "none";
     });
 
     fetchCustomCars().then(function(cars){
@@ -10014,6 +10103,35 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
       if(slotSel) slotSel.addEventListener("change", function(){ populatePrizeAvatarSelect(avatarCatalogCache); });
     });
 
+    // --- Searchable Title picker (wheel prizes) ---
+    var selectedPrizeTitleId = null, selectedPrizeTitleText = null;
+    var allPrizeTitles = [];
+    function renderPrizeTitleList(q){
+      var listEl = document.getElementById("prizeTitleList"); if(!listEl) return;
+      var filtered = q ? allPrizeTitles.filter(function(t){ return (t.text||"").toLowerCase().indexOf(q.toLowerCase()) !== -1; }) : allPrizeTitles;
+      if(!filtered.length){ listEl.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:8px;">No titles found.</div>'; return; }
+      listEl.innerHTML = filtered.map(function(t){
+        var sel = selectedPrizeTitleId === t.id;
+        var color = RARITY_COLORS[t.rarity] || "var(--muted)";
+        return '<div data-ptitle-id="' + escapeHtml(t.id) + '" data-ptitle-text="' + escapeHtml(t.text||"") + '" style="padding:8px 10px;border-radius:8px;cursor:pointer;background:' + (sel?'var(--panel)':'var(--panel-2)') + ';border:1px solid ' + (sel?'var(--text)':'var(--line)') + ';">' +
+          '<span style="font-style:italic;font-weight:700;color:' + color + ';">' + escapeHtml(t.text||"") + '</span>' +
+        '</div>';
+      }).join("");
+      listEl.querySelectorAll("[data-ptitle-id]").forEach(function(row){
+        row.addEventListener("click", function(){
+          selectedPrizeTitleId = row.getAttribute("data-ptitle-id");
+          selectedPrizeTitleText = row.getAttribute("data-ptitle-text");
+          var hid = document.getElementById("prizeRewardTitleId"); if(hid) hid.value = selectedPrizeTitleId;
+          var sd = document.getElementById("prizeTitleSelected"); if(sd) sd.style.display = "";
+          var st = document.getElementById("prizeTitleSelectedText"); if(st) st.textContent = selectedPrizeTitleText;
+          renderPrizeTitleList(document.getElementById("prizeTitleSearch") ? document.getElementById("prizeTitleSearch").value : "");
+        });
+      });
+    }
+    fetchTitleCatalog().then(function(titles){ allPrizeTitles = titles || []; titleCatalogCache = titles || []; renderPrizeTitleList(""); });
+    var prizeTitleSearchEl = document.getElementById("prizeTitleSearch");
+    if(prizeTitleSearchEl) prizeTitleSearchEl.addEventListener("input", function(){ renderPrizeTitleList(this.value); });
+
     document.getElementById("addWheelPrizeBtn").addEventListener("click", async function(){
       var rarity = document.getElementById("prizeRarity").value;
       var prizeType = document.getElementById("prizeType").value;
@@ -10044,6 +10162,13 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
         entry.rewardAvatarPieceId = avPieceId;
         entry.rewardAvatarSlot = avSlotSel && avSlotSel.value;
         entry.rewardAvatarName = (avPieceOpt && avPieceOpt.getAttribute("data-name")) || avPieceId;
+      } else if(prizeType === "title"){
+        var titleId = document.getElementById("prizeRewardTitleId").value;
+        var titleTextEl = document.getElementById("prizeTitleSelectedText");
+        if(!titleId){ errEl.textContent = "Select a title."; return; }
+        entry.rewardType = "title";
+        entry.rewardTitleId = titleId;
+        entry.rewardTitleText = titleTextEl ? titleTextEl.textContent : "";
       } else {
         var carSel = document.getElementById("prizeCarSelect");
         var carId = carSel && carSel.value;
@@ -10096,9 +10221,11 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     box.innerHTML = ordered.map(function(p){
       var label = p.rewardType === "car" ? p.rewardCarName
                 : p.rewardType === "avatar" ? (p.rewardAvatarName || "Avatar Piece")
+                : p.rewardType === "title" ? ('\u201C' + (p.rewardTitleText || "Title") + '\u201D')
                 : (p.rewardNameTagName || "Name Tag");
       var typeBadge = p.rewardType === "car" ? "\uD83D\uDE97 Car"
                 : p.rewardType === "avatar" ? ("\uD83E\uDDCD " + (p.rewardAvatarSlot ? AVATAR_SLOT_LABELS[p.rewardAvatarSlot] : "Avatar"))
+                : p.rewardType === "title" ? "\uD83D\uDCDC Title"
                 : "\uD83C\uDFF7\uFE0F Name Tag";
       return '<div class="admin-car-row">' +
         '<div style="flex:1;min-width:0;">' +
@@ -13419,10 +13546,64 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
             '<div style="font-size:14px;font-weight:700;color:' + color + ';font-style:italic;">&ldquo;' + escapeHtml(t.text) + '&rdquo;</div>' +
             '<div style="font-size:11px;">' + rarityTextHtml(t.rarity||"Common") + '</div>' +
           '</div>' +
-          '<button class="small-btn" data-edit-title="' + escapeHtml(t.id) + '">Edit</button>' +
+          '<button class="small-btn" data-edit-title="' + escapeHtml(t.id) + '" style="margin-right:6px;">Edit</button>' +
+          '<button class="small-btn" data-add-to-wheel-title="' + escapeHtml(t.id) + '" style="margin-right:6px;">Add to Wheel</button>' +
+          '<button class="small-btn" data-remove-from-wheel-title="' + escapeHtml(t.id) + '" style="margin-right:6px;">Remove from Wheel</button>' +
           '<button class="small-btn" data-delete-title="' + escapeHtml(t.id) + '" style="color:var(--red);border-color:var(--red);">Delete</button>' +
         '</div>';
       }).join("");
+
+      box.querySelectorAll("[data-add-to-wheel-title]").forEach(function(btn){
+        btn.addEventListener("click", async function(){
+          var id = btn.getAttribute("data-add-to-wheel-title");
+          var t = catalog.find(function(x){ return x.id === id; });
+          if(!t) return;
+          var originalLabel = btn.textContent;
+          btn.disabled = true; btn.textContent = "...";
+          try{
+            var result = await addCatalogItemToWheel(t, "title");
+            if(result.reason === "no-eligible-wheel"){
+              btn.textContent = (UNSELLABLE_RARITIES.indexOf(t.rarity) !== -1) ? (t.rarity + " can't go on wheels") : "No wheel has this rarity";
+            } else if(result.reason === "save-failed"){
+              btn.textContent = "Error \u2014 try again";
+            } else if(result.addedTo.length){
+              btn.textContent = "Added to " + result.addedTo.length + " wheel" + (result.addedTo.length===1?"":"s") + "!";
+            } else {
+              btn.textContent = "Already on every eligible wheel";
+            }
+          }catch(e){
+            btn.textContent = "Error";
+          }
+          setTimeout(function(){
+            if(btn){ btn.disabled = false; btn.textContent = originalLabel; }
+          }, 2200);
+        });
+      });
+
+      box.querySelectorAll("[data-remove-from-wheel-title]").forEach(function(btn){
+        btn.addEventListener("click", async function(){
+          var id = btn.getAttribute("data-remove-from-wheel-title");
+          var t = catalog.find(function(x){ return x.id === id; });
+          if(!t) return;
+          var originalLabel = btn.textContent;
+          btn.disabled = true; btn.textContent = "...";
+          try{
+            var result = await removeCatalogItemFromWheel(t, "title");
+            if(result.reason === "not-present"){
+              btn.textContent = "Not on any wheel";
+            } else if(result.reason === "save-failed"){
+              btn.textContent = "Error \u2014 try again";
+            } else {
+              btn.textContent = "Removed from " + result.removedCount + " spot" + (result.removedCount===1?"":"s") + "!";
+            }
+          }catch(e){
+            btn.textContent = "Error";
+          }
+          setTimeout(function(){
+            if(btn){ btn.disabled = false; btn.textContent = originalLabel; }
+          }, 2200);
+        });
+      });
 
       box.querySelectorAll("[data-edit-title]").forEach(function(btn){
         btn.addEventListener("click", function(){
@@ -14145,34 +14326,53 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
       '<span style="font-family:\'Arial Black\',Impact,sans-serif;font-style:italic;font-size:16px;color:var(--amber);">' + COIN_ICON + coins.toLocaleString() + '</span>' +
     '</div>';
 
-    var wheelPanelsHtml = '<div style="display:flex;flex-wrap:wrap;gap:18px;">' +
-      wheelConfigsCache.map(function(wc){
-        var prizesForWheel = wheelPrizesCache.filter(function(p){ return p.wheelId === wc.id; });
-        var hasAny = prizesForWheel.length > 0;
-        var canSpin = hasAny && coins >= wc.costCoins;
-        var oddsLine = wc.tiers.map(function(t){
-          return rarityTextHtml(t) + ' <span style="color:var(--muted);">' + wc.weights[t] + '%</span>';
-        }).join('<span style="color:var(--line);"> \u2022 </span>');
+    function buildWheelPanelHtml(wc){
+      var prizesForWheel = wheelPrizesCache.filter(function(p){ return p.wheelId === wc.id; });
+      var hasAny = prizesForWheel.length > 0;
+      var canSpin = hasAny && coins >= wc.costCoins;
+      var oddsLine = wc.tiers.map(function(t){
+        return rarityTextHtml(t) + ' <span style="color:var(--muted);">' + wc.weights[t] + '%</span>';
+      }).join('<span style="color:var(--line);"> \u2022 </span>');
 
-        return '<div class="panel" style="flex:1 1 280px;min-width:260px;">' +
-          '<div class="garage-title" style="color:var(--text);font-size:17px;margin-bottom:4px;">' + escapeHtml(wc.label) + '</div>' +
-          '<div class="hint-text" style="margin-top:0;margin-bottom:6px;font-size:11px;">' + oddsLine + '</div>' +
-          '<div style="display:flex;flex-direction:column;align-items:center;gap:14px;margin-top:8px;">' +
-            '<div style="position:relative;width:200px;height:200px;">' +
-              '<div id="wheelSvgWrap_' + wc.id + '">' + buildWheelSvg(wc, prizesForWheel, 200) + '</div>' +
-              '<div id="wheelNeedle_' + wc.id + '" style="position:absolute;left:50%;top:50%;width:5px;height:92px;margin-left:-2.5px;margin-top:-92px;transform-origin:50% 100%;transition:transform 4s cubic-bezier(.13,.66,.1,1);">' +
-                '<div style="position:absolute;top:0;left:50%;width:0;height:0;border-left:10px solid transparent;border-right:10px solid transparent;border-bottom:20px solid var(--amber);transform:translateX(-50%);"></div>' +
-                '<div style="position:absolute;bottom:-7px;left:50%;width:14px;height:14px;border-radius:50%;background:var(--amber);border:2px solid var(--bg);transform:translateX(-50%);"></div>' +
-              '</div>' +
+      return '<div class="panel" style="flex:1 1 280px;min-width:260px;">' +
+        '<div class="garage-title" style="color:var(--text);font-size:17px;margin-bottom:4px;">' + escapeHtml(wc.label) + '</div>' +
+        '<div class="hint-text" style="margin-top:0;margin-bottom:6px;font-size:11px;">' + oddsLine + '</div>' +
+        '<div style="display:flex;flex-direction:column;align-items:center;gap:14px;margin-top:8px;">' +
+          '<div style="position:relative;width:200px;height:200px;">' +
+            '<div id="wheelSvgWrap_' + wc.id + '">' + buildWheelSvg(wc, prizesForWheel, 200) + '</div>' +
+            '<div id="wheelNeedle_' + wc.id + '" style="position:absolute;left:50%;top:50%;width:5px;height:92px;margin-left:-2.5px;margin-top:-92px;transform-origin:50% 100%;transition:transform 4s cubic-bezier(.13,.66,.1,1);">' +
+              '<div style="position:absolute;top:0;left:50%;width:0;height:0;border-left:10px solid transparent;border-right:10px solid transparent;border-bottom:20px solid var(--amber);transform:translateX(-50%);"></div>' +
+              '<div style="position:absolute;bottom:-7px;left:50%;width:14px;height:14px;border-radius:50%;background:var(--amber);border:2px solid var(--bg);transform:translateX(-50%);"></div>' +
             '</div>' +
-            '<button class="btn btn-primary" data-spin-wheel="' + wc.id + '" ' + (canSpin ? "" : "disabled style=\"opacity:.5;\"") + '>' +
-              (!hasAny ? "No prizes available" : (COIN_ICON + "Spin for " + wc.costCoins)) +
-            '</button>' +
-            '<div class="error-text" id="wheelError_' + wc.id + '"></div>' +
           '</div>' +
-        '</div>';
-      }).join("") +
-    '</div>';
+          '<button class="btn btn-primary" data-spin-wheel="' + wc.id + '" ' + (canSpin ? "" : "disabled style=\"opacity:.5;\"") + '>' +
+            (!hasAny ? "No prizes available" : (COIN_ICON + "Spin for " + wc.costCoins)) +
+          '</button>' +
+          '<div class="error-text" id="wheelError_' + wc.id + '"></div>' +
+        '</div>' +
+      '</div>';
+    }
+
+    // Wheels that can only give out titles are grouped under a "Titles"
+    // header; everything else (car/name tag/avatar wheels) is grouped
+    // under "General" -- generic by allowedTypes, so any wheel added later
+    // sorts into the right group automatically.
+    var generalWheels = wheelConfigsCache.filter(function(wc){ return !(wc.allowedTypes && wc.allowedTypes.length === 1 && wc.allowedTypes[0] === "title"); });
+    var titleWheels = wheelConfigsCache.filter(function(wc){ return wc.allowedTypes && wc.allowedTypes.length === 1 && wc.allowedTypes[0] === "title"; });
+
+    function sectionHeaderHtml(text){
+      return '<div class="garage-title" style="color:var(--text);font-size:20px;margin:22px 0 12px;">' + escapeHtml(text) + '</div>';
+    }
+
+    var wheelPanelsHtml =
+      (generalWheels.length ? sectionHeaderHtml("General") : "") +
+      '<div style="display:flex;flex-wrap:wrap;gap:18px;">' +
+        generalWheels.map(buildWheelPanelHtml).join("") +
+      '</div>' +
+      (titleWheels.length ? sectionHeaderHtml("Titles") : "") +
+      '<div style="display:flex;flex-wrap:wrap;gap:18px;">' +
+        titleWheels.map(buildWheelPanelHtml).join("") +
+      '</div>';
 
     app.innerHTML =
       brandHeader() +
@@ -14275,15 +14475,19 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
 
           var isCarWin = winner.rewardType === "car";
           var isAvatarWin = winner.rewardType === "avatar";
+          var isTitleWin = winner.rewardType === "title";
           var wonCar = isCarWin ? customCarsCache.find(function(c){ return c.id === winner.rewardCarId; }) : null;
           var wonAvatarPiece = isAvatarWin ? avatarCatalogCache.find(function(p){ return p.id === winner.rewardAvatarPieceId; }) : null;
           var prizeLabel = isCarWin ? (winner.rewardCarName || "Car")
             : isAvatarWin ? (winner.rewardAvatarName || "Avatar Piece")
+            : isTitleWin ? ('\u201C' + (winner.rewardTitleText || "Title") + '\u201D')
             : (winner.rewardNameTagName || "Name Tag");
           var prizeVisual = isCarWin
             ? (wonCar ? '<div style="width:160px;height:80px;">' + carVisualHtml(wonCar) + '</div>' : rarityIconHtml(winner.rarity, 56))
             : isAvatarWin
             ? (wonAvatarPiece ? '<div style="width:120px;height:120px;display:flex;align-items:center;justify-content:center;"><img src="' + wonAvatarPiece.image + '" alt="" style="max-width:100%;max-height:100%;object-fit:contain;image-rendering:pixelated;display:block;" /></div>' : rarityIconHtml(winner.rarity, 56))
+            : isTitleWin
+            ? ('<div style="font-family:\'Arial Black\',Impact,sans-serif;font-style:italic;font-size:22px;color:' + (RARITY_COLORS[winner.rarity]||"var(--text)") + ';text-align:center;padding:10px 6px;">' + escapeHtml(winner.rewardTitleText || "Title") + '</div>')
             : '<div style="width:200px;height:50px;"><img src="' + winner.rewardNameTagImage + '" alt="" style="width:100%;height:100%;object-fit:contain;display:block;image-rendering:pixelated;" /></div>';
           var ownershipNote = isCarWin
             ? ('You now own ' + getCarQuantity(rewardAcc, winner.rewardCarId))
