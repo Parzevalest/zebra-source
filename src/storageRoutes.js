@@ -212,6 +212,23 @@ router.post("/kv/:key", async (req, res) => {
     return res.json(result);
   }
   
+  // Special case: the one-time super-admin account claim. This has to be
+  // reachable with NO session at all, since claiming it is what happens
+  // before any session exists in the first place -- it's a separate
+  // login system from regular player accounts, not something a player
+  // session gates. Once an admin account already exists, only someone
+  // already authenticated AS that admin may overwrite it (e.g. changing
+  // the admin password later) -- a random unauthenticated request must
+  // never be able to hijack an already-claimed admin account.
+  if (key === "admin_account" && shared) {
+    const existingAdmin = await store.get("system", key, true);
+    if (existingAdmin) {
+      if (!session || !session.isAdmin) return res.status(403).json({ error: "forbidden" });
+    }
+    const result = await store.set("system", key, req.body.value, true);
+    return res.json(result);
+  }
+
   if (!session) return res.status(401).json({ error: "authentication required" });
   res.json(await store.set(session.username, key, req.body.value, shared));
 });
