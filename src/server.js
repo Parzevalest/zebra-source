@@ -5,6 +5,8 @@ const http = require("http");
 const path = require("path");
 
 const storageRoutes = require("./storageRoutes");
+const stripeRoutes = require("./stripeRoutes");
+const { handleStripeWebhook } = require("./stripeWebhook");
 const { makeRaceServer, setDb } = require("./race");
 const db = require("./db");
 
@@ -13,9 +15,18 @@ app.use(cors({
   origin: ["https://pandatype.org", "https://www.pandatype.org", "http://localhost:3000"],
   credentials: true
 }));
+
+// Stripe webhook: MUST be registered before express.json() below.
+// Stripe signs the raw, exact bytes of the request body -- once
+// express.json() has parsed and re-serialized it, signature verification
+// would fail every time. express.raw() here keeps this one route's body
+// untouched while every other route still gets normal JSON parsing.
+app.post("/api/stripe-webhook", express.raw({ type: "application/json" }), handleStripeWebhook);
+
 app.use(express.json({ limit: "10mb" }));
 
 app.use("/api", storageRoutes);
+app.use("/api", stripeRoutes);
 
 app.get("/health", (req, res) => {
   res.json({ ok: true, time: Date.now() });

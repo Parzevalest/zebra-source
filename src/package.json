@@ -1,0 +1,19 @@
+{
+  "name": "panda-type-server",
+  "version": "1.0.0",
+  "description": "Multiplayer backend for Panda Type — REST storage API + WebSocket race matchmaking",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js"
+  },
+  "license": "ISC",
+  "dependencies": {
+    "cors": "^2.8.6",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "mongoose": "^8.5.0",
+    "stripe": "^17.5.0",
+    "ws": "^8.21.0"
+  }
+}
