@@ -1855,7 +1855,7 @@ const AntiCheat = (() => {
     const impliedWPM = mean > 0 ? Math.round((60000 / mean) / 5) : 0;
     // Human physiological ceiling: ~220 WPM for world-record typists.
     // 250+ WPM is physically impossible without automation.
-    const physicallyImpossible = impliedWPM >= 250;
+    const physicallyImpossible = impliedWPM >= 300;
     const extremelyFast        = impliedWPM >= 180 && impliedWPM < 250;
 
     return {
