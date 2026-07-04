@@ -9567,8 +9567,8 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
             '<option value="Mythic">Mythic</option>' +
             '<option value="Ascended">Ascended</option>' +
             '<option value="Unobtainable">Unobtainable</option>' +
-            '<option value="Coined Up">Coined Up</option>' +
-            '<option value="Raceaholic">Raceaholic</option>' +
+            '<option value="Loaded">Loaded</option>' +
+            '<option value="Redline">Redline</option>' +
             '<option value="Sessionist">Sessionist</option>' +
           '</select>' +
         '</div>' +
@@ -9896,7 +9896,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     }
 
     var condLabels = { races:"Races \u2265", bestWpm:"Best WPM \u2265", ownedCars:"Cars owned \u2265", coins:"Coins \u2265", racesWithRarity:"Races with rarity \u2265", bestSession:"Best session \u2265" };
-    var SECTION_OPTIONS = ["Common","Rare","Ultra Rare","Legendary","Mythic","Ascended","Unobtainable","Coined Up","Raceaholic"];
+    var SECTION_OPTIONS = ["Common","Rare","Ultra Rare","Legendary","Mythic","Ascended","Unobtainable","Loaded","Redline"];
     box.innerHTML = list.map(function(a){
       var condBase = (condLabels[a.conditionType] || a.conditionType) + " " + a.conditionValue;
       var cond = a.conditionType === "racesWithRarity" && a.conditionRarity ? condBase + " (" + a.conditionRarity + ")" : condBase;
@@ -16461,8 +16461,8 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
         { key: "Mythic",      color: "#B388FF" },
         { key: "Ascended",    color: "#C7CCD4" },
         { key: "Unobtainable",color: "#FF4D45" },
-        { key: "Coined Up",   color: "#FFD54F" },
-        { key: "Raceaholic",  color: "#FF4D45" },
+        { key: "Loaded",   color: "#FFD54F" },
+        { key: "Redline",  color: "#FF4D45" },
         { key: "Sessionist",  color: "#26C6DA" }
       ];
 
