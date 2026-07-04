@@ -3,8 +3,8 @@ const store = require("./db");
 
 const router = express.Router();
 
-// Premium Pass monthly subscription price, from the Stripe dashboard
-// (Product catalog -> Premium Pass -> the recurring yearly price).
+// Your Premium Pass monthly subscription price, from the Stripe dashboard
+// (Product catalog -> Premium Pass -> the recurring monthly price).
 const PREMIUM_PRICE_ID = "price_1TpXcvDkfpMWyCeG6WF0jh5p";
 
 // Stripe client is created lazily (not at module load) so a missing or
@@ -48,17 +48,43 @@ router.post("/create-checkout-session", async (req, res) => {
 
     const origin = req.headers.origin || (req.protocol + "://" + req.get("host"));
 
-    const checkoutSession = await stripe.checkout.sessions.create({
-      mode: "subscription",
-      line_items: [{ price: PREMIUM_PRICE_ID, quantity: 1 }],
-      // client_reference_id is how the webhook knows which player account
-      // this checkout belongs to once payment completes.
-      client_reference_id: session.username,
-      customer: acc.stripeCustomerId || undefined,
-      metadata: { username: session.username },
-      success_url: origin + "/account?premium=success",
-      cancel_url: origin + "/account?premium=cancelled"
-    });
+    function buildParams(customerId) {
+      return {
+        mode: "subscription",
+        line_items: [{ price: PREMIUM_PRICE_ID, quantity: 1 }],
+        // client_reference_id is how the webhook knows which player account
+        // this checkout belongs to once payment completes.
+        client_reference_id: session.username,
+        customer: customerId || undefined,
+        metadata: { username: session.username },
+        success_url: origin + "/account?premium=success",
+        cancel_url: origin + "/account?premium=cancelled"
+      };
+    }
+
+    let checkoutSession;
+    try {
+      checkoutSession = await stripe.checkout.sessions.create(buildParams(acc.stripeCustomerId));
+    } catch (e) {
+      // A saved customer ID can point at a different Stripe mode than
+      // whichever key the server is currently using (e.g. a customer
+      // created during test-mode testing, then the server switched to
+      // live keys) -- Stripe rejects that as "No such customer" rather
+      // than silently ignoring it. Rather than fail the purchase, drop
+      // the stale ID from the account and let Stripe create a fresh
+      // customer instead -- this makes the flow self-healing instead of
+      // needing a manual data fix every time this happens.
+      const isStaleCustomer = e.message && e.message.indexOf("No such customer") !== -1;
+      if (isStaleCustomer && acc.stripeCustomerId) {
+        console.warn("[stripe] dropping stale customer id for", session.username, "-", acc.stripeCustomerId);
+        delete acc.stripeCustomerId;
+        delete acc.stripeSubscriptionId;
+        await store.set("system", accountKey, JSON.stringify(acc), true);
+        checkoutSession = await stripe.checkout.sessions.create(buildParams(null));
+      } else {
+        throw e;
+      }
+    }
 
     res.json({ url: checkoutSession.url });
   } catch (e) {
@@ -85,10 +111,27 @@ router.post("/create-billing-portal-session", async (req, res) => {
     if (!acc.stripeCustomerId) return res.status(400).json({ error: "no_subscription" });
 
     const origin = req.headers.origin || (req.protocol + "://" + req.get("host"));
-    const portalSession = await stripe.billingPortal.sessions.create({
-      customer: acc.stripeCustomerId,
-      return_url: origin + "/account"
-    });
+    let portalSession;
+    try {
+      portalSession = await stripe.billingPortal.sessions.create({
+        customer: acc.stripeCustomerId,
+        return_url: origin + "/account"
+      });
+    } catch (e) {
+      const isStaleCustomer = e.message && e.message.indexOf("No such customer") !== -1;
+      if (isStaleCustomer) {
+        // Same cross-mode staleness as create-checkout-session -- there's
+        // no live subscription to manage if the saved customer doesn't
+        // exist in the mode currently in use, so clear it and report
+        // "no subscription" rather than a raw Stripe error.
+        console.warn("[stripe] dropping stale customer id for", session.username, "-", acc.stripeCustomerId);
+        delete acc.stripeCustomerId;
+        delete acc.stripeSubscriptionId;
+        await store.set("system", accountKey, JSON.stringify(acc), true);
+        return res.status(400).json({ error: "no_subscription" });
+      }
+      throw e;
+    }
 
     res.json({ url: portalSession.url });
   } catch (e) {
