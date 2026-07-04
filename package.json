@@ -1,7 +1,7 @@
 {
-  "name": "zebra-type-server",
+  "name": "panda-type-server",
   "version": "1.0.0",
-  "description": "Multiplayer backend for Zebra Type — REST storage API + WebSocket race matchmaking",
+  "description": "Multiplayer backend for Panda Type — REST storage API + WebSocket race matchmaking",
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",
@@ -12,12 +12,7 @@
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
-    "node-sqlite3-wasm": "^0.8.58"
-  },
-  "optionalDependencies": {
-    "better-sqlite3": "^11.3.0"
-  },
-  "devDependencies": {
+    "mongoose": "^8.5.0",
     "ws": "^8.21.0"
   }
 }
