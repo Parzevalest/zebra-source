@@ -10,7 +10,7 @@ const db = require("./db");
 
 const app = express();
 app.use(cors({
-  origin: ['https://pandatype.org', 'https://www.pandatype.org'],
+  origin: ["https://pandatype.org", "https://www.pandatype.org", "http://localhost:3000"],
   credentials: true
 }));
 app.use(express.json({ limit: "10mb" }));
