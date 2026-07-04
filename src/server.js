@@ -51,3 +51,19 @@ httpServer.listen(PORT, () => {
   console.log(`  HTTP API:   http://localhost:${PORT}/api`);
   console.log(`  WebSocket:  ws://localhost:${PORT}/race`);
 });
+
+// Clean up expired session/login-challenge records once at boot, then
+// every hour going forward -- see db.js for why this can't just be a
+// MongoDB TTL index (SharedKV holds permanent game data too).
+async function runAuthCleanup() {
+  try {
+    const result = await db.cleanupExpiredAuthKeys();
+    if (result.sessionsDeleted || result.challengesDeleted) {
+      console.log(`[cleanup] removed ${result.sessionsDeleted} expired session(s), ${result.challengesDeleted} expired login challenge(s)`);
+    }
+  } catch (e) {
+    console.error("[cleanup] auth key cleanup failed:", e.message);
+  }
+}
+runAuthCleanup();
+setInterval(runAuthCleanup, 60 * 60 * 1000);

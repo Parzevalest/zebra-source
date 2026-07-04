@@ -89,5 +89,38 @@ async function list(owner, prefix, shared) {
   return { keys: rows.map((r) => r.key), prefix: prefix || "", shared: !!shared };
 }
 
+// Deletes stale session_ and challenge_ records from SharedKV. These are
+// meant to be temporary (sessions ~7 days, login challenges ~2 minutes),
+// but nothing was ever proactively deleting them -- a record was only
+// ever removed if someone happened to try using that *exact* expired
+// token/challenge again later, which almost never naturally happens.
+// Every visit to the login page, finished or not, was leaving a
+// permanent, unused document behind -- this is what actually cleans
+// those up. A MongoDB TTL index isn't used here on purpose: SharedKV
+// also holds permanent game data (accounts, guilds, wheel configs, etc.)
+// in the same collection, and a TTL index applies to the whole
+// collection with no way to exempt those by key prefix -- it would
+// eventually delete real game data too. Explicit, prefix-scoped deletes
+// like this are the safe way to do it given that shared layout.
+async function cleanupExpiredAuthKeys() {
+  const now = Date.now();
+  const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000; // must match storageRoutes.js
+  const CHALLENGE_TTL_MS = 2 * 60 * 1000;          // must match storageRoutes.js
+
+  const sessionResult = await SharedKV.deleteMany({
+    key: { $regex: /^session_/ },
+    updated_at: { $lt: now - SESSION_TTL_MS }
+  });
+  const challengeResult = await SharedKV.deleteMany({
+    key: { $regex: /^challenge_/ },
+    updated_at: { $lt: now - CHALLENGE_TTL_MS }
+  });
+
+  return {
+    sessionsDeleted: sessionResult.deletedCount || 0,
+    challengesDeleted: challengeResult.deletedCount || 0
+  };
+}
+
 // Export the functions for the router to use
-module.exports = { get, set, del, list };
+module.exports = { get, set, del, list, cleanupExpiredAuthKeys };

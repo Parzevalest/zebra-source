@@ -364,4 +364,17 @@ router.get("/device-bans", async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// Manually run the expired session/login-challenge cleanup right now,
+// instead of waiting for the hourly scheduled run in server.js.
+router.post("/admin/cleanup-auth-keys", async (req, res) => {
+  const session = await getSession(req);
+  if (!session || !session.isAdmin) return res.status(403).json({ error: "forbidden" });
+  try {
+    const result = await store.cleanupExpiredAuthKeys();
+    res.json({ ok: true, ...result });
+  } catch (e) {
+    res.status(500).json({ error: "cleanup_failed", message: e.message });
+  }
+});
+
 module.exports = router;
