@@ -9567,8 +9567,8 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
             '<option value="Mythic">Mythic</option>' +
             '<option value="Ascended">Ascended</option>' +
             '<option value="Unobtainable">Unobtainable</option>' +
-            '<option value="Loaded">Loaded</option>' +
-            '<option value="Redline">Redline</option>' +
+            '<option value="Coined Up">Coined Up</option>' +
+            '<option value="Raceaholic">Raceaholic</option>' +
             '<option value="Sessionist">Sessionist</option>' +
           '</select>' +
         '</div>' +
@@ -9896,7 +9896,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     }
 
     var condLabels = { races:"Races \u2265", bestWpm:"Best WPM \u2265", ownedCars:"Cars owned \u2265", coins:"Coins \u2265", racesWithRarity:"Races with rarity \u2265", bestSession:"Best session \u2265" };
-    var SECTION_OPTIONS = ["Common","Rare","Ultra Rare","Legendary","Mythic","Ascended","Unobtainable","Loaded","Redline"];
+    var SECTION_OPTIONS = ["Common","Rare","Ultra Rare","Legendary","Mythic","Ascended","Unobtainable","Coined Up","Raceaholic"];
     box.innerHTML = list.map(function(a){
       var condBase = (condLabels[a.conditionType] || a.conditionType) + " " + a.conditionValue;
       var cond = a.conditionType === "racesWithRarity" && a.conditionRarity ? condBase + " (" + a.conditionRarity + ")" : condBase;
@@ -15603,13 +15603,21 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
         var res = await saveGuild(freshGuild);
         if(res.ok){
           state.userGuild = freshGuild;
-          // Update cached tag/color on account
-          var freshAcc = await getAccount(acc.username);
-          if(freshAcc.ok && freshAcc.account){
-            freshAcc.account.guildTag = newTag;
-            freshAcc.account.guildColor = freshGuild.color;
-            await saveAccount(freshAcc.account);
-            state.user = freshAcc.account;
+          // Update every member's cached guildTag/guildColor -- not just
+          // whoever made this change -- so the rename shows correctly for
+          // the whole guild immediately (leaderboard, race screens, etc.)
+          // instead of only refreshing for whichever member next logs in.
+          var renameMemberNames = freshGuild.memberUsernames || [];
+          for(var rmi = 0; rmi < renameMemberNames.length; rmi++){
+            try{
+              var rmRes = await getAccount(renameMemberNames[rmi]);
+              if(rmRes.ok && rmRes.account && rmRes.account.guildId === freshGuild.id){
+                rmRes.account.guildTag = newTag;
+                rmRes.account.guildColor = freshGuild.color;
+                await saveAccount(rmRes.account);
+                if(state.user && rmRes.account.username.toLowerCase() === state.user.username.toLowerCase()) state.user = rmRes.account;
+              }
+            }catch(e2){}
           }
           msgEl.style.color = "var(--green)";
           msgEl.textContent = "Saved!";
@@ -15631,6 +15639,23 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
         var res = await saveGuild(freshGuild);
         if(res.ok){
           state.userGuild = freshGuild;
+          // Update every member's cached guildColor -- the guild object
+          // itself is now correct, but each member's account keeps its
+          // own cached copy of the color (used by the leaderboard, race
+          // screens, etc.), and that copy is only otherwise refreshed the
+          // next time that specific member happens to log back in. Push
+          // the new color out to everyone now instead of waiting for that.
+          var colorMemberNames = freshGuild.memberUsernames || [];
+          for(var cmi = 0; cmi < colorMemberNames.length; cmi++){
+            try{
+              var cmRes = await getAccount(colorMemberNames[cmi]);
+              if(cmRes.ok && cmRes.account && cmRes.account.guildId === freshGuild.id){
+                cmRes.account.guildColor = color;
+                await saveAccount(cmRes.account);
+                if(state.user && cmRes.account.username.toLowerCase() === state.user.username.toLowerCase()) state.user = cmRes.account;
+              }
+            }catch(e2){}
+          }
           msg.textContent = "Saved.";
           setTimeout(function(){ renderGuildDetail(); }, 400);
         } else {
@@ -16461,8 +16486,8 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
         { key: "Mythic",      color: "#B388FF" },
         { key: "Ascended",    color: "#C7CCD4" },
         { key: "Unobtainable",color: "#FF4D45" },
-        { key: "Loaded",   color: "#FFD54F" },
-        { key: "Redline",  color: "#FF4D45" },
+        { key: "Coined Up",   color: "#FFD54F" },
+        { key: "Raceaholic",  color: "#FF4D45" },
         { key: "Sessionist",  color: "#26C6DA" }
       ];
 
