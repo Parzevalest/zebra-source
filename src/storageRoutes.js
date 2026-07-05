@@ -81,7 +81,7 @@ async function isFingerprintBanned(hash) {
 // system auto-bans an IP). Returns how many additional accounts were
 // newly banned as a result, so the caller can report that back.
 async function cascadeBanAccountsForIp(ip) {
-  let count = 0;
+  const usernames = [];
   try {
     const matches = await store.findAccountsByLastKnownIp(ip);
     for (const row of matches) {
@@ -91,11 +91,11 @@ async function cascadeBanAccountsForIp(ip) {
         acc.isBanned = true;
         acc.bannedViaIp = true;
         await store.set("system", row.key, JSON.stringify(acc), true);
-        count++;
+        usernames.push(acc.username || row.key.replace(/^account:/, ""));
       } catch (e) { /* skip a malformed record rather than fail the whole batch */ }
     }
   } catch (e) {}
-  return count;
+  return usernames;
 }
 
 function isAccountKey(key) { return key.startsWith("account:"); }
@@ -414,7 +414,10 @@ router.post("/anticheat", async (req, res) => {
       if (reportIp) {
         const ipData = JSON.stringify({ ip: reportIp, username, banned_at: Date.now(), reason: "anticheat_auto_ban" });
         await store.set("system", "ipban_" + reportIp, ipData, true);
-        await cascadeBanAccountsForIp(reportIp);
+        const cascaded = await cascadeBanAccountsForIp(reportIp);
+        if (cascaded.length) {
+          console.log(`[anticheat] auto-banned IP ${reportIp} (triggered by ${username || "unknown"}) -- also banned: ${cascaded.join(", ")}`);
+        }
       }
     }
   } catch (e) {}
@@ -469,8 +472,8 @@ router.post("/ip-ban", async (req, res) => {
   try {
     const data = JSON.stringify({ ip, username: username || null, banned_at: Date.now() });
     await store.set("system", "ipban_" + ip, data, true);
-    const cascadedCount = await cascadeBanAccountsForIp(ip);
-    res.json({ banned: true, cascadedCount });
+    const cascadedUsernames = await cascadeBanAccountsForIp(ip);
+    res.json({ banned: true, cascadedUsernames });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
