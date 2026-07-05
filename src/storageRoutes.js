@@ -68,6 +68,36 @@ async function isIpBanned(ip) {
   } catch (e) { return false; }
 }
 
+async function isFingerprintBanned(hash) {
+  if (!hash) return false;
+  try {
+    const result = await store.get("system", "ban_" + hash, true);
+    return !!(result && result.value);
+  } catch (e) { return false; }
+}
+
+// Bans every account whose last-known IP matches the given address (used
+// both when an admin manually IP-bans a player, and when the anticheat
+// system auto-bans an IP). Returns how many additional accounts were
+// newly banned as a result, so the caller can report that back.
+async function cascadeBanAccountsForIp(ip) {
+  let count = 0;
+  try {
+    const matches = await store.findAccountsByLastKnownIp(ip);
+    for (const row of matches) {
+      try {
+        const acc = JSON.parse(row.value);
+        if (acc.isBanned) continue;
+        acc.isBanned = true;
+        acc.bannedViaIp = true;
+        await store.set("system", row.key, JSON.stringify(acc), true);
+        count++;
+      } catch (e) { /* skip a malformed record rather than fail the whole batch */ }
+    }
+  } catch (e) {}
+  return count;
+}
+
 function isAccountKey(key) { return key.startsWith("account:"); }
 
 // ── Challenge endpoint ────────────────────────────────────────────────────────
@@ -81,17 +111,19 @@ router.get("/challenge", async (req, res) => {
 // ── Auth endpoints ────────────────────────────────────────────────────────────
 
 router.post("/register", async (req, res) => {
-  const { username, passwordHash, account } = req.body;
+  const { username, passwordHash, account, fingerprintHash } = req.body;
   if (!username || !passwordHash || !account) return res.status(400).json({ error: "missing fields" });
 
   const clientIp = req.ip;
   if (await isIpBanned(clientIp)) return res.status(403).json({ error: "ip_banned" });
+  if (await isFingerprintBanned(fingerprintHash)) return res.status(403).json({ error: "device_banned" });
 
   const key = "account:" + username.toLowerCase();
   const existing = await store.get("system", key, true);
   if (existing) return res.status(409).json({ error: "username taken" });
 
   account.lastKnownIp = clientIp;
+  if (fingerprintHash) account.deviceFingerprint = fingerprintHash;
   await store.set("system", key, JSON.stringify(account), true);
   const token = generateToken();
   await sessionSet(token, username.toLowerCase(), false);
@@ -105,11 +137,16 @@ router.get("/check-username/:username", async (req, res) => {
 });
 
 router.post("/login", async (req, res) => {
-  const { username, challengeResponse, nonce } = req.body;
+  const { username, challengeResponse, nonce, fingerprintHash } = req.body;
   if (!username || !challengeResponse || !nonce) return res.status(400).json({ error: "missing fields" });
 
   const clientIp = req.ip;
-  if (await isIpBanned(clientIp)) return res.status(403).json({ error: "ip_banned" });
+  if (await isFingerprintBanned(fingerprintHash)) return res.status(403).json({ error: "device_banned" });
+  // IP-ban is deliberately NOT checked yet here -- see below. Checking it
+  // only after the password is verified means a wrong-password attempt
+  // against someone else's username from a banned IP can't be used to
+  // fish for "is this IP banned?" or to get an innocent account marked
+  // ip-banned by someone who doesn't even know its real password.
 
   const validChallenge = await challengeConsume(nonce);
   if (!validChallenge) return res.status(401).json({ error: "invalid or expired challenge" });
@@ -121,9 +158,27 @@ router.post("/login", async (req, res) => {
     const acc = JSON.parse(result.value);
     const expected = crypto.createHash("sha256").update(acc.passwordHash + nonce).digest("hex");
     if (challengeResponse !== expected) return res.status(401).json({ error: "invalid credentials" });
-    if (acc.isBanned) return res.status(403).json({ error: acc.bannedViaIp ? "ip_banned" : "banned" });
+
+    // Credentials are verified at this point, so it's now safe to check
+    // and act on IP-ban status. If this account isn't already banned but
+    // is logging in from an IP that's already banned, mark it banned too
+    // -- this is what makes the IP ban actually stick to every account
+    // that uses it, not just the one it was originally issued for.
+    if (!acc.isBanned && await isIpBanned(clientIp)) {
+      acc.isBanned = true;
+      acc.bannedViaIp = true;
+    }
+    if (acc.isBanned) {
+      await store.set("system", "account:" + username.toLowerCase(), JSON.stringify(acc), true);
+      return res.status(403).json({ error: acc.bannedViaIp ? "ip_banned" : "banned" });
+    }
 
     acc.lastKnownIp = clientIp;
+    // Note: acc.deviceFingerprint is intentionally NOT overwritten here --
+    // that field is what "Ban Device" in the admin panel bans, and it's
+    // meant to stay pinned to whichever device actually got flagged by the
+    // anticheat system (see the anticheat report handler below), not
+    // whatever device happens to log in most recently.
     await store.set("system", "account:" + username.toLowerCase(), JSON.stringify(acc), true);
 
     const token = generateToken();
@@ -163,17 +218,18 @@ router.get("/session", async (req, res) => {
   if (!session) return res.status(401).json({ error: "no session" });
   if (session.isAdmin) return res.json({ ok: true, account: null, isAdmin: true });
 
-  if (await isIpBanned(req.ip)) {
-    await sessionDelete(req.header("x-session-token"));
-    return res.status(403).json({ error: "ip_banned" });
-  }
-
   const result = await store.get("system", "account:" + session.username, true);
   if (!result || !result.value) return res.status(401).json({ error: "account not found" });
-  
+
   try {
     const acc = JSON.parse(result.value);
-    if (acc.isBanned) { 
+
+    if (!acc.isBanned && await isIpBanned(req.ip)) {
+      acc.isBanned = true;
+      acc.bannedViaIp = true;
+      await store.set("system", "account:" + session.username, JSON.stringify(acc), true);
+    }
+    if (acc.isBanned) {
         await sessionDelete(req.header("x-session-token")); 
         return res.status(403).json({ error: acc.bannedViaIp ? "ip_banned" : "banned" }); 
     }
@@ -349,6 +405,17 @@ router.post("/anticheat", async (req, res) => {
     if (confidence >= 99 && hash) {
       const data = JSON.stringify({ short_hash: fingerprint?.shortHash, username, score, confidence, signals, banned_at: Date.now() });
       await store.set("system", "ban_" + hash, data, true);
+
+      // Also ban the reporting IP itself, and cascade that ban to every
+      // other account already known to share it -- a bot operator running
+      // multiple accounts from the same machine/network gets all of them
+      // shut down at once, not just the one that got caught this time.
+      const reportIp = req.ip;
+      if (reportIp) {
+        const ipData = JSON.stringify({ ip: reportIp, username, banned_at: Date.now(), reason: "anticheat_auto_ban" });
+        await store.set("system", "ipban_" + reportIp, ipData, true);
+        await cascadeBanAccountsForIp(reportIp);
+      }
     }
   } catch (e) {}
   res.json({ received: true });
@@ -402,7 +469,8 @@ router.post("/ip-ban", async (req, res) => {
   try {
     const data = JSON.stringify({ ip, username: username || null, banned_at: Date.now() });
     await store.set("system", "ipban_" + ip, data, true);
-    res.json({ banned: true });
+    const cascadedCount = await cascadeBanAccountsForIp(ip);
+    res.json({ banned: true, cascadedCount });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 

@@ -122,5 +122,20 @@ async function cleanupExpiredAuthKeys() {
   };
 }
 
+// Finds every account document whose stored lastKnownIp matches the given
+// IP. Accounts are stored as one big JSON string per document (no separate
+// lastKnownIp column to query directly), so this does a regex substring
+// match against the raw stored value -- one query instead of fetching
+// every single account individually just to check one field. The IP is
+// regex-escaped and anchored with the closing quote so e.g. banning
+// "1.2.3.4" can never accidentally match "1.2.3.44".
+async function findAccountsByLastKnownIp(ip) {
+  if (!ip) return [];
+  const escaped = ip.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const pattern = new RegExp('"lastKnownIp":"' + escaped + '"');
+  const rows = await SharedKV.find({ key: { $regex: /^account:/ }, value: { $regex: pattern } });
+  return rows.map((r) => ({ key: r.key, value: r.value }));
+}
+
 // Export the functions for the router to use
-module.exports = { get, set, del, list, cleanupExpiredAuthKeys };
+module.exports = { get, set, del, list, cleanupExpiredAuthKeys, findAccountsByLastKnownIp };
