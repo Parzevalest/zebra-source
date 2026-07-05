@@ -333,6 +333,34 @@
 
   /* ---------- GARAGE ---------- */
   .garage-panel{ padding:0 !important; overflow:hidden; }
+
+  /* Premium garage styling -- gold border + small "Premium" ribbon tab,
+     applied to specific .panel elements when the account viewed has an
+     active premium subscription. See renderGarageCars(),
+     garageStatsAndSwitcherHtml(), and renderProfileContent(). */
+  .premium-panel{
+    position:relative;
+    border:2px solid #FFD700 !important;
+    box-shadow:0 0 14px rgba(255,215,0,0.35);
+  }
+  .premium-badge{
+    position:absolute;
+    top:-15px;
+    left:50%;
+    transform:translateX(-50%);
+    background:linear-gradient(180deg,#FFE47A,#FFC700);
+    color:#0A0B0D;
+    font-family:'Arial Black',Impact,sans-serif;
+    font-style:italic;
+    font-weight:900;
+    font-size:13px;
+    letter-spacing:0.5px;
+    padding:5px 20px;
+    border-radius:6px;
+    box-shadow:0 2px 6px rgba(0,0,0,0.4);
+    white-space:nowrap;
+    z-index:2;
+  }
   .garage-header{
     background:var(--panel-2);
     border-bottom:1px solid var(--line);
@@ -6156,8 +6184,11 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
       head:  resolveEquippedAvatarPiece(acc, "head", avatarCatalogCache)
     };
     var playerDisplayName = displayNameFor(acc);
+    var isPremium = !!acc.hasPremiumPass;
+    var premiumBadgeHtml = isPremium ? '<div class="premium-badge">Premium</div>' : '';
 
-    return '<div class="panel" style="margin-bottom:18px;">' +
+    return '<div class="panel' + (isPremium ? ' premium-panel' : '') + '" style="margin-bottom:18px;">' +
+        premiumBadgeHtml +
         '<div style="display:flex;align-items:center;gap:18px;flex-wrap:wrap;">' +
           '<div style="flex:0 0 auto;">' + composedAvatarHtml(resolvedAvatar, 1.2) + '</div>' +
           '<div style="flex:1;min-width:0;">' +
@@ -6179,7 +6210,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
             '<span style="color:var(--text);">' + escapeHtml(state.userGuild.name) + '</span>' +
           '</span>' +
         '</div>' : '') +
-      '<div class="panel">' +
+      '<div class="panel' + (isPremium ? ' premium-panel' : '') + '">' +
         '<div class="stat-grid">' +
           '<div class="stat-card"><div class="num">' + races.toLocaleString() + '</div><div class="lbl">Races</div></div>' +
           '<div class="stat-card"><div class="num">' + bestWpm + '</div><div class="lbl">Best WPM</div></div>' +
@@ -6187,7 +6218,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
           '<div class="stat-card"><div class="num">' + avgAcc + '%</div><div class="lbl">Avg Accuracy</div></div>' +
         '</div>' +
       '</div>' +
-      '<div class="panel garage-panel" style="margin-top:18px;">' +
+      '<div class="panel garage-panel' + (isPremium ? ' premium-panel' : '') + '" style="margin-top:18px;">' +
         '<div class="garage-header">' +
           '<div class="garage-title" style="color:var(--text);">Garage' +
             '<span class="garage-count" style="margin-left:14px;">' + COIN_ICON + coins.toLocaleString() + '</span>' +
@@ -6413,12 +6444,13 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     // equipped last, not always the starter car.
     var equippedIdx = state.garageOrder.findIndex(function(c){ return (c.id || "starter_car") === (acc.equippedCarId || "starter_car"); });
     state.equippedCarIndex = equippedIdx !== -1 ? equippedIdx : 0;
+    var isPremium = !!acc.hasPremiumPass;
 
     app.innerHTML =
       brandHeader() +
       renderNavBar("garage") +
       garageStatsAndSwitcherHtml("cars") +
-      '<div class="panel garage-panel" style="margin-top:18px;">' +
+      '<div class="panel garage-panel' + (isPremium ? ' premium-panel' : '') + '" style="margin-top:18px;">' +
         '<div class="garage-header">' +
           '<div class="garage-title" style="color:var(--text);">My Cars ' +
             '<span class="garage-count">| ' + totalCars + '</span>' +
@@ -7077,9 +7109,11 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
 
     var panelArea = app.querySelector(".panel");
     if(!panelArea) return;
+    var isPremium = !!targetAcc.hasPremiumPass;
 
     panelArea.outerHTML =
-      '<div class="panel">' +
+      '<div class="panel' + (isPremium ? ' premium-panel' : '') + '">' +
+        (isPremium ? '<div class="premium-badge">Premium</div>' : '') +
         displayNameEditHtml +
         '<div style="display:flex;gap:20px;align-items:flex-start;flex-wrap:wrap;">' +
           '<div style="display:flex;justify-content:center;flex:0 0 auto;">' + composedAvatarHtml(resolvedAvatar, 3) + '</div>' +
@@ -16517,8 +16551,8 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
         { key: "Mythic",      color: "#B388FF" },
         { key: "Ascended",    color: "#C7CCD4" },
         { key: "Unobtainable",color: "#FF4D45" },
-        { key: "Loaded",   color: "#FFD54F" },
-        { key: "Redline",  color: "#FF4D45" },
+        { key: "Loaded",      color: "#FFD54F" },
+        { key: "Redline",     color: "#FF4D45" },
         { key: "Sessionist",  color: "#26C6DA" }
       ];
 
