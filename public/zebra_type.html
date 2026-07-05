@@ -3147,6 +3147,14 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
       weights: { "Common": 10, "Rare": 49.1, "Ultra Rare": 32.7, "Legendary": 5.7, "Mythic": 1.6, "Ascended": 0.8, "Unobtainable": 0.1 },
       costCoins: 1500,
       allowedTypes: ["title"]
+    },
+    {
+      id: "premium", label: "Premium Wheel",
+      tiers: ["Common", "Rare", "Ultra Rare", "Legendary", "Mythic", "Ascended", "Unobtainable"],
+      weights: { "Common": 5, "Rare": 40, "Ultra Rare": 35, "Legendary": 10, "Mythic": 5, "Ascended": 3, "Unobtainable": 2 },
+      costCoins: 500,
+      allowedTypes: ["car", "nameTag", "avatar"],
+      premiumOnly: true
     }
   ];
 
@@ -5666,7 +5674,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     app.innerHTML =
       brandHeader() +
       '<div class="panel" style="max-width:440px;margin:60px auto;text-align:center;">' +
-        '<div class="garage-title" style="color:var(--text);font-size:20px;margin-bottom:14px;">You are about to be molested.</div>' +
+        '<div class="garage-title" style="color:var(--text);font-size:20px;margin-bottom:14px;">You are about to be logged in.</div>' +
         '<div style="color:var(--muted);font-size:15px;margin-bottom:22px;">Do you consent?</div>' +
         '<label style="display:flex;align-items:center;justify-content:center;gap:10px;margin-bottom:24px;cursor:pointer;font-size:15px;color:var(--text);">' +
           '<input type="checkbox" id="loginConsentYes" style="width:20px;height:20px;cursor:pointer;" />' +
@@ -14645,18 +14653,27 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
       '</div>';
     }
 
-    // Wheels that can only give out titles are grouped under a "Titles"
-    // header; everything else (car/name tag/avatar wheels) is grouped
-    // under "General" -- generic by allowedTypes, so any wheel added later
-    // sorts into the right group automatically.
-    var generalWheels = wheelConfigsCache.filter(function(wc){ return !(wc.allowedTypes && wc.allowedTypes.length === 1 && wc.allowedTypes[0] === "title"); });
-    var titleWheels = wheelConfigsCache.filter(function(wc){ return wc.allowedTypes && wc.allowedTypes.length === 1 && wc.allowedTypes[0] === "title"; });
+    // Wheels are grouped into three sections: Premium (subscriber-only,
+    // hidden entirely -- not even shown locked -- for non-subscribers),
+    // Titles (wheels that only give out titles), and General (everything
+    // else). Generic by wc.premiumOnly / allowedTypes, so any wheel added
+    // later sorts into the right group automatically.
+    var isPremiumViewer = !!(state.user && state.user.hasPremiumPass);
+    var premiumWheels = wheelConfigsCache.filter(function(wc){ return wc.premiumOnly; });
+    var generalWheels = wheelConfigsCache.filter(function(wc){ return !wc.premiumOnly && !(wc.allowedTypes && wc.allowedTypes.length === 1 && wc.allowedTypes[0] === "title"); });
+    var titleWheels = wheelConfigsCache.filter(function(wc){ return !wc.premiumOnly && wc.allowedTypes && wc.allowedTypes.length === 1 && wc.allowedTypes[0] === "title"; });
 
     function sectionHeaderHtml(text){
       return '<div class="garage-title" style="color:var(--text);font-size:20px;margin:22px 0 12px;">' + escapeHtml(text) + '</div>';
     }
 
     var wheelPanelsHtml =
+      (isPremiumViewer && premiumWheels.length ? sectionHeaderHtml("Premium") : "") +
+      (isPremiumViewer && premiumWheels.length ?
+        '<div style="display:flex;flex-wrap:wrap;gap:18px;">' +
+          premiumWheels.map(buildWheelPanelHtml).join("") +
+        '</div>'
+      : "") +
       (generalWheels.length ? sectionHeaderHtml("General") : "") +
       '<div style="display:flex;flex-wrap:wrap;gap:18px;">' +
         generalWheels.map(buildWheelPanelHtml).join("") +
