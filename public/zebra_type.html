@@ -5437,7 +5437,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     errEl.textContent = "";
 
     if(state.maintenanceMode && !state.isAdmin){
-      errEl.textContent = "Zebra Type is currently undergoing maintenance. Only authorized accounts can log in.";
+      errEl.textContent = "Panda Type is currently undergoing maintenance. Only authorized accounts can log in.";
       return;
     }
 
@@ -5582,7 +5582,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
       if(state.maintenanceMode && !state.isAdmin && !acc.isModerator && !acc.maintenanceAccess){
         currentToken = null;
         try{ localStorage.removeItem("zt_session"); }catch(e){}
-        errEl.textContent = "Zebra Type is currently undergoing maintenance. Only authorized accounts can log in.";
+        errEl.textContent = "Panda Type is currently undergoing maintenance. Only authorized accounts can log in.";
         return;
       }
 
