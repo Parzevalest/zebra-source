@@ -4669,15 +4669,25 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
 
       // Check condition
       var condMet = false;
-      var val = parseInt(a.conditionValue, 10) || 0;
-      if(a.conditionType === "races")    condMet = (acc.races||0) >= val;
-      else if(a.conditionType === "bestWpm") condMet = (acc.bestWpm||0) >= val;
-      else if(a.conditionType === "ownedCars") condMet = (1 + (acc.ownedCarIds||[]).length) >= val;
-      else if(a.conditionType === "coins") condMet = (acc.coins||0) >= val;
-      else if(a.conditionType === "bestSession") condMet = (acc.bestSession||0) >= val;
-      else if(a.conditionType === "racesWithRarity"){
-        var rarityCount = (acc.racesWithRarity && a.conditionRarity) ? (acc.racesWithRarity[a.conditionRarity] || 0) : 0;
-        condMet = rarityCount >= val;
+      // Achievements placed in the "Premium" section ignore whatever
+      // condition type/value they're configured with -- moving an
+      // achievement into this section is itself what makes it
+      // auto-complete, the instant the account has an active premium
+      // subscription. This is deliberately checked before the normal
+      // condition-type switch below, which never runs for these.
+      if(a.section === "Premium"){
+        condMet = !!acc.hasPremiumPass;
+      } else {
+        var val = parseInt(a.conditionValue, 10) || 0;
+        if(a.conditionType === "races")    condMet = (acc.races||0) >= val;
+        else if(a.conditionType === "bestWpm") condMet = (acc.bestWpm||0) >= val;
+        else if(a.conditionType === "ownedCars") condMet = (1 + (acc.ownedCarIds||[]).length) >= val;
+        else if(a.conditionType === "coins") condMet = (acc.coins||0) >= val;
+        else if(a.conditionType === "bestSession") condMet = (acc.bestSession||0) >= val;
+        else if(a.conditionType === "racesWithRarity"){
+          var rarityCount = (acc.racesWithRarity && a.conditionRarity) ? (acc.racesWithRarity[a.conditionRarity] || 0) : 0;
+          condMet = rarityCount >= val;
+        }
       }
 
       if(!condMet) continue;
@@ -5663,6 +5673,13 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     }
 
     state.user = acc;
+    try{
+      var newlyEarnedOnLogin = await checkAndGrantAchievements(acc);
+      if(newlyEarnedOnLogin.length){
+        var earnSaveRes = await saveAccount(acc);
+        if(earnSaveRes.ok) state.user = acc;
+      }
+    }catch(e){}
     await refreshUserGuildCache();
     state.screen = "dashboard";
     renderApp();
@@ -5677,7 +5694,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     app.innerHTML =
       brandHeader() +
       '<div class="panel" style="max-width:440px;margin:60px auto;text-align:center;">' +
-        '<div class="garage-title" style="color:var(--text);font-size:20px;margin-bottom:14px;">You are about to be molested.</div>' +
+        '<div class="garage-title" style="color:var(--text);font-size:20px;margin-bottom:14px;">You are about to be logged in.</div>' +
         '<div style="color:var(--muted);font-size:15px;margin-bottom:22px;">Do you consent?</div>' +
         '<label style="display:flex;align-items:center;justify-content:center;gap:10px;margin-bottom:24px;cursor:pointer;font-size:15px;color:var(--text);">' +
           '<input type="checkbox" id="loginConsentYes" style="width:20px;height:20px;cursor:pointer;" />' +
@@ -9722,6 +9739,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
             '<option value="Loaded">Loaded</option>' +
             '<option value="Redline">Redline</option>' +
             '<option value="Sessionist">Sessionist</option>' +
+            '<option value="Premium">Premium</option>' +
           '</select>' +
         '</div>' +
 
@@ -10048,7 +10066,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     }
 
     var condLabels = { races:"Races \u2265", bestWpm:"Best WPM \u2265", ownedCars:"Cars owned \u2265", coins:"Coins \u2265", racesWithRarity:"Races with rarity \u2265", bestSession:"Best session \u2265" };
-    var SECTION_OPTIONS = ["Common","Rare","Ultra Rare","Legendary","Mythic","Ascended","Unobtainable","Loaded","Redline"];
+    var SECTION_OPTIONS = ["Common","Rare","Ultra Rare","Legendary","Mythic","Ascended","Unobtainable","Loaded","Redline","Sessionist","Premium"];
     box.innerHTML = list.map(function(a){
       var condBase = (condLabels[a.conditionType] || a.conditionType) + " " + a.conditionValue;
       var cond = a.conditionType === "racesWithRarity" && a.conditionRarity ? condBase + " (" + a.conditionRarity + ")" : condBase;
@@ -13207,6 +13225,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
       confirmGrantBtn.disabled = true;
       acc.hasPremiumPass = true;
       acc.premiumExpiresAt = expiresAt;
+      try{ await checkAndGrantAchievements(acc); }catch(e){}
       var ok = await persist(acc);
       if(ok){
         renderPlayerDetail(acc, allCustomCars);
@@ -16789,7 +16808,8 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
         { key: "Unobtainable",color: "#FF4D45" },
         { key: "Loaded",      color: "#FFD54F" },
         { key: "Redline",     color: "#FF4D45" },
-        { key: "Sessionist",  color: "#26C6DA" }
+        { key: "Sessionist",  color: "#26C6DA" },
+        { key: "Premium",     color: "#FFD700" }
       ];
 
       function sectionHtml(title, color, items){
@@ -16869,6 +16889,10 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
                 }
               }
               try{
+                var bootNewlyEarned = await checkAndGrantAchievements(state.user);
+                if(bootNewlyEarned.length) await saveAccount(state.user);
+              }catch(e){}
+              try{
                 var cacheResults = await Promise.all([fetchCustomCars(), fetchAvatarCatalog(), fetchSeasonConfig()]);
                 customCarsCache = cacheResults[0];
                 avatarCatalogCache = cacheResults[1];
@@ -16908,6 +16932,15 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
             }
           }catch(e){}
         }
+        // Premium just activated (or was already active) -- grant any
+        // "Premium" section achievements immediately rather than waiting
+        // for this player's next race.
+        try{
+          if(state.user && state.user.hasPremiumPass){
+            var checkoutNewlyEarned = await checkAndGrantAchievements(state.user);
+            if(checkoutNewlyEarned.length) await saveAccount(state.user);
+          }
+        }catch(e){}
       }
       if(postCheckoutQs.indexOf("premium=") !== -1){
         window.history.replaceState({}, "", window.location.pathname);
