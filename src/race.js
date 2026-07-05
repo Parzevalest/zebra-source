@@ -43,7 +43,7 @@ async function loadPassageTexts() {
   const now = Date.now();
   if (passageTexts.length > 0 && now - passageTextsLastLoaded < PASSAGE_CACHE_MS) return;
   try {
-    const row = db.get("system", "race_passages", true);
+    const row = await db.get("system", "race_passages", true);
     if (row && row.value) {
       const parsed = JSON.parse(row.value);
       if (Array.isArray(parsed) && parsed.length > 0) {
