@@ -11,6 +11,10 @@ const { makeRaceServer, setDb } = require("./race");
 const db = require("./db");
 
 const app = express();
+// Render sits behind a reverse proxy -- without this, req.ip would always
+// return the proxy's internal address instead of the visitor's real IP,
+// which would make IP-based banning completely non-functional.
+app.set("trust proxy", true);
 app.use(cors({
   origin: ["https://pandatype.org", "https://www.pandatype.org", "http://localhost:3000"],
   credentials: true

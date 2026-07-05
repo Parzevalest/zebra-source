@@ -60,6 +60,14 @@ function generateToken() { return crypto.randomBytes(32).toString("hex"); }
 
 async function getSession(req) { return await sessionGet(req.header("x-session-token")); }
 
+async function isIpBanned(ip) {
+  if (!ip) return false;
+  try {
+    const result = await store.get("system", "ipban_" + ip, true);
+    return !!(result && result.value);
+  } catch (e) { return false; }
+}
+
 function isAccountKey(key) { return key.startsWith("account:"); }
 
 // ── Challenge endpoint ────────────────────────────────────────────────────────
@@ -75,11 +83,15 @@ router.get("/challenge", async (req, res) => {
 router.post("/register", async (req, res) => {
   const { username, passwordHash, account } = req.body;
   if (!username || !passwordHash || !account) return res.status(400).json({ error: "missing fields" });
-  
+
+  const clientIp = req.ip;
+  if (await isIpBanned(clientIp)) return res.status(403).json({ error: "ip_banned" });
+
   const key = "account:" + username.toLowerCase();
   const existing = await store.get("system", key, true);
   if (existing) return res.status(409).json({ error: "username taken" });
-  
+
+  account.lastKnownIp = clientIp;
   await store.set("system", key, JSON.stringify(account), true);
   const token = generateToken();
   await sessionSet(token, username.toLowerCase(), false);
@@ -95,7 +107,10 @@ router.get("/check-username/:username", async (req, res) => {
 router.post("/login", async (req, res) => {
   const { username, challengeResponse, nonce } = req.body;
   if (!username || !challengeResponse || !nonce) return res.status(400).json({ error: "missing fields" });
-  
+
+  const clientIp = req.ip;
+  if (await isIpBanned(clientIp)) return res.status(403).json({ error: "ip_banned" });
+
   const validChallenge = await challengeConsume(nonce);
   if (!validChallenge) return res.status(401).json({ error: "invalid or expired challenge" });
   
@@ -106,8 +121,11 @@ router.post("/login", async (req, res) => {
     const acc = JSON.parse(result.value);
     const expected = crypto.createHash("sha256").update(acc.passwordHash + nonce).digest("hex");
     if (challengeResponse !== expected) return res.status(401).json({ error: "invalid credentials" });
-    if (acc.isBanned) return res.status(403).json({ error: "banned" });
-    
+    if (acc.isBanned) return res.status(403).json({ error: acc.bannedViaIp ? "ip_banned" : "banned" });
+
+    acc.lastKnownIp = clientIp;
+    await store.set("system", "account:" + username.toLowerCase(), JSON.stringify(acc), true);
+
     const token = generateToken();
     await sessionSet(token, username.toLowerCase(), false);
     res.json({ ok: true, token, account: acc });
@@ -144,7 +162,12 @@ router.get("/session", async (req, res) => {
   const session = await getSession(req);
   if (!session) return res.status(401).json({ error: "no session" });
   if (session.isAdmin) return res.json({ ok: true, account: null, isAdmin: true });
-  
+
+  if (await isIpBanned(req.ip)) {
+    await sessionDelete(req.header("x-session-token"));
+    return res.status(403).json({ error: "ip_banned" });
+  }
+
   const result = await store.get("system", "account:" + session.username, true);
   if (!result || !result.value) return res.status(401).json({ error: "account not found" });
   
@@ -152,7 +175,7 @@ router.get("/session", async (req, res) => {
     const acc = JSON.parse(result.value);
     if (acc.isBanned) { 
         await sessionDelete(req.header("x-session-token")); 
-        return res.status(403).json({ error: "banned" }); 
+        return res.status(403).json({ error: acc.bannedViaIp ? "ip_banned" : "banned" }); 
     }
     res.json({ ok: true, account: acc });
   } catch (e) { res.status(500).json({ error: "server error" }); }
@@ -359,6 +382,46 @@ router.get("/device-bans", async (req, res) => {
   if (!session || !session.isAdmin) return res.status(403).json({ error: "forbidden" });
   try {
     const rawList = await store.list("system", "ban_", true);
+    const bans = rawList.map(item => JSON.parse(item.value));
+    res.json({ bans });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── IP ban endpoints ──────────────────────────────────────────────────────────
+// Separate from the device-fingerprint ban system above -- an IP ban blocks
+// a network address regardless of which account or device is used from it,
+// which is coarser than fingerprinting (easy to change via VPN/mobile data,
+// and can catch other people sharing the same network) but useful as an
+// extra layer alongside it.
+
+router.post("/ip-ban", async (req, res) => {
+  const session = await getSession(req);
+  if (!session || !session.isAdmin) return res.status(403).json({ error: "forbidden" });
+  const { ip, username } = req.body || {};
+  if (!ip) return res.status(400).json({ error: "missing ip" });
+  try {
+    const data = JSON.stringify({ ip, username: username || null, banned_at: Date.now() });
+    await store.set("system", "ipban_" + ip, data, true);
+    res.json({ banned: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+router.post("/ip-unban", async (req, res) => {
+  const session = await getSession(req);
+  if (!session || !session.isAdmin) return res.status(403).json({ error: "forbidden" });
+  const { ip } = req.body || {};
+  if (!ip) return res.status(400).json({ error: "missing ip" });
+  try {
+    await store.del("system", "ipban_" + ip, true);
+    res.json({ unbanned: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+router.get("/ip-bans", async (req, res) => {
+  const session = await getSession(req);
+  if (!session || !session.isAdmin) return res.status(403).json({ error: "forbidden" });
+  try {
+    const rawList = await store.list("system", "ipban_", true);
     const bans = rawList.map(item => JSON.parse(item.value));
     res.json({ bans });
   } catch (e) { res.status(500).json({ error: e.message }); }
