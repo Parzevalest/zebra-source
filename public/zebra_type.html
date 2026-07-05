@@ -4956,6 +4956,16 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
       };
 
       ws.onmessage = function(ev){
+        // If this connection is no longer the active one (e.g. a new race
+        // was started before this one's socket was ever explicitly closed),
+        // ignore anything it sends from here on. Without this, a stale
+        // connection left open in the background could still deliver a
+        // late opponent_finished/race_complete message that mutates the
+        // CURRENT race's shared raceState object -- these handlers
+        // reference that variable live, not a frozen snapshot from when
+        // the connection was created, so a stale message would otherwise
+        // silently corrupt an unrelated, currently-active race.
+        if(ws !== raceSocket) return;
         var msg;
         try{ msg = JSON.parse(ev.data); }catch(e){ return; }
         if(msg && msg.type && handlers[msg.type]) handlers[msg.type](msg);
@@ -4975,7 +4985,10 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
           clearTimeout(connectTimeout);
           reject(new Error("Connection closed before joining"));
         }
-        if(handlers.__onclose) handlers.__onclose();
+        // Same reasoning as onmessage above -- a stale connection closing
+        // later shouldn't be able to trigger "lost connection" UI for
+        // whatever current, unrelated race the player has since moved on to.
+        if(ws === raceSocket && handlers.__onclose) handlers.__onclose();
       };
     });
   }
@@ -5702,7 +5715,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     app.innerHTML =
       brandHeader() +
       '<div class="panel" style="max-width:440px;margin:60px auto;text-align:center;">' +
-        '<div class="garage-title" style="color:var(--text);font-size:20px;margin-bottom:14px;">You are about to be molested.</div>' +
+        '<div class="garage-title" style="color:var(--text);font-size:20px;margin-bottom:14px;">You are about to be logged in.</div>' +
         '<div style="color:var(--muted);font-size:15px;margin-bottom:22px;">Do you consent?</div>' +
         '<label style="display:flex;align-items:center;justify-content:center;gap:10px;margin-bottom:24px;cursor:pointer;font-size:15px;color:var(--text);">' +
           '<input type="checkbox" id="loginConsentYes" style="width:20px;height:20px;cursor:pointer;" />' +
@@ -7696,6 +7709,12 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
   // for a real player, that's reserved for the admin Test Race tool and
   // the one-time calibration race.
   async function startMultiplayerRace(){
+    // Belt-and-suspenders alongside the onmessage/onclose guards above --
+    // if a previous race's connection was somehow never cleanly closed
+    // (e.g. the player abandoned it mid-connection), don't leave it
+    // lingering in the background. Starting a new race is exactly the
+    // moment we know for certain any earlier one is no longer wanted.
+    closeRaceSocket();
     var acc = state.user;
     var equippedCar = resolveCarById(acc.equippedCarId) || STARTER_CAR;
     var carId = equippedCar.id || "starter_car";
