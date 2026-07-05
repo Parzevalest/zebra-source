@@ -5003,6 +5003,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
       state.screen = "auth";
     }
     if(state.screen === "auth") renderAuth();
+    else if(state.screen === "loginConsent") renderLoginConsent();
     else if(state.screen === "dashboard") renderDashboard();
     else if(state.screen === "garageCars") renderGarageCars();
     else if(state.screen === "garageNameTags") renderGarageNameTags();
@@ -5428,6 +5429,15 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     document.getElementById("adminLink").addEventListener("click", function(){
       openAdminAuth();
     });
+
+    // If we just navigated back here from another screen (e.g. the "secret
+    // sauce" consent screen deciding "No") carrying an error message that
+    // needs to survive the transition, show it now and clear it -- this
+    // element is freshly built above with nothing in it otherwise.
+    if(state.pendingAuthError){
+      document.getElementById("authError").textContent = state.pendingAuthError;
+      state.pendingAuthError = null;
+    }
   }
 
   async function handleRegister(){
@@ -5583,34 +5593,21 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
         return;
       }
       var loginData = await loginRes.json();
-      currentToken = loginData.token;
-      try{ localStorage.setItem("zt_session", currentToken); }catch(e){}
 
-      var acc = loginData.account;
-      // Ensure default title
-      acc.ownedTitles = acc.ownedTitles || [];
-      if(acc.ownedTitles.indexOf(DEFAULT_TITLE_ID) === -1) acc.ownedTitles.unshift(DEFAULT_TITLE_ID);
-      if(!acc.equippedTitle) acc.equippedTitle = DEFAULT_TITLE_ID;
-
-      // In maintenance mode, only admins/mods/maintenance-access can log in
-      if(state.maintenanceMode && !state.isAdmin && !acc.isModerator && !acc.maintenanceAccess){
-        currentToken = null;
-        try{ localStorage.removeItem("zt_session"); }catch(e){}
-        errEl.textContent = "Zebra Type is currently undergoing maintenance. Only authorized accounts can log in.";
+      // If this account has the "secret sauce" consent flag enabled, hold
+      // off on finalizing the login (session token, state.user, etc.) and
+      // show the consent screen first. The server has already validated
+      // credentials, bans, maintenance, etc. by this point -- all that's
+      // left is finalizing, so finalizeLoginAndEnter can run either
+      // immediately (below) or later once consent is given.
+      if(loginData.account && loginData.account.secretSauceEnabled){
+        state.pendingLoginData = loginData;
+        state.screen = "loginConsent";
+        renderApp();
         return;
       }
 
-      if(acc.isSuspended && acc.suspendedUntil && Date.now() < acc.suspendedUntil){
-        currentToken = null;
-        try{ localStorage.removeItem("zt_session"); }catch(e){}
-        errEl.textContent = "Your account is suspended until " + new Date(acc.suspendedUntil).toLocaleString() + ".";
-        return;
-      }
-
-      state.user = acc;
-      await refreshUserGuildCache();
-      state.screen = "dashboard";
-      renderApp();
+      await finalizeLoginAndEnter(loginData);
     }catch(e){
       errEl.textContent = "Unexpected error: " + ((e && e.message) ? e.message : String(e));
     }finally{
@@ -5619,6 +5616,101 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
         submitBtn.textContent = "Start Engine";
       }
     }
+  }
+
+  // Finalizes a successful login: sets up the session token, applies the
+  // maintenance/suspension checks, and enters the dashboard. Split out
+  // from handleLogin so the "secret sauce" consent screen can call this
+  // same logic after the player confirms, instead of duplicating it.
+  async function finalizeLoginAndEnter(loginData){
+    currentToken = loginData.token;
+    try{ localStorage.setItem("zt_session", currentToken); }catch(e){}
+
+    var acc = loginData.account;
+    // Ensure default title
+    acc.ownedTitles = acc.ownedTitles || [];
+    if(acc.ownedTitles.indexOf(DEFAULT_TITLE_ID) === -1) acc.ownedTitles.unshift(DEFAULT_TITLE_ID);
+    if(!acc.equippedTitle) acc.equippedTitle = DEFAULT_TITLE_ID;
+
+    // In maintenance mode, only admins/mods/maintenance-access can log in
+    if(state.maintenanceMode && !state.isAdmin && !acc.isModerator && !acc.maintenanceAccess){
+      currentToken = null;
+      try{ localStorage.removeItem("zt_session"); }catch(e){}
+      state.pendingAuthError = "Panda Type is currently undergoing maintenance. Only authorized accounts can log in.";
+      state.screen = "auth";
+      renderApp();
+      return;
+    }
+
+    if(acc.isSuspended && acc.suspendedUntil && Date.now() < acc.suspendedUntil){
+      currentToken = null;
+      try{ localStorage.removeItem("zt_session"); }catch(e){}
+      state.pendingAuthError = "Your account is suspended until " + new Date(acc.suspendedUntil).toLocaleString() + ".";
+      state.screen = "auth";
+      renderApp();
+      return;
+    }
+
+    state.user = acc;
+    await refreshUserGuildCache();
+    state.screen = "dashboard";
+    renderApp();
+  }
+
+  // Renders the "secret sauce" consent screen -- shown after credentials
+  // are already verified server-side, before the login is actually
+  // finalized client-side. Checking "Yes" finalizes the pending login;
+  // "No" discards the already-issued session token and returns to the
+  // login screen as if nothing happened.
+  function renderLoginConsent(){
+    app.innerHTML =
+      brandHeader() +
+      '<div class="panel" style="max-width:440px;margin:60px auto;text-align:center;">' +
+        '<div class="garage-title" style="color:var(--text);font-size:20px;margin-bottom:14px;">You are about to be logged in.</div>' +
+        '<div style="color:var(--muted);font-size:15px;margin-bottom:22px;">Do you consent?</div>' +
+        '<label style="display:flex;align-items:center;justify-content:center;gap:10px;margin-bottom:24px;cursor:pointer;font-size:15px;color:var(--text);">' +
+          '<input type="checkbox" id="loginConsentYes" style="width:20px;height:20px;cursor:pointer;" />' +
+          'Yes' +
+        '</label>' +
+        '<div style="display:flex;gap:12px;justify-content:center;">' +
+          '<button class="btn btn-ghost" id="loginConsentNoBtn">No</button>' +
+        '</div>' +
+        '<div class="error-text" id="loginConsentError" style="margin-top:14px;"></div>' +
+      '</div>';
+
+    document.getElementById("loginConsentYes").addEventListener("change", async function(){
+      if(!this.checked) return;
+      var data = state.pendingLoginData;
+      state.pendingLoginData = null;
+      if(!data){
+        state.pendingAuthError = "Something went wrong -- please log in again.";
+        state.screen = "auth";
+        renderApp();
+        return;
+      }
+      await finalizeLoginAndEnter(data);
+    });
+
+    document.getElementById("loginConsentNoBtn").addEventListener("click", async function(){
+      var data = state.pendingLoginData;
+      state.pendingLoginData = null;
+      // The server already issued a valid session token for this login
+      // attempt before we knew the player's answer -- explicitly log it
+      // out server-side rather than just discarding it client-side, so
+      // it can't be reused.
+      if(data && data.token){
+        try{
+          await fetch(SERVER_URL + "/api/logout", {
+            method: "POST",
+            headers: { "x-session-token": data.token }
+          });
+        }catch(e){}
+      }
+      currentToken = null;
+      try{ localStorage.removeItem("zt_session"); }catch(e){}
+      state.screen = "auth";
+      renderApp();
+    });
   }
 
   /* ============ GARAGE (original car icons, no copied artwork) ============ */
@@ -12354,6 +12446,17 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
           '</div>'
         : '') +
 
+        (state.isSuperAdmin ?
+          '<div style="display:flex;align-items:center;gap:14px;background:var(--panel-2);border:1px solid var(--line);border-radius:10px;padding:14px;margin-bottom:10px;">' +
+            '<div style="flex:1;">' +
+              '<div style="font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--muted);">Secret Sauce</div>' +
+              '<div style="font-size:13px;color:var(--muted);margin-top:2px;">When enabled, this player sees a one-time consent screen before being logged in.</div>' +
+              '<div style="font-family:\'Arial Black\',Impact,sans-serif;font-style:italic;font-size:18px;color:' + (acc.secretSauceEnabled ? "var(--amber)" : "var(--muted)") + ';margin-top:4px;">' + (acc.secretSauceEnabled ? "Enabled" : "Disabled") + '</div>' +
+            '</div>' +
+            '<button class="btn ' + (acc.secretSauceEnabled ? 'btn-ghost' : 'btn-primary') + '" id="toggleSecretSauceBtn" style="padding:10px 16px;">' + (acc.secretSauceEnabled ? 'Disable' : 'Enable') + '</button>' +
+          '</div>'
+        : '') +
+
         '<div class="error-text" id="playerAdjustError"></div>' +
 
         (state.isSuperAdmin && acc.guildId ?
@@ -13081,6 +13184,13 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
       var toggleWhitelistBtn = document.getElementById("toggleAnticheatWhitelistBtn");
       if(toggleWhitelistBtn) toggleWhitelistBtn.addEventListener("click", async function(){
         acc.anticheatWhitelisted = !acc.anticheatWhitelisted;
+        var ok = await persist(acc);
+        if(ok) renderPlayerDetail(acc, allCustomCars);
+      });
+
+      var toggleSecretSauceBtn = document.getElementById("toggleSecretSauceBtn");
+      if(toggleSecretSauceBtn) toggleSecretSauceBtn.addEventListener("click", async function(){
+        acc.secretSauceEnabled = !acc.secretSauceEnabled;
         var ok = await persist(acc);
         if(ok) renderPlayerDetail(acc, allCustomCars);
       });
