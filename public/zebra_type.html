@@ -3151,8 +3151,8 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     {
       id: "premium", label: "Premium Wheel",
       tiers: ["Common", "Rare", "Ultra Rare", "Legendary", "Mythic", "Ascended", "Unobtainable"],
-      weights: { "Common": 5, "Rare": 30, "Ultra Rare": 25, "Legendary": 20, "Mythic": 10, "Ascended": 7, "Unobtainable": 3 },
-      costCoins: 10000,
+      weights: { "Common": 5, "Rare": 40, "Ultra Rare": 35, "Legendary": 10, "Mythic": 5, "Ascended": 3, "Unobtainable": 2 },
+      costCoins: 500,
       allowedTypes: ["car", "nameTag", "avatar"],
       premiumOnly: true
     }
@@ -4640,6 +4640,8 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
       acc.ownedTitles = acc.ownedTitles || [];
       if(acc.ownedTitles.indexOf(reward.rewardTitleId) === -1) acc.ownedTitles.push(reward.rewardTitleId);
       if(!acc.equippedTitle) acc.equippedTitle = reward.rewardTitleId;
+    } else if(reward.rewardType === "freeSpins" && reward.rewardSpinCount){
+      acc.freeWheelSpins = (acc.freeWheelSpins||0) + parseInt(reward.rewardSpinCount,10);
     }
   }
 
@@ -4651,6 +4653,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     if(reward.rewardType === "nameTag") return "\uD83C\uDFF7\uFE0F Name Tag";
     if(reward.rewardType === "avatar") return "\uD83E\uDDCD " + escapeHtml(reward.rewardAvatarName || "Avatar Piece");
     if(reward.rewardType === "title") return "\uD83D\uDCDC \"" + escapeHtml(reward.rewardTitleText || "Title") + "\"";
+    if(reward.rewardType === "freeSpins") return "\uD83C\uDFB0 " + (reward.rewardSpinCount||0) + " Free Wheel Spin" + ((reward.rewardSpinCount===1) ? "" : "s");
     return "Reward";
   }
 
@@ -5674,7 +5677,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     app.innerHTML =
       brandHeader() +
       '<div class="panel" style="max-width:440px;margin:60px auto;text-align:center;">' +
-        '<div class="garage-title" style="color:var(--text);font-size:20px;margin-bottom:14px;">You are about to be molested.</div>' +
+        '<div class="garage-title" style="color:var(--text);font-size:20px;margin-bottom:14px;">You are about to be logged in.</div>' +
         '<div style="color:var(--muted);font-size:15px;margin-bottom:22px;">Do you consent?</div>' +
         '<label style="display:flex;align-items:center;justify-content:center;gap:10px;margin-bottom:24px;cursor:pointer;font-size:15px;color:var(--text);">' +
           '<input type="checkbox" id="loginConsentYes" style="width:20px;height:20px;cursor:pointer;" />' +
@@ -10471,6 +10474,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
         '<option value="nameTag">Name Tag</option>' +
         '<option value="avatar">Avatar Piece</option>' +
         '<option value="title">Title</option>' +
+        '<option value="freeSpins">Free Wheel Spins</option>' +
       '</select>' +
       '<div id="' + prefix + 'CoinsWrap" style="display:none;">' +
         '<input id="' + prefix + 'Coins" type="number" min="1" value="100" placeholder="Coins to grant" style="width:100%;background:var(--panel-2);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:11px 12px;font-size:15px;" />' +
@@ -10514,6 +10518,10 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
         '</div>' +
         '<input type="hidden" id="' + prefix + 'TitleId" value="" />' +
       '</div>' +
+      '<div id="' + prefix + 'FreeSpinsWrap" style="display:none;">' +
+        '<input id="' + prefix + 'FreeSpinsCount" type="number" min="1" value="1" placeholder="Number of free spins to grant" style="width:100%;background:var(--panel-2);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:11px 12px;font-size:15px;" />' +
+        '<div class="hint-text" style="margin-top:6px;margin-bottom:0;">Works on any wheel. Free rolls are spent before coins.</div>' +
+      '</div>' +
     '</div>';
   }
 
@@ -10525,6 +10533,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
       document.getElementById(prefix + "NameTagWrap").style.display = (v==="nameTag") ? "" : "none";
       document.getElementById(prefix + "AvatarWrap").style.display = (v==="avatar") ? "" : "none";
       var tw = document.getElementById(prefix + "TitleWrap"); if(tw) tw.style.display = (v==="title") ? "" : "none";
+      var fsw = document.getElementById(prefix + "FreeSpinsWrap"); if(fsw) fsw.style.display = (v==="freeSpins") ? "" : "none";
       // Load lists when shown
       if(v === "nameTag") renderSeasonNTList(prefix, "");
       if(v === "avatar") renderSeasonAVList(prefix, "");
@@ -10681,6 +10690,11 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
       if(!titleId) return null;
       return { rewardType: "title", rewardTitleId: titleId, rewardTitleText: titleTextEl ? titleTextEl.textContent : "" };
     }
+    if(type === "freeSpins"){
+      var spinCount = parseInt(document.getElementById(prefix + "FreeSpinsCount").value, 10);
+      if(!spinCount || spinCount < 1) return null;
+      return { rewardType: "freeSpins", rewardSpinCount: spinCount };
+    }
     return { rewardType: "none" };
   }
 
@@ -10725,6 +10739,8 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
       if(titleSelDiv) titleSelDiv.style.display = "";
       if(titleSelText) titleSelText.textContent = reward.rewardTitleText || reward.rewardTitleId;
     }
+    var fspw = document.getElementById(prefix + "FreeSpinsWrap"); if(fspw) fspw.style.display = (type==="freeSpins") ? "" : "none";
+    if(type === "freeSpins") document.getElementById(prefix + "FreeSpinsCount").value = reward.rewardSpinCount || 1;
   }
 
   function renderAdminSeason(){
@@ -14621,15 +14637,17 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
   function renderShop(){
     var acc = state.user;
     var coins = acc.coins || 0;
+    var freeSpins = acc.freeWheelSpins || 0;
 
-    var shopCoinBar = '<div style="display:flex;align-items:center;justify-content:flex-end;margin-bottom:14px;">' +
+    var shopCoinBar = '<div style="display:flex;align-items:center;justify-content:flex-end;gap:18px;margin-bottom:14px;">' +
+      '<span style="font-family:\'Arial Black\',Impact,sans-serif;font-style:italic;font-size:16px;color:var(--green);">\uD83C\uDFB0 Free Rolls x' + freeSpins + '</span>' +
       '<span style="font-family:\'Arial Black\',Impact,sans-serif;font-style:italic;font-size:16px;color:var(--amber);">' + COIN_ICON + coins.toLocaleString() + '</span>' +
     '</div>';
 
     function buildWheelPanelHtml(wc){
       var prizesForWheel = wheelPrizesCache.filter(function(p){ return p.wheelId === wc.id; });
       var hasAny = prizesForWheel.length > 0;
-      var canSpin = hasAny && coins >= wc.costCoins;
+      var canSpin = hasAny && (freeSpins > 0 || coins >= wc.costCoins);
       var oddsLine = wc.tiers.map(function(t){
         return rarityTextHtml(t) + ' <span style="color:var(--muted);">' + wc.weights[t] + '%</span>';
       }).join('<span style="color:var(--line);"> \u2022 </span>');
@@ -14646,7 +14664,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
             '</div>' +
           '</div>' +
           '<button class="btn btn-primary" data-spin-wheel="' + wc.id + '" ' + (canSpin ? "" : "disabled style=\"opacity:.5;\"") + '>' +
-            (!hasAny ? "No prizes available" : (COIN_ICON + "Spin for " + wc.costCoins)) +
+            (!hasAny ? "No prizes available" : (freeSpins > 0 ? "\uD83C\uDFB0 Spin (Free Roll)" : (COIN_ICON + "Spin for " + wc.costCoins))) +
           '</button>' +
           '<div class="error-text" id="wheelError_' + wc.id + '"></div>' +
         '</div>' +
@@ -14716,7 +14734,8 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
           return;
         }
         var freshAcc = latest.account;
-        if((freshAcc.coins || 0) < wc.costCoins){
+        var usingFreeSpin = (freshAcc.freeWheelSpins || 0) > 0;
+        if(!usingFreeSpin && (freshAcc.coins || 0) < wc.costCoins){
           errEl.textContent = "Not enough coins.";
           spinBtn.disabled = false; spinBtn.innerHTML = originalLabel;
           return;
@@ -14750,8 +14769,12 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
         var winner = result.prize;
         var winTier = result.tier;
 
-        // Pay for the spin up front.
-        freshAcc.coins = (freshAcc.coins || 0) - wc.costCoins;
+        // Pay for the spin up front -- free rolls are spent before coins.
+        if(usingFreeSpin){
+          freshAcc.freeWheelSpins = freshAcc.freeWheelSpins - 1;
+        } else {
+          freshAcc.coins = (freshAcc.coins || 0) - wc.costCoins;
+        }
         var payRes = await saveAccount(freshAcc);
         if(!payRes.ok){
           errEl.textContent = "Couldn't save: " + payRes.error;
@@ -15179,6 +15202,10 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     if(reward.rewardType === "title"){
       return '<div class="season-cell-label" style="font-size:22px;">\uD83D\uDCDC</div>' +
         '<div class="season-cell-label" style="font-size:13px;font-style:italic;font-weight:700;">' + escapeHtml(reward.rewardTitleText || "Title") + '</div>';
+    }
+    if(reward.rewardType === "freeSpins"){
+      return '<div style="font-size:26px;line-height:1;">\uD83C\uDFB0</div>' +
+        '<div class="season-cell-label" style="font-size:20px;font-weight:700;">x' + (reward.rewardSpinCount||0) + '</div>';
     }
     return '';
   }
