@@ -5437,7 +5437,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     errEl.textContent = "";
 
     if(state.maintenanceMode && !state.isAdmin){
-      errEl.textContent = "Panda Type is currently undergoing maintenance. Only authorized accounts can log in.";
+      errEl.textContent = "Zebra Type is currently undergoing maintenance. Only authorized accounts can log in.";
       return;
     }
 
@@ -5468,6 +5468,8 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
       }catch(e){ /* if check fails, let save attempt handle it */ }
 
       var passwordHash = await hashPassword(password);
+      var fp = null;
+      try{ fp = await DeviceFingerprint.get(); }catch(e){ /* fingerprinting failed -- proceed without it, server just won't have a hash to check */ }
       var acc = {
         username: username,
         passwordHash: passwordHash,
@@ -5504,10 +5506,17 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
       var regRes = await fetch(SERVER_URL + "/api/register", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username: acc.username.toLowerCase(), passwordHash: acc.passwordHash, account: acc })
+        body: JSON.stringify({ username: acc.username.toLowerCase(), passwordHash: acc.passwordHash, account: acc, fingerprintHash: fp ? fp.hash : null })
       });
       if(regRes.status === 409){
         errEl.textContent = "That username is already taken.";
+        return;
+      }
+      if(regRes.status === 403){
+        var regBanData = await regRes.json().catch(function(){ return {}; });
+        errEl.textContent = regBanData.error === "ip_banned" ? "Your IP address has been banned."
+          : regBanData.error === "device_banned" ? "This device has been banned."
+          : "You are not able to create an account.";
         return;
       }
       if(!regRes.ok){
@@ -5517,6 +5526,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
       var regData = await regRes.json();
       currentToken = regData.token;
       try{ localStorage.setItem("zt_session", currentToken); }catch(e){}
+      if(fp) acc.deviceFingerprint = fp.hash;
 
       state.user = acc;
       state.userGuild = null;
@@ -5550,10 +5560,12 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
       var hash = await hashPassword(password);
       var nonce = await getLoginChallenge();
       var response = await challengeHash(hash, nonce);
+      var loginFp = null;
+      try{ loginFp = await DeviceFingerprint.get(); }catch(e){ /* fingerprinting failed -- proceed without it */ }
       var loginRes = await fetch(SERVER_URL + "/api/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username: username.toLowerCase(), challengeResponse: response, nonce: nonce })
+        body: JSON.stringify({ username: username.toLowerCase(), challengeResponse: response, nonce: nonce, fingerprintHash: loginFp ? loginFp.hash : null })
       });
       if(loginRes.status === 401){
         errEl.textContent = "Wrong username or password.";
@@ -5561,7 +5573,9 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
       }
       if(loginRes.status === 403){
         var banData = await loginRes.json().catch(function(){ return {}; });
-        errEl.textContent = banData.error === "ip_banned" ? "Your IP address has been banned." : "This account has been banned.";
+        errEl.textContent = banData.error === "ip_banned" ? "Your IP address has been banned."
+          : banData.error === "device_banned" ? "This device has been banned."
+          : "This account has been banned.";
         return;
       }
       if(!loginRes.ok){
@@ -5582,7 +5596,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
       if(state.maintenanceMode && !state.isAdmin && !acc.isModerator && !acc.maintenanceAccess){
         currentToken = null;
         try{ localStorage.removeItem("zt_session"); }catch(e){}
-        errEl.textContent = "Panda Type is currently undergoing maintenance. Only authorized accounts can log in.";
+        errEl.textContent = "Zebra Type is currently undergoing maintenance. Only authorized accounts can log in.";
         return;
       }
 
@@ -13153,7 +13167,10 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
             acc.isSuspended = false;
             acc.suspendedUntil = null;
             var ok = await persist(acc);
-            if(ok) renderPlayerDetail(acc, allCustomCars);
+            if(ok){
+              if(d.cascadedCount) alert("IP banned. " + d.cascadedCount + " other account(s) sharing that IP were also banned.");
+              renderPlayerDetail(acc, allCustomCars);
+            }
           }
         }catch(e){}
         ipBanBtn.disabled = false;
