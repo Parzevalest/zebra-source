@@ -39,7 +39,7 @@
   body{
     /* Site background image — tiled panda-spot texture. */
     background-color:#0A0B0D;
-    background-image:url('background');
+    background-image:url('/background');
     background-repeat:repeat;
     background-size:1650px auto;
     background-attachment:fixed;
@@ -5059,7 +5059,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
       ? '<button id="backToAdminPill" style="position:fixed;top:14px;right:14px;z-index:9999;background:var(--amber);color:#0A0B0D;border:none;border-radius:999px;padding:8px 16px;font-weight:700;font-size:13px;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,0.3);">\u2699\uFE0F Back to Admin</button>'
       : '';
     return '<div class="brand">' +
-      '<div><img class="site-logo" src="logo" alt="Panda Type"></div>' +
+      '<div><img class="site-logo" src="/logo" alt="Panda Type"></div>' +
       '</div>' + adminBackPill;
   }
 
@@ -5666,7 +5666,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     app.innerHTML =
       brandHeader() +
       '<div class="panel" style="max-width:440px;margin:60px auto;text-align:center;">' +
-        '<div class="garage-title" style="color:var(--text);font-size:20px;margin-bottom:14px;">You are about to be molested.</div>' +
+        '<div class="garage-title" style="color:var(--text);font-size:20px;margin-bottom:14px;">You are about to be logged in.</div>' +
         '<div style="color:var(--muted);font-size:15px;margin-bottom:22px;">Do you consent?</div>' +
         '<label style="display:flex;align-items:center;justify-content:center;gap:10px;margin-bottom:24px;cursor:pointer;font-size:15px;color:var(--text);">' +
           '<input type="checkbox" id="loginConsentYes" style="width:20px;height:20px;cursor:pointer;" />' +
