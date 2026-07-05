@@ -13168,7 +13168,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
             acc.suspendedUntil = null;
             var ok = await persist(acc);
             if(ok){
-              if(d.cascadedCount) alert("IP banned. " + d.cascadedCount + " other account(s) sharing that IP were also banned.");
+              if(d.cascadedUsernames && d.cascadedUsernames.length) alert("IP banned. Also banned (same IP): " + d.cascadedUsernames.join(", "));
               renderPlayerDetail(acc, allCustomCars);
             }
           }
