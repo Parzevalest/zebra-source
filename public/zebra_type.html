@@ -5560,7 +5560,8 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
         return;
       }
       if(loginRes.status === 403){
-        errEl.textContent = "This account has been banned.";
+        var banData = await loginRes.json().catch(function(){ return {}; });
+        errEl.textContent = banData.error === "ip_banned" ? "Your IP address has been banned." : "This account has been banned.";
         return;
       }
       if(!loginRes.ok){
@@ -12314,19 +12315,23 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
         : '') +
 
         (state.isSuperAdmin ?
-          '<div style="display:flex;align-items:center;gap:14px;background:var(--panel-2);border:1px solid var(--line);border-radius:10px;padding:14px;margin-bottom:10px;">' +
-            '<div style="flex:1;">' +
+          '<div style="display:flex;align-items:center;gap:14px;background:var(--panel-2);border:1px solid var(--line);border-radius:10px;padding:14px;margin-bottom:10px;flex-wrap:wrap;">' +
+            '<div style="flex:1;min-width:160px;">' +
               '<div style="font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--muted);">Account Status</div>' +
               '<div style="font-family:\'Arial Black\',Impact,sans-serif;font-style:italic;font-size:18px;color:' +
                 (acc.isBanned ? 'var(--red)' : acc.isSuspended ? 'var(--amber)' : 'var(--green)') + ';">' +
-                (acc.isBanned ? 'Banned' : acc.isSuspended ? ('Suspended' + (acc.suspendedUntil ? ' \u00b7 until ' + new Date(acc.suspendedUntil).toLocaleDateString() : '')) : 'Active') +
+                (acc.isBanned ? (acc.bannedViaIp ? 'IP Banned' : 'Banned') : acc.isSuspended ? ('Suspended' + (acc.suspendedUntil ? ' \u00b7 until ' + new Date(acc.suspendedUntil).toLocaleDateString() : '')) : 'Active') +
               '</div>' +
+              (acc.lastKnownIp ? '<div style="font-size:11px;color:var(--muted);margin-top:2px;">Last known IP: <code style="color:var(--text);">' + escapeHtml(acc.lastKnownIp) + '</code></div>' : '') +
             '</div>' +
             (!acc.isBanned && !acc.isSuspended ?
               '<input type="number" id="suspendDays" value="7" min="1" style="width:60px;background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:8px;font-size:14px;" />' +
               '<span style="color:var(--muted);font-size:13px;">days</span>' +
               '<button class="btn" id="suspendBtn" style="padding:10px 16px;background:#e67e22;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:700;">Suspend</button>' +
-              '<button class="btn" id="banBtn" style="padding:10px 16px;background:var(--red);color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:700;">Ban</button>'
+              '<button class="btn" id="banBtn" style="padding:10px 16px;background:var(--red);color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:700;">Ban</button>' +
+              (acc.lastKnownIp
+                ? '<button class="btn" id="ipBanBtn" style="padding:10px 16px;background:#8B0000;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:700;">IP Ban</button>'
+                : '<button class="btn" disabled title="No IP on record yet -- this player needs to log in at least once after this update." style="padding:10px 16px;background:var(--panel);color:var(--muted);border:1px solid var(--line);border-radius:8px;cursor:not-allowed;font-weight:700;">IP Ban</button>')
             : acc.isSuspended ?
               '<button class="btn btn-primary" id="unsuspendBtn" style="padding:10px 16px;">Unsuspend</button>'
             :
@@ -13124,10 +13129,34 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
       if(banBtn) banBtn.addEventListener("click", async function(){
         if(!confirm("Ban " + acc.username + "? They will not be able to log in.")) return;
         acc.isBanned = true;
+        acc.bannedViaIp = false;
         acc.isSuspended = false;
         acc.suspendedUntil = null;
         var ok = await persist(acc);
         if(ok) renderPlayerDetail(acc, allCustomCars);
+      });
+      var ipBanBtn = document.getElementById("ipBanBtn");
+      if(ipBanBtn) ipBanBtn.addEventListener("click", async function(){
+        if(!acc.lastKnownIp) return;
+        if(!confirm("IP ban " + acc.username + " (" + acc.lastKnownIp + ")? Anyone logging in from that IP will be blocked, not just this account.")) return;
+        ipBanBtn.disabled = true;
+        try{
+          var r = await fetch(SERVER_URL + "/api/ip-ban", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "x-session-token": currentToken||"" },
+            body: JSON.stringify({ ip: acc.lastKnownIp, username: acc.username })
+          });
+          var d = await r.json();
+          if(d.banned){
+            acc.isBanned = true;
+            acc.bannedViaIp = true;
+            acc.isSuspended = false;
+            acc.suspendedUntil = null;
+            var ok = await persist(acc);
+            if(ok) renderPlayerDetail(acc, allCustomCars);
+          }
+        }catch(e){}
+        ipBanBtn.disabled = false;
       });
       var unsuspendBtn = document.getElementById("unsuspendBtn");
       if(unsuspendBtn) unsuspendBtn.addEventListener("click", async function(){
@@ -13138,7 +13167,18 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
       });
       var unbanBtn = document.getElementById("unbanBtn");
       if(unbanBtn) unbanBtn.addEventListener("click", async function(){
+        var wasBannedViaIp = acc.bannedViaIp;
+        if(wasBannedViaIp && acc.lastKnownIp){
+          try{
+            await fetch(SERVER_URL + "/api/ip-unban", {
+              method: "POST",
+              headers: { "Content-Type": "application/json", "x-session-token": currentToken||"" },
+              body: JSON.stringify({ ip: acc.lastKnownIp })
+            });
+          }catch(e){}
+        }
         acc.isBanned = false;
+        acc.bannedViaIp = false;
         var ok = await persist(acc);
         if(ok) renderPlayerDetail(acc, allCustomCars);
       });
