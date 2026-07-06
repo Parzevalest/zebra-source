@@ -3151,7 +3151,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     {
       id: "premium", label: "Premium Wheel",
       tiers: ["Common", "Rare", "Ultra Rare", "Legendary", "Mythic", "Ascended", "Unobtainable"],
-      weights: { "Common": 5, "Rare": 35, "Ultra Rare": 30, "Legendary": 15, "Mythic": 9, "Ascended": 5, "Unobtainable": 1 },
+      weights: { "Common": 5, "Rare": 40, "Ultra Rare": 35, "Legendary": 10, "Mythic": 5, "Ascended": 3, "Unobtainable": 2 },
       costCoins: 8500,
       allowedTypes: ["car", "nameTag", "avatar"],
       premiumOnly: true
@@ -4091,6 +4091,199 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
       return { ok:true };
     }catch(e){
       return { ok:false, error:(e&&e.message)?e.message:String(e) };
+    }
+  }
+
+  // ── Daily Login Streaks ──────────────────────────────────────────────────
+  // Two fully separate reward tracks (Standard / Premium), checked live at
+  // claim time based on the account's CURRENT hasPremiumPass status -- not
+  // locked in whenever the streak started. Each track has its own
+  // rarity-weighted daily pool (reusing the exact same weighted-roll
+  // machinery as the Shop wheels) and its own 30-day milestone ladder of
+  // fixed, guaranteed rewards.
+  var STREAK_CONFIG_KEY = "streak_config";
+  var STREAK_STANDARD_POOL_KEY = "streak_standard_pool";
+  var STREAK_PREMIUM_POOL_KEY = "streak_premium_pool";
+  var STREAK_UNLOCK_MS = 24 * 60 * 60 * 1000; // chest unlocks 24h after last claim
+  var STREAK_RESET_MS = 48 * 60 * 60 * 1000;  // streak lapses if unclaimed 24h after unlock (48h after last claim)
+  var STREAK_MILESTONE_INTERVAL = 30;
+
+  var DEFAULT_STREAK_CONFIG = {
+    standardTiers: ["Common", "Rare", "Ultra Rare", "Legendary"],
+    standardWeights: { "Common": 60, "Rare": 28, "Ultra Rare": 10, "Legendary": 2 },
+    premiumTiers: ["Common", "Rare", "Ultra Rare", "Legendary", "Mythic", "Ascended", "Unobtainable"],
+    premiumWeights: { "Common": 5, "Rare": 40, "Ultra Rare": 35, "Legendary": 10, "Mythic": 5, "Ascended": 3, "Unobtainable": 2 },
+    standardLadder: [], // [{ milestone: 30, reward: {...} }, ...] -- admin-configured, no defaults invented here
+    premiumLadder: []
+  };
+
+  async function fetchStreakConfig(){
+    try{
+      var res = await shimGet(STREAK_CONFIG_KEY, true);
+      var saved = res && res.value ? JSON.parse(res.value) : null;
+      if(!saved) return JSON.parse(JSON.stringify(DEFAULT_STREAK_CONFIG));
+      // Merge so an older saved config missing a newer field (e.g. from
+      // before the premium track existed) still gets sane defaults.
+      var merged = {};
+      Object.keys(DEFAULT_STREAK_CONFIG).forEach(function(k){ merged[k] = (saved[k] !== undefined) ? saved[k] : DEFAULT_STREAK_CONFIG[k]; });
+      return merged;
+    }catch(e){ return JSON.parse(JSON.stringify(DEFAULT_STREAK_CONFIG)); }
+  }
+
+  async function saveStreakConfig(cfg){
+    try{ await shimSet(STREAK_CONFIG_KEY, JSON.stringify(cfg), true); return { ok:true }; }
+    catch(e){ return { ok:false, error:(e&&e.message)||String(e) }; }
+  }
+
+  // Streak pool items share the same reward shape as wheel prizes (plus
+  // coins/freeSpins, which wheels don't currently offer but a daily chest
+  // naturally should) -- reusing applyReward/rewardSummaryText directly.
+  function normalizeStreakPoolItem(p){
+    if(!p || !p.rarity || !p.rewardType) return null;
+    if(p.rewardType === "coins" && p.rewardCoins) return { id: p.id, rarity: p.rarity, rewardType: "coins", rewardCoins: p.rewardCoins };
+    if(p.rewardType === "freeSpins" && p.rewardSpinCount) return { id: p.id, rarity: p.rarity, rewardType: "freeSpins", rewardSpinCount: p.rewardSpinCount };
+    if(p.rewardType === "nameTag" && p.rewardNameTagImage) return { id: p.id, rarity: p.rarity, rewardType: "nameTag", rewardNameTagImage: p.rewardNameTagImage, rewardNameTagName: p.rewardNameTagName || "Name Tag" };
+    if(p.rewardType === "avatar" && p.rewardAvatarPieceId) return { id: p.id, rarity: p.rarity, rewardType: "avatar", rewardAvatarPieceId: p.rewardAvatarPieceId, rewardAvatarSlot: p.rewardAvatarSlot, rewardAvatarName: p.rewardAvatarName || "Avatar Piece" };
+    if(p.rewardType === "title" && p.rewardTitleId) return { id: p.id, rarity: p.rarity, rewardType: "title", rewardTitleId: p.rewardTitleId, rewardTitleText: p.rewardTitleText || "Title" };
+    if(p.rewardType === "car" && p.rewardCarId) return { id: p.id, rarity: p.rarity, rewardType: "car", rewardCarId: p.rewardCarId, rewardCarName: p.rewardCarName || "Car" };
+    return null;
+  }
+
+  async function fetchStreakPool(isPremium){
+    try{
+      var res = await shimGet(isPremium ? STREAK_PREMIUM_POOL_KEY : STREAK_STANDARD_POOL_KEY, true);
+      var raw = res && res.value ? JSON.parse(res.value) : [];
+      return raw.map(normalizeStreakPoolItem).filter(function(p){ return p !== null; });
+    }catch(e){ return []; }
+  }
+
+  async function saveStreakPool(isPremium, list){
+    try{ await shimSet(isPremium ? STREAK_PREMIUM_POOL_KEY : STREAK_STANDARD_POOL_KEY, JSON.stringify(list), true); return { ok:true }; }
+    catch(e){ return { ok:false, error:(e&&e.message)||String(e) }; }
+  }
+
+  // Pure function of account data -- the chest's lock/unlock/reset state is
+  // always derived live from timestamps rather than needing any scheduled
+  // job to actively expire streaks.
+  function getStreakStatus(acc){
+    var now = Date.now();
+    var lastClaimed = acc.loginStreakLastClaimedAt || 0;
+    var currentStreak = acc.loginStreakCount || 0;
+
+    if(!lastClaimed){
+      return { canClaim: true, msUntilUnlock: 0, nextStreakValue: 1, willReset: false };
+    }
+    var unlockAt = lastClaimed + STREAK_UNLOCK_MS;
+    var resetAt = lastClaimed + STREAK_RESET_MS;
+
+    if(now >= resetAt) return { canClaim: true, msUntilUnlock: 0, nextStreakValue: 1, willReset: true };
+    if(now >= unlockAt) return { canClaim: true, msUntilUnlock: 0, nextStreakValue: currentStreak + 1, willReset: false };
+    return { canClaim: false, msUntilUnlock: unlockAt - now, nextStreakValue: currentStreak + 1, willReset: false };
+  }
+
+  // Claims today's chest for the currently logged-in player. Re-fetches a
+  // fresh account first (same pattern as spinWheel) so two rapid clicks, or
+  // a stale local cache, can't double-claim.
+  async function claimDailyStreak(){
+    var latest = await getAccount(state.user.username);
+    if(!latest.ok || !latest.account) return { ok:false, error:"Couldn't reach storage. Try again." };
+    var freshAcc = latest.account;
+    var status = getStreakStatus(freshAcc);
+    if(!status.canClaim) return { ok:false, error:"Not available yet." };
+
+    var isPremium = !!freshAcc.hasPremiumPass;
+    var cfg = await fetchStreakConfig();
+    var newStreak = status.nextStreakValue;
+    var isMilestoneDay = newStreak > 0 && (newStreak % STREAK_MILESTONE_INTERVAL === 0);
+    var ladder = isPremium ? (cfg.premiumLadder || []) : (cfg.standardLadder || []);
+    var ladderEntry = isMilestoneDay ? ladder.find(function(l){ return l.milestone === newStreak; }) : null;
+
+    var reward, usedMilestone = false;
+    if(ladderEntry && ladderEntry.reward){
+      reward = ladderEntry.reward;
+      usedMilestone = true;
+    } else {
+      var pool = await fetchStreakPool(isPremium);
+      var tiers = isPremium ? cfg.premiumTiers : cfg.standardTiers;
+      var weights = isPremium ? cfg.premiumWeights : cfg.standardWeights;
+      var result = rollWheelTierAndPrize({ tiers: tiers, weights: weights }, pool);
+      if(!result) return { ok:false, error:"No rewards have been configured yet." };
+      reward = result.prize;
+    }
+
+    applyReward(freshAcc, reward);
+    freshAcc.loginStreakCount = newStreak;
+    freshAcc.loginStreakLastClaimedAt = Date.now();
+    var saveRes = await saveAccount(freshAcc);
+    if(!saveRes.ok) return { ok:false, error: saveRes.error };
+
+    state.user = freshAcc;
+    return { ok:true, reward: reward, isMilestone: usedMilestone, newStreak: newStreak, wasReset: status.willReset };
+  }
+
+  // Shows the result of a chest claim, reusing the same visual language as
+  // the wheel-win modal. On a milestone day the modal box and close button
+  // get a teal (#008080) treatment instead of the normal gray -- the box
+  // itself is the one shared modal element used everywhere in the app, so
+  // the border override is always explicitly cleared again on close rather
+  // than left lingering for whatever modal opens next.
+  function showStreakClaimPopup(result){
+    var reward = result.reward;
+    var isMilestone = result.isMilestone;
+
+    var isCarWin = reward.rewardType === "car";
+    var isAvatarWin = reward.rewardType === "avatar";
+    var isTitleWin = reward.rewardType === "title";
+    var isCoinsWin = reward.rewardType === "coins";
+    var isFreeSpinsWin = reward.rewardType === "freeSpins";
+    var wonCar = isCarWin ? customCarsCache.find(function(c){ return c.id === reward.rewardCarId; }) : null;
+    var wonAvatarPiece = isAvatarWin ? avatarCatalogCache.find(function(p){ return p.id === reward.rewardAvatarPieceId; }) : null;
+
+    var prizeVisual = isCarWin
+      ? (wonCar ? '<div style="width:160px;height:80px;">' + carVisualHtml(wonCar) + '</div>' : rarityIconHtml(reward.rarity, 56))
+      : isAvatarWin
+      ? (wonAvatarPiece ? '<div style="width:120px;height:120px;display:flex;align-items:center;justify-content:center;"><img src="' + wonAvatarPiece.image + '" alt="" style="max-width:100%;max-height:100%;object-fit:contain;image-rendering:pixelated;display:block;" /></div>' : rarityIconHtml(reward.rarity, 56))
+      : isTitleWin
+      ? ('<div style="font-family:\'Arial Black\',Impact,sans-serif;font-style:italic;font-size:22px;color:' + (RARITY_COLORS[reward.rarity]||"var(--text)") + ';text-align:center;padding:10px 6px;">' + escapeHtml(reward.rewardTitleText || "Title") + '</div>')
+      : isCoinsWin
+      ? ('<div style="font-size:44px;">' + COIN_ICON + '</div>')
+      : isFreeSpinsWin
+      ? ('<div style="font-size:44px;">\uD83C\uDFB0</div>')
+      : reward.rewardType === "nameTag"
+      ? ('<div style="width:200px;height:50px;"><img src="' + reward.rewardNameTagImage + '" alt="" style="width:100%;height:100%;object-fit:contain;display:block;image-rendering:pixelated;" /></div>')
+      : '<div style="font-size:44px;">\uD83C\uDF81</div>';
+
+    openModal(
+      '<button class="small-btn" id="modalCloseBtn" style="position:absolute;top:14px;right:14px;">\u2715</button>' +
+      '<div style="text-align:center;">' +
+        (isMilestone ? '<div style="font-family:\'Arial Black\',Impact,sans-serif;font-style:italic;font-size:14px;color:#008080;margin-bottom:6px;letter-spacing:1px;">\u2728 ' + result.newStreak + '-DAY MILESTONE \u2728</div>' : '') +
+        '<div class="garage-title" style="color:var(--text);font-size:18px;margin-bottom:10px;">Daily Chest Opened!</div>' +
+        '<div style="display:flex;justify-content:center;margin-bottom:14px;">' + prizeVisual + '</div>' +
+        '<div style="font-weight:700;font-size:16px;margin-bottom:4px;">' + rewardSummaryText(reward) + '</div>' +
+        (reward.rarity ? '<div style="margin-bottom:10px;">' + rarityTextHtml(reward.rarity) + '</div>' : '') +
+        '<div style="color:var(--muted);font-size:12px;margin-bottom:16px;">' + (result.wasReset ? "Your streak restarted at 1." : ("Streak: \uD83D\uDD25 " + result.newStreak + " days")) + '</div>' +
+        '<button class="btn" id="streakModalOkBtn" style="padding:10px 24px;' + (isMilestone ? 'background:#008080;color:#fff;border:none;' : '') + '">Nice!</button>' +
+      '</div>'
+    );
+
+    var modalBox = document.getElementById("globalModalBox");
+    if(modalBox) modalBox.style.border = isMilestone ? "3px solid #008080" : "";
+
+    function resetAndClose(){
+      if(modalBox) modalBox.style.border = "";
+      closeModal();
+    }
+    document.getElementById("modalCloseBtn").addEventListener("click", resetAndClose);
+    document.getElementById("streakModalOkBtn").addEventListener("click", resetAndClose);
+    var overlay = document.getElementById("globalModalOverlay");
+    if(overlay){
+      function onOverlayClick(e){
+        if(e.target === overlay){
+          overlay.removeEventListener("click", onOverlayClick);
+          if(modalBox) modalBox.style.border = "";
+        }
+      }
+      overlay.addEventListener("click", onOverlayClick);
     }
   }
 
@@ -5060,6 +5253,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     else if(state.screen === "adminAchievements") renderAdminAchievements();
     else if(state.screen === "adminPlayers") renderAdminPlayers();
     else if(state.screen === "adminWheel") renderAdminWheel();
+    else if(state.screen === "adminStreaks") renderAdminStreaks();
     else if(state.screen === "adminSeason") renderAdminSeason();
     else if(state.screen === "adminTrack") renderAdminTrack();
     else if(state.screen === "adminPassages") renderAdminPassages();
@@ -5715,7 +5909,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     app.innerHTML =
       brandHeader() +
       '<div class="panel" style="max-width:440px;margin:60px auto;text-align:center;">' +
-        '<div class="garage-title" style="color:var(--text);font-size:20px;margin-bottom:14px;">You are about to be molested.</div>' +
+        '<div class="garage-title" style="color:var(--text);font-size:20px;margin-bottom:14px;">You are about to be logged in.</div>' +
         '<div style="color:var(--muted);font-size:15px;margin-bottom:22px;">Do you consent?</div>' +
         '<label style="display:flex;align-items:center;justify-content:center;gap:10px;margin-bottom:24px;cursor:pointer;font-size:15px;color:var(--text);">' +
           '<input type="checkbox" id="loginConsentYes" style="width:20px;height:20px;cursor:pointer;" />' +
@@ -6308,6 +6502,57 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
   // you're on — this is what replaced the old separate hub screen.
   // `activeSubTab` is "cars" | "nameTags" | "avatars", used to highlight
   // the current section in the switcher.
+  var streakCountdownInterval = null;
+
+  function formatStreakCountdown(ms){
+    var totalSec = Math.max(0, Math.floor(ms / 1000));
+    var h = Math.floor(totalSec / 3600);
+    var m = Math.floor((totalSec % 3600) / 60);
+    var s = totalSec % 60;
+    return (h > 0 ? h + "h " : "") + (h > 0 && m < 10 ? "0" : "") + m + "m " + (s < 10 ? "0" : "") + s + "s";
+  }
+
+  // Ticks the chest's countdown text every second without a full re-render.
+  // Only one interval is ever kept alive at a time (cleared/replaced here on
+  // every call) so repeatedly re-rendering the garage screen can't cause
+  // these to pile up in the background over a long session.
+  function startStreakCountdown(){
+    if(streakCountdownInterval){ clearInterval(streakCountdownInterval); streakCountdownInterval = null; }
+    function tick(){
+      var el = document.getElementById("streakCountdown");
+      if(!el || !state.user){ clearInterval(streakCountdownInterval); streakCountdownInterval = null; return; }
+      var status = getStreakStatus(state.user);
+      if(status.canClaim){
+        el.textContent = "Ready!";
+        clearInterval(streakCountdownInterval);
+        streakCountdownInterval = null;
+        var btn = document.getElementById("dailyChestOpenBtn");
+        if(btn){ btn.disabled = false; btn.textContent = "Open"; btn.className = "btn btn-primary"; }
+        var img = document.getElementById("dailyChestImg");
+        if(img){ img.style.opacity = ""; img.style.filter = ""; }
+        return;
+      }
+      el.textContent = formatStreakCountdown(status.msUntilUnlock);
+    }
+    tick();
+    streakCountdownInterval = setInterval(tick, 1000);
+  }
+
+  function dailyChestHtml(acc){
+    var status = getStreakStatus(acc);
+    var streakCount = acc.loginStreakCount || 0;
+    return '<div style="flex:0 0 auto;display:flex;flex-direction:column;align-items:center;gap:6px;min-width:100px;">' +
+      '<div id="streakCountdown" style="font-size:11px;color:var(--muted);font-weight:700;text-align:center;min-height:14px;">' +
+        (status.canClaim ? "Ready!" : formatStreakCountdown(status.msUntilUnlock)) +
+      '</div>' +
+      '<img id="dailyChestImg" src="/treasure" alt="Daily Chest" style="width:60px;height:60px;object-fit:contain;image-rendering:pixelated;' + (status.canClaim ? '' : 'opacity:.55;filter:grayscale(50%);') + '" />' +
+      '<button class="btn ' + (status.canClaim ? 'btn-primary' : 'btn-ghost') + '" id="dailyChestOpenBtn" ' + (status.canClaim ? '' : 'disabled') + ' style="padding:6px 18px;font-size:13px;white-space:nowrap;">' +
+        (status.canClaim ? "Open" : "Locked") +
+      '</button>' +
+      (streakCount > 0 ? '<div style="font-size:11px;color:var(--muted);white-space:nowrap;">\uD83D\uDD25 ' + streakCount + ' day streak</div>' : '') +
+    '</div>';
+  }
+
   function garageStatsAndSwitcherHtml(activeSubTab){
     var acc = state.user;
     var races = acc.races || 0;
@@ -6357,6 +6602,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
               '</div>' +
             '</div>' +
           '</div>' +
+          dailyChestHtml(acc) +
         '</div>' +
       '</div>' +
       (state.userGuild ?
@@ -6403,6 +6649,28 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
         renderApp();
       });
     });
+
+    var dailyChestBtn = document.getElementById("dailyChestOpenBtn");
+    if(dailyChestBtn) dailyChestBtn.addEventListener("click", async function(){
+      dailyChestBtn.disabled = true;
+      dailyChestBtn.textContent = "Opening...";
+      try{
+        var result = await claimDailyStreak();
+        if(result.ok){
+          showStreakClaimPopup(result);
+          renderApp();
+        } else {
+          dailyChestBtn.disabled = false;
+          dailyChestBtn.textContent = "Open";
+          alert(result.error || "Couldn't claim right now.");
+        }
+      }catch(e){
+        dailyChestBtn.disabled = false;
+        dailyChestBtn.textContent = "Open";
+        alert("Something went wrong -- please try again.");
+      }
+    });
+    startStreakCountdown();
   }
 
   /* ============ GARAGE: CARS ============ */
@@ -9492,6 +9760,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
         '<button class="admin-navbar-tab' + (activeTab==="achievements" ? " active" : "") + '" data-admin-tab="achievements">\uD83C\uDFC5 Achievements</button>' +
         '<button class="admin-navbar-tab' + (activeTab==="titles" ? " active" : "") + '" data-admin-tab="titles">\uD83D\uDCDC Titles</button>' +
         '<button class="admin-navbar-tab' + (activeTab==="wheel" ? " active" : "") + '" data-admin-tab="wheel">\uD83C\uDFA1 Wheel</button>' +
+        '<button class="admin-navbar-tab' + (activeTab==="streaks" ? " active" : "") + '" data-admin-tab="streaks">\uD83D\uDC8E Daily Streaks</button>' +
         '<button class="admin-navbar-tab' + (activeTab==="season" ? " active" : "") + '" data-admin-tab="season">\uD83C\uDFC6 Season</button>' +
         '<button class="admin-navbar-tab' + (activeTab==="track" ? " active" : "") + '" data-admin-tab="track">\uD83D\uDEE3\uFE0F Track</button>' +
         '<button class="admin-navbar-tab' + (activeTab==="testrace" ? " active" : "") + '" data-admin-tab="testrace">\uD83D\uDD27 Test Race</button>' +
@@ -9539,6 +9808,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
           : tab === "titles" ? "adminTitles"
           : tab === "players" ? "adminPlayers"
           : tab === "wheel" ? "adminWheel"
+          : tab === "streaks" ? "adminStreaks"
           : tab === "season" ? "adminSeason"
           : tab === "track" ? "adminTrack"
           : tab === "passages" ? "adminPassages"
@@ -9558,6 +9828,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
       : state.adminTab === "avatars" ? "adminAvatars"
       : state.adminTab === "players" ? "adminPlayers"
       : state.adminTab === "wheel" ? "adminWheel"
+      : state.adminTab === "streaks" ? "adminStreaks"
       : state.adminTab === "season" ? "adminSeason"
       : state.adminTab === "track" ? "adminTrack"
       : state.adminTab === "passages" ? "adminPassages"
@@ -10146,6 +10417,254 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
   }
 
   /* ── Admin: Wheel tab ─────────────────────────────────────────────────── */
+  /* ── Admin: Daily Streaks tab ────────────────────────────────────────── */
+  function renderAdminStreaks(){
+    if(!state.isAdmin){ state.screen = "auth"; renderApp(); return; }
+    state.adminTab = "streaks";
+    var sub = state.adminStreakSub || "standardPool";
+    var isPoolTab = sub === "standardPool" || sub === "premiumPool";
+    var isPremiumTrack = sub === "premiumPool" || sub === "premiumLadder";
+
+    var subTabsHtml = '<div class="lb-tabs" style="margin-bottom:18px;">' +
+      '<div class="lb-tab' + (sub==="standardPool"?" active":"") + '" data-streak-sub="standardPool">Standard Pool</div>' +
+      '<div class="lb-tab' + (sub==="premiumPool"?" active":"") + '" data-streak-sub="premiumPool">Premium Pool</div>' +
+      '<div class="lb-tab' + (sub==="standardLadder"?" active":"") + '" data-streak-sub="standardLadder">Standard 30-Day Ladder</div>' +
+      '<div class="lb-tab' + (sub==="premiumLadder"?" active":"") + '" data-streak-sub="premiumLadder">Premium 30-Day Ladder</div>' +
+    '</div>';
+
+    app.innerHTML = brandHeader() + adminNavBar("streaks") + subTabsHtml + '<div id="adminStreaksBody"><div class="center-note">Loading\u2026</div></div>';
+    attachAdminNavListeners();
+    document.querySelectorAll("[data-streak-sub]").forEach(function(tab){
+      tab.addEventListener("click", function(){
+        state.adminStreakSub = tab.getAttribute("data-streak-sub");
+        renderApp();
+      });
+    });
+
+    fetchStreakConfig().then(function(cfg){
+      if(isPoolTab) renderAdminStreakPoolTab(cfg, isPremiumTrack);
+      else renderAdminStreakLadderTab(cfg, isPremiumTrack);
+    });
+  }
+
+  function renderAdminStreakPoolTab(cfg, isPremiumTrack){
+    var body = document.getElementById("adminStreaksBody");
+    if(!body) return;
+    var trackLabel = isPremiumTrack ? "Premium" : "Standard";
+    var tiers = isPremiumTrack ? cfg.premiumTiers : cfg.standardTiers;
+    var weights = isPremiumTrack ? cfg.premiumWeights : cfg.standardWeights;
+    var prefix = isPremiumTrack ? "streakPoolPremium" : "streakPoolStandard";
+
+    var oddsInputsHtml = tiers.map(function(t){
+      return '<div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;">' +
+        '<div style="flex:1;">' + rarityTextHtml(t) + '</div>' +
+        '<input type="number" class="streak-odds-input" data-tier="' + escapeHtml(t) + '" min="0" step="0.01" value="' + (weights[t]||0) + '" style="width:100px;background:var(--panel-2);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:8px 10px;font-size:14px;text-align:right;" />' +
+        '<span style="color:var(--muted);font-size:13px;width:14px;">%</span>' +
+      '</div>';
+    }).join("");
+
+    body.innerHTML =
+      '<div class="panel">' +
+        '<div class="garage-title" style="color:var(--text);font-size:18px;margin-bottom:4px;">' + trackLabel + ' Daily Odds</div>' +
+        '<div class="hint-text" style="margin-top:0;margin-bottom:14px;">Must add up to exactly 100%. A random item is pulled from whichever rarity gets rolled, each time a player opens the chest.</div>' +
+        oddsInputsHtml +
+        '<div style="display:flex;align-items:center;gap:12px;margin-top:10px;">' +
+          '<div>Total: <span id="streakOddsTotalDisplay" style="font-weight:700;">100</span>%</div>' +
+          '<button class="btn btn-primary" id="saveStreakOddsBtn">Save Odds</button>' +
+          '<span class="error-text" id="streakOddsSaveMsg" style="margin:0;"></span>' +
+        '</div>' +
+      '</div>' +
+
+      '<div class="panel" style="margin-top:18px;">' +
+        '<div class="garage-title" style="color:var(--text);font-size:18px;margin-bottom:4px;">Add to ' + trackLabel + ' Pool</div>' +
+        '<div class="hint-text" style="margin-top:0;margin-bottom:16px;">Add as many items per rarity as you like \u2014 they share that tier\u2019s odds.</div>' +
+        '<div class="field">' +
+          '<label for="' + prefix + 'Rarity">Rarity</label>' +
+          '<select id="' + prefix + 'Rarity" style="width:100%;background:var(--panel-2);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:11px 12px;font-size:14px;margin-bottom:14px;">' +
+            tiers.map(function(t){ return '<option value="' + escapeHtml(t) + '">' + escapeHtml(t) + ' (' + weights[t] + '%)</option>'; }).join("") +
+          '</select>' +
+        '</div>' +
+        seasonRewardFieldsHtml(prefix, "Pool Item") +
+        '<div class="error-text" id="' + prefix + 'Error"></div>' +
+        '<button class="btn btn-primary btn-block btn-lg" id="' + prefix + 'AddBtn">Add to Pool</button>' +
+      '</div>' +
+
+      '<div class="panel" style="margin-top:18px;">' +
+        '<div class="garage-title" style="color:var(--text);font-size:18px;margin-bottom:8px;">' + trackLabel + ' Pool Contents</div>' +
+        '<div id="' + prefix + 'List"><div class="center-note">Loading\u2026</div></div>' +
+      '</div>';
+
+    var pendingImages = {};
+    attachSeasonRewardFieldListeners(prefix, pendingImages);
+
+    function recalcTotal(){
+      var total = 0;
+      document.querySelectorAll(".streak-odds-input").forEach(function(inp){ total += parseFloat(inp.value) || 0; });
+      var el = document.getElementById("streakOddsTotalDisplay");
+      if(el){ el.textContent = Math.round(total*100)/100; el.style.color = Math.abs(total-100) < 0.01 ? "var(--green)" : "var(--red)"; }
+    }
+    document.querySelectorAll(".streak-odds-input").forEach(function(inp){ inp.addEventListener("input", recalcTotal); });
+    recalcTotal();
+
+    document.getElementById("saveStreakOddsBtn").addEventListener("click", async function(){
+      var msg = document.getElementById("streakOddsSaveMsg");
+      var newWeights = {};
+      var total = 0;
+      document.querySelectorAll(".streak-odds-input").forEach(function(inp){
+        var v = parseFloat(inp.value) || 0;
+        newWeights[inp.getAttribute("data-tier")] = v;
+        total += v;
+      });
+      if(Math.abs(total - 100) > 0.01){ msg.textContent = "Odds must add up to 100% (currently " + Math.round(total*100)/100 + "%)."; return; }
+      if(isPremiumTrack) cfg.premiumWeights = newWeights; else cfg.standardWeights = newWeights;
+      var res = await saveStreakConfig(cfg);
+      msg.style.color = res.ok ? "var(--green)" : "var(--red)";
+      msg.textContent = res.ok ? "Saved!" : ("Error: " + res.error);
+    });
+
+    document.getElementById(prefix + "AddBtn").addEventListener("click", async function(){
+      var errEl = document.getElementById(prefix + "Error");
+      errEl.textContent = "";
+      var rarity = document.getElementById(prefix + "Rarity").value;
+      var reward = readSeasonRewardFromForm(prefix, pendingImages);
+      if(!reward || reward.rewardType === "none"){ errEl.textContent = "Pick a reward type and fill it in."; return; }
+      var entry = Object.assign({ id: "sp_" + Date.now() + "_" + Math.floor(Math.random()*10000), rarity: rarity }, reward);
+      var btn = document.getElementById(prefix + "AddBtn");
+      btn.disabled = true; btn.textContent = "Adding...";
+      try{
+        var list = await fetchStreakPool(isPremiumTrack);
+        list.push(entry);
+        var res = await saveStreakPool(isPremiumTrack, list);
+        if(!res.ok){ errEl.textContent = "Couldn't save: " + res.error; return; }
+        renderAdminStreakPoolList(prefix, isPremiumTrack);
+      }catch(e){
+        errEl.textContent = "Unexpected error: " + ((e&&e.message)?e.message:String(e));
+      }finally{
+        btn.disabled = false; btn.textContent = "Add to Pool";
+      }
+    });
+
+    renderAdminStreakPoolList(prefix, isPremiumTrack);
+  }
+
+  async function renderAdminStreakPoolList(prefix, isPremiumTrack){
+    var box = document.getElementById(prefix + "List");
+    if(!box) return;
+    var list = await fetchStreakPool(isPremiumTrack);
+    if(!list.length){ box.innerHTML = '<div class="center-note" style="color:var(--muted);">No items yet \u2014 add one above.</div>'; return; }
+
+    var grouped = {};
+    list.forEach(function(p){ grouped[p.rarity] = grouped[p.rarity] || []; grouped[p.rarity].push(p); });
+
+    box.innerHTML = Object.keys(grouped).map(function(rarity){
+      return '<div style="margin-bottom:14px;">' +
+        '<div style="margin-bottom:6px;">' + rarityTextHtml(rarity) + '</div>' +
+        grouped[rarity].map(function(p){
+          return '<div class="admin-car-row">' +
+            '<div style="flex:1;font-size:13px;">' + rewardSummaryText(p) + '</div>' +
+            '<button class="small-btn" data-remove-pool-item="' + escapeHtml(p.id) + '" style="color:var(--red);border-color:var(--red);">Remove</button>' +
+          '</div>';
+        }).join("") +
+      '</div>';
+    }).join("");
+
+    box.querySelectorAll("[data-remove-pool-item]").forEach(function(btn){
+      btn.addEventListener("click", async function(){
+        var id = btn.getAttribute("data-remove-pool-item");
+        var list2 = await fetchStreakPool(isPremiumTrack);
+        list2 = list2.filter(function(p){ return p.id !== id; });
+        await saveStreakPool(isPremiumTrack, list2);
+        renderAdminStreakPoolList(prefix, isPremiumTrack);
+      });
+    });
+  }
+
+  function renderAdminStreakLadderTab(cfg, isPremiumTrack){
+    var body = document.getElementById("adminStreaksBody");
+    if(!body) return;
+    var trackLabel = isPremiumTrack ? "Premium" : "Standard";
+    var prefix = isPremiumTrack ? "streakLadderPremium" : "streakLadderStandard";
+
+    body.innerHTML =
+      '<div class="panel">' +
+        '<div class="garage-title" style="color:var(--text);font-size:18px;margin-bottom:4px;">Add a ' + trackLabel + ' Milestone</div>' +
+        '<div class="hint-text" style="margin-top:0;margin-bottom:16px;">A fixed, guaranteed reward for reaching an exact streak day \u2014 no randomness. Typically every 30 days (30, 60, 90...), but any day number works.</div>' +
+        '<div class="field">' +
+          '<label for="' + prefix + 'Milestone">Streak Day</label>' +
+          '<input type="number" id="' + prefix + 'Milestone" min="1" step="1" value="30" style="width:100%;background:var(--panel-2);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:11px 12px;font-size:15px;margin-bottom:14px;" />' +
+        '</div>' +
+        seasonRewardFieldsHtml(prefix, "Milestone") +
+        '<div class="error-text" id="' + prefix + 'Error"></div>' +
+        '<button class="btn btn-primary btn-block btn-lg" id="' + prefix + 'AddBtn">Add Milestone</button>' +
+      '</div>' +
+
+      '<div class="panel" style="margin-top:18px;">' +
+        '<div class="garage-title" style="color:var(--text);font-size:18px;margin-bottom:8px;">' + trackLabel + ' Ladder</div>' +
+        '<div id="' + prefix + 'List"><div class="center-note">Loading\u2026</div></div>' +
+      '</div>';
+
+    var pendingImages = {};
+    attachSeasonRewardFieldListeners(prefix, pendingImages);
+
+    document.getElementById(prefix + "AddBtn").addEventListener("click", async function(){
+      var errEl = document.getElementById(prefix + "Error");
+      errEl.textContent = "";
+      var milestone = parseInt(document.getElementById(prefix + "Milestone").value, 10);
+      if(!milestone || milestone < 1){ errEl.textContent = "Enter a valid streak day."; return; }
+      var reward = readSeasonRewardFromForm(prefix, pendingImages);
+      if(!reward || reward.rewardType === "none"){ errEl.textContent = "Pick a reward type and fill it in."; return; }
+
+      var btn = document.getElementById(prefix + "AddBtn");
+      btn.disabled = true; btn.textContent = "Adding...";
+      try{
+        var freshCfg = await fetchStreakConfig();
+        var ladderKey = isPremiumTrack ? "premiumLadder" : "standardLadder";
+        var ladder = freshCfg[ladderKey] || [];
+        var existingIdx = ladder.findIndex(function(l){ return l.milestone === milestone; });
+        var entry = { milestone: milestone, reward: reward };
+        if(existingIdx !== -1) ladder[existingIdx] = entry; else ladder.push(entry);
+        freshCfg[ladderKey] = ladder;
+        var res = await saveStreakConfig(freshCfg);
+        if(!res.ok){ errEl.textContent = "Couldn't save: " + res.error; return; }
+        renderAdminStreakLadderList(prefix, isPremiumTrack);
+      }catch(e){
+        errEl.textContent = "Unexpected error: " + ((e&&e.message)?e.message:String(e));
+      }finally{
+        btn.disabled = false; btn.textContent = "Add Milestone";
+      }
+    });
+
+    renderAdminStreakLadderList(prefix, isPremiumTrack);
+  }
+
+  async function renderAdminStreakLadderList(prefix, isPremiumTrack){
+    var box = document.getElementById(prefix + "List");
+    if(!box) return;
+    var cfg = await fetchStreakConfig();
+    var ladder = (isPremiumTrack ? cfg.premiumLadder : cfg.standardLadder) || [];
+    if(!ladder.length){ box.innerHTML = '<div class="center-note" style="color:var(--muted);">No milestones configured yet.</div>'; return; }
+
+    var sorted = ladder.slice().sort(function(a,b){ return a.milestone - b.milestone; });
+    box.innerHTML = sorted.map(function(l){
+      return '<div class="admin-car-row">' +
+        '<div style="flex:0 0 90px;font-weight:700;color:#008080;">Day ' + l.milestone + '</div>' +
+        '<div style="flex:1;font-size:13px;">' + rewardSummaryText(l.reward) + '</div>' +
+        '<button class="small-btn" data-remove-milestone="' + l.milestone + '" style="color:var(--red);border-color:var(--red);">Remove</button>' +
+      '</div>';
+    }).join("");
+
+    box.querySelectorAll("[data-remove-milestone]").forEach(function(btn){
+      btn.addEventListener("click", async function(){
+        var milestone = parseInt(btn.getAttribute("data-remove-milestone"), 10);
+        var freshCfg = await fetchStreakConfig();
+        var ladderKey = isPremiumTrack ? "premiumLadder" : "standardLadder";
+        freshCfg[ladderKey] = (freshCfg[ladderKey] || []).filter(function(l){ return l.milestone !== milestone; });
+        await saveStreakConfig(freshCfg);
+        renderAdminStreakLadderList(prefix, isPremiumTrack);
+      });
+    });
+  }
+
   function renderAdminWheel(){
     if(!state.isAdmin){ state.screen = "auth"; renderApp(); return; }
     state.adminTab = "wheel";
