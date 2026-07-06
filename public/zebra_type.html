@@ -3139,7 +3139,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     {
       id: "premium", label: "Premium Wheel",
       tiers: ["Common", "Rare", "Ultra Rare", "Legendary", "Mythic", "Ascended", "Unobtainable"],
-      weights: { "Common": 5, "Rare": 40, "Ultra Rare": 35, "Legendary": 10, "Mythic": 5, "Ascended": 3, "Unobtainable": 2 },
+      weights: { "Common": 5, "Rare": 35, "Ultra Rare": 30, "Legendary": 13, "Mythic": 11, "Ascended": 5, "Unobtainable": 1 },
       costCoins: 8500,
       allowedTypes: ["car", "nameTag", "avatar"],
       premiumOnly: true
@@ -15607,7 +15607,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     var freeSpins = acc.freeWheelSpins || 0;
 
     var shopCoinBar = '<div style="display:flex;align-items:center;justify-content:flex-end;gap:18px;margin-bottom:14px;">' +
-      '<span style="font-family:\'Arial Black\',Impact,sans-serif;font-style:italic;font-size:16px;color:var(--green);">\uD83C\uDFB0 Free Rolls x' + freeSpins + '</span>' +
+      '<span style="font-family:\'Arial Black\',Impact,sans-serif;font-style:italic;font-size:16px;color:var(--black);">\uD83C\uDFB0 Free Rolls x' + freeSpins + '</span>' +
       '<span style="font-family:\'Arial Black\',Impact,sans-serif;font-style:italic;font-size:16px;color:var(--amber);">' + COIN_ICON + coins.toLocaleString() + '</span>' +
     '</div>';
 
