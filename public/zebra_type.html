@@ -4096,7 +4096,60 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     }
   }
 
-  // ── News ──────────────────────────────────────────────────────────────────
+  // ── Race Activity Stats (admin dashboard) ───────────────────────────────
+  // A lightweight, shared log of race-completion timestamps, just for
+  // computing "how many races in the last 24h / 30 days" on demand in the
+  // admin panel. All-time total is NOT kept here -- it's computed by
+  // summing every account's own (already-reliable) races counter instead,
+  // so this log only ever needs to hold a rolling ~35-day window.
+  //
+  // Note on precision: this uses a plain read-modify-write against the
+  // generic KV store, which has no atomic array-append. Two races
+  // finishing at almost the exact same instant could rarely overwrite
+  // each other's log entry. Fine for an approximate admin activity stat;
+  // not something to rely on for exact billing/auditing-grade counts.
+  var RACE_LOG_KEY = "race_completions_log";
+  var RACE_LOG_RETENTION_MS = 35 * 24 * 60 * 60 * 1000;
+
+  async function logRaceCompletion(){
+    try{
+      var res = await shimGet(RACE_LOG_KEY, true);
+      var log = res && res.value ? JSON.parse(res.value) : [];
+      log.push(Date.now());
+      var cutoff = Date.now() - RACE_LOG_RETENTION_MS;
+      log = log.filter(function(ts){ return ts > cutoff; });
+      await shimSet(RACE_LOG_KEY, JSON.stringify(log), true);
+    }catch(e){ /* non-critical stat tracking */ }
+  }
+
+  async function computeRaceActivityStats(){
+    var log = [];
+    try{
+      var res = await shimGet(RACE_LOG_KEY, true);
+      log = res && res.value ? JSON.parse(res.value) : [];
+    }catch(e){}
+
+    var now = Date.now();
+    var last24h = log.filter(function(ts){ return now - ts < 24 * 60 * 60 * 1000; }).length;
+    var last30d = log.filter(function(ts){ return now - ts < 30 * 24 * 60 * 60 * 1000; }).length;
+
+    var allTime = 0;
+    try{
+      var listRes = await shimList("account:", true);
+      var keys = listRes.keys || [];
+      for(var i = 0; i < keys.length; i++){
+        try{
+          var username = keys[i].replace(/^account:/, "");
+          var accRes = await getAccount(username);
+          if(accRes.ok && accRes.account) allTime += (accRes.account.races || 0);
+        }catch(e){}
+      }
+    }catch(e){}
+
+    return { last24h: last24h, last30d: last30d, allTime: allTime };
+  }
+
+
   var NEWS_POSTS_KEY = "news_posts";
   var NEWS_ARCHIVE_MS = 40 * 24 * 60 * 60 * 1000; // clock starts at publish, not draft creation
 
@@ -5996,7 +6049,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     app.innerHTML =
       brandHeader() +
       '<div class="panel" style="max-width:440px;margin:60px auto;text-align:center;">' +
-        '<div class="garage-title" style="color:var(--text);font-size:20px;margin-bottom:14px;">You are about to be molested.</div>' +
+        '<div class="garage-title" style="color:var(--text);font-size:20px;margin-bottom:14px;">You are about to be logged in.</div>' +
         '<div style="color:var(--muted);font-size:15px;margin-bottom:22px;">Do you consent?</div>' +
         '<label style="display:flex;align-items:center;justify-content:center;gap:10px;margin-bottom:24px;cursor:pointer;font-size:15px;color:var(--text);">' +
           '<input type="checkbox" id="loginConsentYes" style="width:20px;height:20px;cursor:pointer;" />' +
@@ -9220,6 +9273,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     }
 
     acc.races = (acc.races || 0) + 1;
+    logRaceCompletion(); // fire-and-forget -- never block the actual race result on this
     acc.sumWpm = (acc.sumWpm || 0) + wpm;
     acc.sumAccuracy = (acc.sumAccuracy || 0) + accuracy;
     acc.bestWpm = Math.max(acc.bestWpm || 0, wpm);
@@ -13025,6 +13079,14 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
       brandHeader() +
       adminNavBar("players") +
       '<div class="panel" style="margin-bottom:14px;">' +
+        '<div class="garage-title" style="color:var(--text);font-size:18px;margin-bottom:10px;">Race Activity</div>' +
+        '<div class="stat-grid">' +
+          '<div class="stat-card"><div class="num" id="raceStat24h">\u2026</div><div class="lbl">Last 24 Hours</div></div>' +
+          '<div class="stat-card"><div class="num" id="raceStat30d">\u2026</div><div class="lbl">Last 30 Days</div></div>' +
+          '<div class="stat-card"><div class="num" id="raceStatAllTime">\u2026</div><div class="lbl">All-Time</div></div>' +
+        '</div>' +
+      '</div>' +
+      '<div class="panel" style="margin-bottom:14px;">' +
         '<div class="garage-title" style="color:var(--text);font-size:18px;margin-bottom:10px;">Players</div>' +
         '<div style="display:flex;gap:10px;margin-bottom:10px;">' +
           '<input id="playerSearchInput" placeholder="Search by username\u2026" autocomplete="off" style="flex:1;background:var(--panel-2);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:10px 12px;font-size:14px;" />' +
@@ -13036,6 +13098,15 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
       '<div id="playerDetailPanel"></div>';
 
     attachAdminNavListeners();
+
+    computeRaceActivityStats().then(function(stats){
+      var el24 = document.getElementById("raceStat24h");
+      var el30 = document.getElementById("raceStat30d");
+      var elAll = document.getElementById("raceStatAllTime");
+      if(el24) el24.textContent = stats.last24h.toLocaleString();
+      if(el30) el30.textContent = stats.last30d.toLocaleString();
+      if(elAll) elAll.textContent = stats.allTime.toLocaleString();
+    });
 
     // Load full index
     var allAccounts = [];
@@ -15547,7 +15618,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     var freeSpins = acc.freeWheelSpins || 0;
 
     var shopCoinBar = '<div style="display:flex;align-items:center;justify-content:flex-end;gap:18px;margin-bottom:14px;">' +
-      '<span style="font-family:\'Arial Black\',Impact,sans-serif;font-style:italic;font-size:16px;color:var(--black);">\uD83C\uDFB0 Free Rolls x' + freeSpins + '</span>' +
+      '<span style="font-family:\'Arial Black\',Impact,sans-serif;font-style:italic;font-size:16px;color:var(--green);">\uD83C\uDFB0 Free Rolls x' + freeSpins + '</span>' +
       '<span style="font-family:\'Arial Black\',Impact,sans-serif;font-style:italic;font-size:16px;color:var(--amber);">' + COIN_ICON + coins.toLocaleString() + '</span>' +
     '</div>';
 
