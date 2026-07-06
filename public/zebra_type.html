@@ -2668,6 +2668,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     "/guilds":      "guilds",
     "/season":      "season",
     "/achievements":"achievements",
+    "/news":        "news",
     "/leaderboards":"leaderboard",
     "/leaderboard": "leaderboard",
     "/account":     "account",
@@ -2724,6 +2725,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     "guilds":       "/guilds",
     "season":       "/season",
     "achievements": "/achievements",
+    "news":         "/news",
     "leaderboard":  "/leaderboards",
     "account":      "/account",
     "about":        "/about",
@@ -4094,6 +4096,80 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     }
   }
 
+  // ── News ──────────────────────────────────────────────────────────────────
+  var NEWS_POSTS_KEY = "news_posts";
+  var NEWS_ARCHIVE_MS = 40 * 24 * 60 * 60 * 1000; // clock starts at publish, not draft creation
+
+  async function fetchNewsPosts(){
+    try{
+      var res = await shimGet(NEWS_POSTS_KEY, true);
+      return res && res.value ? JSON.parse(res.value) : [];
+    }catch(e){ return []; }
+  }
+
+  async function saveNewsPosts(list){
+    try{ await shimSet(NEWS_POSTS_KEY, JSON.stringify(list), true); return { ok:true }; }
+    catch(e){ return { ok:false, error:(e&&e.message)||String(e) }; }
+  }
+
+  // "Archived" is a real, settable status (via the manual archive button),
+  // but a post also counts as archived once 40 days have passed since it
+  // was published -- computed live here rather than needing any background
+  // job to flip a stored flag, same approach as the daily streak's chest
+  // lock/unlock/reset state.
+  function isNewsPostArchived(post){
+    if(post.status === "archived") return true;
+    if(post.status === "published" && post.publishedAt && (Date.now() - post.publishedAt > NEWS_ARCHIVE_MS)) return true;
+    return false;
+  }
+
+  function canEditNewsPost(post){
+    if(state.isSuperAdmin) return true;
+    return !!(state.adminUsername && post.authorUsername && post.authorUsername.toLowerCase() === state.adminUsername.toLowerCase());
+  }
+
+  function getUnreadNewsCount(acc){
+    if(!acc) return 0;
+    var lastSeen = acc.lastSeenNewsAt || 0;
+    return (newsPostsCache || []).filter(function(p){
+      return p.status === "published" && !isNewsPostArchived(p) && p.publishedAt && p.publishedAt > lastSeen;
+    }).length;
+  }
+
+  function formatNewsDate(ts){
+    if(!ts) return "";
+    var d = new Date(ts);
+    var mm = String(d.getMonth()+1); if(mm.length < 2) mm = "0" + mm;
+    var dd = String(d.getDate()); if(dd.length < 2) dd = "0" + dd;
+    return mm + "/" + dd + "/" + d.getFullYear();
+  }
+
+  // Deliberately minimal: a line starting with "#" becomes a header, a line
+  // starting with "-" becomes a bullet point, blank lines become spacing,
+  // everything else is a plain paragraph line. No toolbar -- admins are
+  // told the convention directly rather than given buttons for it.
+  function renderNewsBodyHtml(body){
+    var lines = (body || "").split("\n");
+    var html = "", inList = false;
+    lines.forEach(function(line){
+      var trimmed = line.trim();
+      if(trimmed.indexOf("#") === 0){
+        if(inList){ html += "</ul>"; inList = false; }
+        html += '<div style="font-family:\'Arial Black\',Impact,sans-serif;font-style:italic;font-size:16px;color:var(--text);margin:12px 0 6px;">' + escapeHtml(trimmed.replace(/^#+\s*/, "")) + '</div>';
+      } else if(trimmed.indexOf("-") === 0){
+        if(!inList){ html += '<ul style="margin:6px 0 6px 20px;padding:0;">'; inList = true; }
+        html += '<li style="margin-bottom:4px;">' + escapeHtml(trimmed.replace(/^-\s*/, "")) + '</li>';
+      } else if(trimmed === ""){
+        if(inList){ html += "</ul>"; inList = false; }
+      } else {
+        if(inList){ html += "</ul>"; inList = false; }
+        html += '<div style="margin-bottom:6px;line-height:1.5;">' + escapeHtml(trimmed) + '</div>';
+      }
+    });
+    if(inList) html += "</ul>";
+    return html;
+  }
+
   // ── Daily Login Streaks ──────────────────────────────────────────────────
   // Two fully separate reward tracks (Standard / Premium), checked live at
   // claim time based on the account's CURRENT hasPremiumPass status -- not
@@ -5085,6 +5161,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
   var tracksCache = []; // last-fetched track catalog — a random one is picked from this at race start
   var wheelPrizesCache = []; // last-fetched spin wheel prize list
   var wheelConfigsCache = DEFAULT_WHEEL_CONFIGS.slice(); // last-fetched configs for all 3 wheels
+  var newsPostsCache = []; // last-fetched news posts — needed synchronously wherever the nav bar's unread badge renders
   var pendingCarImage = null; // base64 data URL for an image staged in the admin "Add a Car" form
 
   /* ============ MULTIPLAYER RACE CONNECTION ============ */
@@ -5254,6 +5331,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     else if(state.screen === "adminPlayers") renderAdminPlayers();
     else if(state.screen === "adminWheel") renderAdminWheel();
     else if(state.screen === "adminStreaks") renderAdminStreaks();
+    else if(state.screen === "adminNews") renderAdminNews();
     else if(state.screen === "adminSeason") renderAdminSeason();
     else if(state.screen === "adminTrack") renderAdminTrack();
     else if(state.screen === "adminPassages") renderAdminPassages();
@@ -5263,6 +5341,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     else if(state.screen === "shop") renderShop();
     else if(state.screen === "leaderboard") renderLeaderboard();
     else if(state.screen === "achievements") renderAchievements();
+    else if(state.screen === "news") renderNews();
     else if(state.screen === "blackMarket") renderBlackMarket();
     else if(state.screen === "season") renderSeason();
     else if(state.screen === "guilds") renderGuilds();
@@ -5516,6 +5595,13 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
         '<button class="navbar-tab' + (activeTab==="blackMarket"  ?" active":"") + '" data-nav="blackMarket">Black Market</button>' +
         '<button class="navbar-tab' + (activeTab==="leaderboard"  ?" active":"") + '" data-nav="leaderboard">Leaderboards</button>' +
         '<button class="navbar-tab' + (activeTab==="achievements" ?" active":"") + '" data-nav="achievements">Achievements</button>' +
+        '<button class="navbar-tab' + (activeTab==="news" ?" active":"") + '" data-nav="news">News' +
+          (function(){
+            var count = getUnreadNewsCount(state.user);
+            if(!count) return '';
+            return ' <span style="display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:16px;padding:0 4px;background:var(--red);color:#fff;font-size:10px;font-weight:700;clip-path:polygon(50% 0%, 100% 25%, 100% 75%, 50% 100%, 0% 75%, 0% 25%);vertical-align:middle;margin-left:4px;">' + count + '</span>';
+          })() +
+        '</button>' +
       '</div>' +
       '<div class="navbar-right">' +
         (STORAGE_MODE === "memory" ? '<span style="color:var(--muted);font-size:11px;margin-right:6px;">(session)</span>' : '') +
@@ -5594,7 +5680,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
         var navPath = {
           garage:"/garage", shop:"/shop", leaderboard:"/leaderboards",
           achievements:"/achievements", blackMarket:"/blackmarket",
-          season:"/season", guilds:"/guilds", friends:"/friends"
+          season:"/season", guilds:"/guilds", friends:"/friends", news:"/news"
         }[nav];
         if(navPath) navigate(navPath);
       });
@@ -5888,6 +5974,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     if(!customCarsCache || !customCarsCache.length){
       try{ customCarsCache = await fetchCustomCars(); }catch(e){}
     }
+    try{ newsPostsCache = await fetchNewsPosts(); }catch(e){}
     try{
       var newlyEarnedOnLogin = await checkAndGrantAchievements(acc);
       if(newlyEarnedOnLogin.length){
@@ -9761,6 +9848,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
         '<button class="admin-navbar-tab' + (activeTab==="titles" ? " active" : "") + '" data-admin-tab="titles">\uD83D\uDCDC Titles</button>' +
         '<button class="admin-navbar-tab' + (activeTab==="wheel" ? " active" : "") + '" data-admin-tab="wheel">\uD83C\uDFA1 Wheel</button>' +
         '<button class="admin-navbar-tab' + (activeTab==="streaks" ? " active" : "") + '" data-admin-tab="streaks">\uD83D\uDC8E Daily Streaks</button>' +
+        '<button class="admin-navbar-tab' + (activeTab==="news" ? " active" : "") + '" data-admin-tab="news">\uD83D\uDCF0 News</button>' +
         '<button class="admin-navbar-tab' + (activeTab==="season" ? " active" : "") + '" data-admin-tab="season">\uD83C\uDFC6 Season</button>' +
         '<button class="admin-navbar-tab' + (activeTab==="track" ? " active" : "") + '" data-admin-tab="track">\uD83D\uDEE3\uFE0F Track</button>' +
         '<button class="admin-navbar-tab' + (activeTab==="testrace" ? " active" : "") + '" data-admin-tab="testrace">\uD83D\uDD27 Test Race</button>' +
@@ -9809,6 +9897,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
           : tab === "players" ? "adminPlayers"
           : tab === "wheel" ? "adminWheel"
           : tab === "streaks" ? "adminStreaks"
+          : tab === "news" ? "adminNews"
           : tab === "season" ? "adminSeason"
           : tab === "track" ? "adminTrack"
           : tab === "passages" ? "adminPassages"
@@ -9829,6 +9918,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
       : state.adminTab === "players" ? "adminPlayers"
       : state.adminTab === "wheel" ? "adminWheel"
       : state.adminTab === "streaks" ? "adminStreaks"
+      : state.adminTab === "news" ? "adminNews"
       : state.adminTab === "season" ? "adminSeason"
       : state.adminTab === "track" ? "adminTrack"
       : state.adminTab === "passages" ? "adminPassages"
@@ -10661,6 +10751,221 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
         freshCfg[ladderKey] = (freshCfg[ladderKey] || []).filter(function(l){ return l.milestone !== milestone; });
         await saveStreakConfig(freshCfg);
         renderAdminStreakLadderList(prefix, isPremiumTrack);
+      });
+    });
+  }
+
+  /* ── Admin: News tab ─────────────────────────────────────────────────── */
+  function renderAdminNews(){
+    if(!state.isAdmin){ state.screen = "auth"; renderApp(); return; }
+    state.adminTab = "news";
+    var editingId = state.adminEditingNewsId || null;
+
+    app.innerHTML =
+      brandHeader() +
+      adminNavBar("news") +
+      '<div class="panel">' +
+        '<div class="garage-title" style="color:var(--text);font-size:18px;margin-bottom:4px;" id="newsFormTitle">' + (editingId ? "Edit Post" : "New Post") + '</div>' +
+        '<div class="hint-text" style="margin-top:0;margin-bottom:16px;">In the body, a line starting with # is a header, a line starting with - is a bullet point. Plain lines are just paragraph text.</div>' +
+        '<div class="field">' +
+          '<label for="newsTitleInput">Title</label>' +
+          '<input id="newsTitleInput" type="text" placeholder="e.g. Season 3 is here!" style="width:100%;background:var(--panel-2);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:11px 12px;font-size:15px;" />' +
+        '</div>' +
+        '<div class="field">' +
+          '<label for="newsBodyInput">Body</label>' +
+          '<textarea id="newsBodyInput" rows="8" placeholder="# What\'s new\n- Bullet one\n- Bullet two\n\nPlain paragraph text here." style="width:100%;background:var(--panel-2);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:11px 12px;font-size:14px;font-family:inherit;resize:vertical;"></textarea>' +
+        '</div>' +
+        '<div class="error-text" id="newsFormError"></div>' +
+        '<div style="display:flex;gap:10px;flex-wrap:wrap;" id="newsFormButtons"></div>' +
+      '</div>' +
+
+      '<div class="panel" style="margin-top:18px;">' +
+        '<div class="garage-title" style="color:var(--text);font-size:18px;margin-bottom:8px;">All Posts</div>' +
+        '<div id="adminNewsList"><div class="center-note">Loading\u2026</div></div>' +
+      '</div>';
+
+    attachAdminNavListeners();
+
+    var buttonsEl = document.getElementById("newsFormButtons");
+    var editingPost = null;
+
+    function loadFormButtons(){
+      if(editingId && editingPost && editingPost.status !== "draft"){
+        // Already published (or archived) -- editing just updates the
+        // content, it never resets publishedAt or re-triggers the 40-day
+        // archive clock.
+        buttonsEl.innerHTML =
+          '<button class="btn btn-primary" id="newsSaveChangesBtn">Save Changes</button>' +
+          '<button class="btn btn-ghost" id="newsCancelEditBtn">Cancel</button>';
+      } else {
+        buttonsEl.innerHTML =
+          '<button class="btn btn-ghost" id="newsSaveDraftBtn">Save as Draft</button>' +
+          '<button class="btn btn-primary" id="newsPublishBtn">Publish</button>' +
+          (editingId ? '<button class="btn btn-ghost" id="newsCancelEditBtn">Cancel</button>' : '');
+      }
+      wireFormButtons();
+    }
+
+    function resetForm(){
+      state.adminEditingNewsId = null;
+      editingId = null;
+      editingPost = null;
+      document.getElementById("newsFormTitle").textContent = "New Post";
+      document.getElementById("newsTitleInput").value = "";
+      document.getElementById("newsBodyInput").value = "";
+      document.getElementById("newsFormError").textContent = "";
+      loadFormButtons();
+    }
+
+    function wireFormButtons(){
+      var cancelBtn = document.getElementById("newsCancelEditBtn");
+      if(cancelBtn) cancelBtn.addEventListener("click", resetForm);
+
+      var draftBtn = document.getElementById("newsSaveDraftBtn");
+      if(draftBtn) draftBtn.addEventListener("click", function(){ submitPost("draft"); });
+
+      var publishBtn = document.getElementById("newsPublishBtn");
+      if(publishBtn) publishBtn.addEventListener("click", function(){ submitPost("published"); });
+
+      var saveChangesBtn = document.getElementById("newsSaveChangesBtn");
+      if(saveChangesBtn) saveChangesBtn.addEventListener("click", function(){ submitPost(null); });
+    }
+
+    async function submitPost(newStatusIfNew){
+      var errEl = document.getElementById("newsFormError");
+      errEl.textContent = "";
+      var title = document.getElementById("newsTitleInput").value.trim();
+      var body = document.getElementById("newsBodyInput").value;
+      if(!title){ errEl.textContent = "Title is required."; return; }
+
+      var list = await fetchNewsPosts();
+
+      if(editingId){
+        var idx = list.findIndex(function(p){ return p.id === editingId; });
+        if(idx === -1){ errEl.textContent = "That post no longer exists."; return; }
+        if(!canEditNewsPost(list[idx])){ errEl.textContent = "You don't have permission to edit this post."; return; }
+        list[idx].title = title;
+        list[idx].body = body;
+        // If it was still a draft, this save can also publish it now --
+        // otherwise (already published/archived) publishedAt/status/
+        // archivedAt are left exactly as they were.
+        if(list[idx].status === "draft" && newStatusIfNew === "published"){
+          list[idx].status = "published";
+          list[idx].publishedAt = Date.now();
+        }
+      } else {
+        var authorIsSuperAdmin = state.isSuperAdmin;
+        var entry = {
+          id: "news_" + Date.now() + "_" + Math.floor(Math.random()*10000),
+          title: title,
+          body: body,
+          author: authorIsSuperAdmin ? "SYSTEM" : displayNameFor(state.user || {}),
+          authorUsername: state.adminUsername || "",
+          status: newStatusIfNew,
+          createdAt: Date.now(),
+          publishedAt: newStatusIfNew === "published" ? Date.now() : null,
+          archivedAt: null
+        };
+        list.push(entry);
+      }
+
+      var res = await saveNewsPosts(list);
+      if(!res.ok){ errEl.textContent = "Couldn't save: " + res.error; return; }
+      newsPostsCache = list;
+      resetForm();
+      renderAdminNewsList();
+    }
+
+    resetForm();
+    renderAdminNewsList();
+
+    // Expose editingId hook for renderAdminNewsList's Edit buttons to use
+    window.__newsStartEdit = function(post){
+      state.adminEditingNewsId = post.id;
+      editingId = post.id;
+      editingPost = post;
+      document.getElementById("newsFormTitle").textContent = "Edit Post";
+      document.getElementById("newsTitleInput").value = post.title;
+      document.getElementById("newsBodyInput").value = post.body;
+      document.getElementById("newsFormError").textContent = "";
+      loadFormButtons();
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    };
+  }
+
+  async function renderAdminNewsList(){
+    var box = document.getElementById("adminNewsList");
+    if(!box) return;
+    var list = (await fetchNewsPosts()).slice().sort(function(a,b){ return (b.createdAt||0) - (a.createdAt||0); });
+    newsPostsCache = list;
+    if(!list.length){ box.innerHTML = '<div class="center-note" style="color:var(--muted);">No posts yet.</div>'; return; }
+
+    box.innerHTML = list.map(function(p){
+      var archived = isNewsPostArchived(p);
+      var statusLabel = archived ? '<span style="color:var(--red);font-weight:700;">Archived</span>'
+        : p.status === "published" ? '<span style="color:var(--green);font-weight:700;">Published</span>'
+        : '<span style="color:var(--muted);font-weight:700;">Draft</span>';
+      var dateLabel = p.status === "published" ? formatNewsDate(p.publishedAt) : formatNewsDate(p.createdAt);
+      var canEdit = canEditNewsPost(p);
+
+      return '<div class="admin-car-row" style="align-items:flex-start;flex-direction:column;gap:6px;padding:14px;">' +
+        '<div style="display:flex;width:100%;align-items:baseline;gap:10px;flex-wrap:wrap;">' +
+          '<div style="font-weight:700;font-size:15px;color:var(--text);">' + escapeHtml(p.title) + '</div>' +
+          statusLabel +
+        '</div>' +
+        '<div style="font-size:12px;color:var(--muted);">by ' + escapeHtml(p.author || "SYSTEM") + ' ' + dateLabel + '</div>' +
+        '<div style="display:flex;gap:8px;margin-top:6px;flex-wrap:wrap;">' +
+          (canEdit ? '<button class="small-btn" data-news-edit="' + escapeHtml(p.id) + '">Edit</button>' : '') +
+          (p.status === "draft" ? '<button class="small-btn" data-news-publish="' + escapeHtml(p.id) + '">Publish</button>' : '') +
+          (state.isSuperAdmin && p.status === "published" && !archived ? '<button class="small-btn" data-news-archive="' + escapeHtml(p.id) + '">Archive Now</button>' : '') +
+          '<button class="small-btn" data-news-delete="' + escapeHtml(p.id) + '" style="color:var(--red);border-color:var(--red);">Delete</button>' +
+        '</div>' +
+      '</div>';
+    }).join("");
+
+    box.querySelectorAll("[data-news-edit]").forEach(function(btn){
+      btn.addEventListener("click", function(){
+        var id = btn.getAttribute("data-news-edit");
+        var post = list.find(function(p){ return p.id === id; });
+        if(post && window.__newsStartEdit) window.__newsStartEdit(post);
+      });
+    });
+    box.querySelectorAll("[data-news-publish]").forEach(function(btn){
+      btn.addEventListener("click", async function(){
+        var id = btn.getAttribute("data-news-publish");
+        var freshList = await fetchNewsPosts();
+        var idx = freshList.findIndex(function(p){ return p.id === id; });
+        if(idx === -1) return;
+        freshList[idx].status = "published";
+        freshList[idx].publishedAt = Date.now();
+        await saveNewsPosts(freshList);
+        newsPostsCache = freshList;
+        renderAdminNewsList();
+      });
+    });
+    box.querySelectorAll("[data-news-archive]").forEach(function(btn){
+      btn.addEventListener("click", async function(){
+        if(!state.isSuperAdmin) return;
+        var id = btn.getAttribute("data-news-archive");
+        var freshList = await fetchNewsPosts();
+        var idx = freshList.findIndex(function(p){ return p.id === id; });
+        if(idx === -1) return;
+        freshList[idx].status = "archived";
+        freshList[idx].archivedAt = Date.now();
+        await saveNewsPosts(freshList);
+        newsPostsCache = freshList;
+        renderAdminNewsList();
+      });
+    });
+    box.querySelectorAll("[data-news-delete]").forEach(function(btn){
+      btn.addEventListener("click", async function(){
+        if(!confirm("Delete this post permanently?")) return;
+        var id = btn.getAttribute("data-news-delete");
+        var freshList = await fetchNewsPosts();
+        freshList = freshList.filter(function(p){ return p.id !== id; });
+        await saveNewsPosts(freshList);
+        newsPostsCache = freshList;
+        renderAdminNewsList();
       });
     });
   }
@@ -17398,6 +17703,39 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     });
   }
 
+  /* ============ NEWS (player-facing) ============ */
+  function renderNews(){
+    var acc = state.user;
+    var posts = (newsPostsCache || [])
+      .filter(function(p){ return p.status === "published" && !isNewsPostArchived(p); })
+      .sort(function(a,b){ return (b.publishedAt||0) - (a.publishedAt||0); });
+
+    app.innerHTML =
+      brandHeader() +
+      renderNavBar("news") +
+      '<div class="panel">' +
+        '<div class="garage-title" style="color:var(--text);font-size:20px;margin-bottom:18px;">News</div>' +
+        (posts.length
+          ? posts.map(function(p){
+              return '<div style="border-bottom:1px solid var(--line);padding-bottom:18px;margin-bottom:18px;">' +
+                '<div style="font-family:\'Arial Black\',Impact,sans-serif;font-style:italic;font-size:19px;color:var(--text);">' + escapeHtml(p.title) + '</div>' +
+                '<div style="font-size:12px;color:var(--muted);margin:4px 0 12px;">by ' + escapeHtml(p.author || "SYSTEM") + ' ' + formatNewsDate(p.publishedAt) + '</div>' +
+                renderNewsBodyHtml(p.body) +
+              '</div>';
+            }).join("")
+          : '<div class="center-note" style="color:var(--muted);">No news yet \u2014 check back soon.</div>') +
+      '</div>';
+
+    attachNavListeners();
+
+    // Opening the tab marks everything currently visible as read, whether
+    // or not the player actually opens each individual post.
+    if(acc){
+      acc.lastSeenNewsAt = Date.now();
+      saveAccount(acc);
+    }
+  }
+
   /* ============ INIT ============ */
   app.innerHTML =
     brandHeader() +
@@ -17451,10 +17789,11 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
                 if(bootNewlyEarned.length) await saveAccount(state.user);
               }catch(e){}
               try{
-                var cacheResults = await Promise.all([fetchCustomCars(), fetchAvatarCatalog(), fetchSeasonConfig()]);
+                var cacheResults = await Promise.all([fetchCustomCars(), fetchAvatarCatalog(), fetchSeasonConfig(), fetchNewsPosts()]);
                 customCarsCache = cacheResults[0];
                 avatarCatalogCache = cacheResults[1];
                 // cacheResults[2] populates seasonConfigCache automatically
+                newsPostsCache = cacheResults[3];
               }catch(e){}
             } else {
               currentToken = null; localStorage.removeItem("zt_session");
