@@ -5417,7 +5417,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
       brandHeader() +
       renderNavBar("account") +
       '<div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;">' +
-        '<button class="small-btn" id="backFromAccountBtn">\u2190 Back</button>' +
+        '<button class="small-btn" id="backFromAccountBtn" style="color:var(--line);">\u2190 Back</button>' +
         '<span style="font-weight:700;font-size:16px;color:var(--text);">Account</span>' +
       '</div>' +
       '<div class="panel">' +
@@ -5996,7 +5996,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     app.innerHTML =
       brandHeader() +
       '<div class="panel" style="max-width:440px;margin:60px auto;text-align:center;">' +
-        '<div class="garage-title" style="color:var(--text);font-size:20px;margin-bottom:14px;">You are about to be molested.</div>' +
+        '<div class="garage-title" style="color:var(--text);font-size:20px;margin-bottom:14px;">You are about to be logged in.</div>' +
         '<div style="color:var(--muted);font-size:15px;margin-bottom:22px;">Do you consent?</div>' +
         '<label style="display:flex;align-items:center;justify-content:center;gap:10px;margin-bottom:24px;cursor:pointer;font-size:15px;color:var(--text);">' +
           '<input type="checkbox" id="loginConsentYes" style="width:20px;height:20px;cursor:pointer;" />' +
@@ -7465,7 +7465,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
       brandHeader() +
       renderNavBar(state.profileReturnScreen === "friends" ? "friends" : "") +
       '<div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;">' +
-        '<button class="small-btn" id="backFromProfileBtn">\u2190 Back</button>' +
+        '<button class="small-btn" id="backFromProfileBtn" style="color:var(--line);">\u2190 Back</button>' +
       '</div>' +
       '<div class="panel"><div class="center-note">Loading profile...</div></div>';
 
@@ -16246,7 +16246,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
       brandHeader() +
       (state.user ? renderNavBar("guilds") : "") +
       '<div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;">' +
-        '<button class="small-btn" id="backFromGuildViewBtn">\u2190 Back</button>' +
+        '<button class="small-btn" id="backFromGuildViewBtn" style="color:var(--line);">\u2190 Back</button>' +
         '<span style="font-weight:700;font-size:16px;color:var(--text);">Guild</span>' +
       '</div>' +
       '<div id="guildViewBody"><div class="panel"><div class="center-note">Loading\u2026</div></div></div>';
