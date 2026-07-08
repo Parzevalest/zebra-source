@@ -5636,14 +5636,6 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
         '<button class="navbar-tab' + (activeTab==="shop"         ?" active":"") + '" data-nav="shop">Shop</button>' +
         '<button class="navbar-tab' + (activeTab==="blackMarket"  ?" active":"") + '" data-nav="blackMarket">Black Market</button>' +
         '<button class="navbar-tab' + (activeTab==="leaderboard"  ?" active":"") + '" data-nav="leaderboard">Leaderboards</button>' +
-        '<button class="navbar-tab' + (activeTab==="achievements" ?" active":"") + '" data-nav="achievements">Achievements</button>' +
-        '<button class="navbar-tab' + (activeTab==="news" ?" active":"") + '" data-nav="news">News' +
-          (function(){
-            var count = getUnreadNewsCount(state.user);
-            if(!count) return '';
-            return ' <span style="display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:16px;padding:0 4px;background:var(--red);color:#fff;font-size:10px;font-weight:700;clip-path:polygon(50% 0%, 100% 25%, 100% 75%, 50% 100%, 0% 75%, 0% 25%);vertical-align:middle;margin-left:4px;">' + count + '</span>';
-          })() +
-        '</button>' +
       '</div>' +
       '<div class="navbar-right">' +
         (STORAGE_MODE === "memory" ? '<span style="color:var(--muted);font-size:11px;margin-right:6px;">(session)</span>' : '') +
@@ -5659,6 +5651,14 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
             '<span class="nav-dropdown-arrow">\u25BC</span>' +
           '</button>' +
           '<div class="nav-dropdown-menu" id="navDropdownMenu">' +
+            '<button class="nav-dropdown-item" id="navDropAchievements">\uD83C\uDFC6 Achievements</button>' +
+            '<button class="nav-dropdown-item" id="navDropNews">\uD83D\uDCF0 News' +
+              (function(){
+                var count = getUnreadNewsCount(state.user);
+                if(!count) return '';
+                return ' <span style="display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:16px;padding:0 4px;background:var(--red);color:#fff;font-size:10px;font-weight:700;clip-path:polygon(50% 0%, 100% 25%, 100% 75%, 50% 100%, 0% 75%, 0% 25%);vertical-align:middle;margin-left:6px;">' + count + '</span>';
+              })() +
+            '</button>' +
             '<button class="nav-dropdown-item" id="navDropAbout">\uD83D\uDCD6 About</button>' +
             '<button class="nav-dropdown-item" id="navDropAccount">\uD83D\uDC64 Account</button>' +
             '<button class="nav-dropdown-item" id="navDropProfile">\uD83D\uDC65 Public Profile</button>' +
@@ -5695,6 +5695,10 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     }
     var navAbout = document.getElementById("navDropAbout");
     if(navAbout) navAbout.addEventListener("click", function(){ if(dropMenu) dropMenu.classList.remove("open"); navigate("/about"); });
+    var navDropAchievements = document.getElementById("navDropAchievements");
+    if(navDropAchievements) navDropAchievements.addEventListener("click", function(){ if(dropMenu) dropMenu.classList.remove("open"); navigate("/achievements"); });
+    var navDropNews = document.getElementById("navDropNews");
+    if(navDropNews) navDropNews.addEventListener("click", function(){ if(dropMenu) dropMenu.classList.remove("open"); navigate("/news"); });
     var navDropAccount = document.getElementById("navDropAccount");
     if(navDropAccount) navDropAccount.addEventListener("click", function(){ if(dropMenu) dropMenu.classList.remove("open"); state.accountReturnScreen = state.screen; navigate("/account"); });
     var navDropProfile = document.getElementById("navDropProfile");
@@ -6038,7 +6042,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     app.innerHTML =
       brandHeader() +
       '<div class="panel" style="max-width:440px;margin:60px auto;text-align:center;">' +
-        '<div class="garage-title" style="color:var(--text);font-size:20px;margin-bottom:14px;">You are about to be molested.</div>' +
+        '<div class="garage-title" style="color:var(--text);font-size:20px;margin-bottom:14px;">You are about to be logged in.</div>' +
         '<div style="color:var(--muted);font-size:15px;margin-bottom:22px;">Do you consent?</div>' +
         '<label style="display:flex;align-items:center;justify-content:center;gap:10px;margin-bottom:24px;cursor:pointer;font-size:15px;color:var(--text);">' +
           '<input type="checkbox" id="loginConsentYes" style="width:20px;height:20px;cursor:pointer;" />' +
@@ -15607,7 +15611,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     var freeSpins = acc.freeWheelSpins || 0;
 
     var shopCoinBar = '<div style="display:flex;align-items:center;justify-content:flex-end;gap:18px;margin-bottom:14px;">' +
-      '<span style="font-family:\'Arial Black\',Impact,sans-serif;font-style:italic;font-size:16px;color:var(--black);">\uD83C\uDFB0 Free Rolls x' + freeSpins + '</span>' +
+      '<span style="font-family:\'Arial Black\',Impact,sans-serif;font-style:italic;font-size:16px;color:#000000;">\uD83C\uDFB0 Free Rolls x' + freeSpins + '</span>' +
       '<span style="font-family:\'Arial Black\',Impact,sans-serif;font-style:italic;font-size:16px;color:var(--amber);">' + COIN_ICON + coins.toLocaleString() + '</span>' +
     '</div>';
 
