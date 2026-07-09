@@ -44,14 +44,14 @@ function setDb(dbModule) { db = dbModule; }
 // Their races never touch a real account, never call back into any
 // client-side stat-saving code, and never affect any real player's data.
 const RACE_BOTS = [
-  { username: "shadowtypist", displayName: "ShadowTypist", carId: "starter_car" },
-  { username: "velocityvex",  displayName: "VelocityVex",  carId: "starter_car" },
-  { username: "typhoonscribe",displayName: "TyphoonScribe",carId: "starter_car" },
-  { username: "quillrunner",  displayName: "QuillRunner",  carId: "starter_car" },
-  { username: "nightdrifter", displayName: "NightDrifter", carId: "starter_car" },
+  { username: "bot1", displayName: "Martha", carId: "starter_car" },
+  { username: "bot2",  displayName: "Chud",  carId: "starter_car" },
+  { username: "bot3",displayName: "Luh Krank",carId: "starter_car" },
+  { username: "bot4",  displayName: "Zhara",  carId: "starter_car" },
+  { username: "bot5", displayName: "Meg", carId: "starter_car" },
 ];
 const BOT_MIN_WPM = 60;
-const BOT_MAX_WPM = 100;
+const BOT_MAX_WPM = 130;
 const BOT_PROGRESS_TICKS = 5; // how many opponent_progress updates a bot sends over the course of a race
 
 // Creates each bot's account in storage if it doesn't already exist yet.
