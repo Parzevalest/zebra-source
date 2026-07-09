@@ -44,11 +44,11 @@ function setDb(dbModule) { db = dbModule; }
 // Their races never touch a real account, never call back into any
 // client-side stat-saving code, and never affect any real player's data.
 const RACE_BOTS = [
-  { username: "bot1", displayName: "Martha", carId: "starter_car" },
-  { username: "bot2",  displayName: "Chud",  carId: "starter_car" },
-  { username: "bot3",displayName: "Luh Krank",carId: "starter_car" },
-  { username: "bot4",  displayName: "Zhara",  carId: "starter_car" },
-  { username: "bot5", displayName: "Meg", carId: "starter_car" },
+  { username: "bot1", displayName: "Martha", carId: "car_1783141883041_9526" },
+  { username: "bot2",  displayName: "Chud",  carId: "car_1783141805661_1655" },
+  { username: "bot3",displayName: "Luh Krank",carId: "car_1783563053047_1965" },
+  { username: "bot4",  displayName: "Zhara",  carId: "car_1783151943195_8262" },
+  { username: "bot5", displayName: "Meg", carId: "car_1783241897969_850" },
 ];
 const BOT_MIN_WPM = 60;
 const BOT_MAX_WPM = 130;
