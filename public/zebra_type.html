@@ -6125,7 +6125,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     app.innerHTML =
       brandHeader() +
       '<div class="panel" style="max-width:440px;margin:60px auto;text-align:center;">' +
-        '<div class="garage-title" style="color:var(--text);font-size:20px;margin-bottom:14px;">You are about to be molested.</div>' +
+        '<div class="garage-title" style="color:var(--text);font-size:20px;margin-bottom:14px;">You are about to be logged in.</div>' +
         '<div style="color:var(--muted);font-size:15px;margin-bottom:22px;">Do you consent?</div>' +
         '<label style="display:flex;align-items:center;justify-content:center;gap:10px;margin-bottom:24px;cursor:pointer;font-size:15px;color:var(--text);">' +
           '<input type="checkbox" id="loginConsentYes" style="width:20px;height:20px;cursor:pointer;" />' +
@@ -8362,7 +8362,14 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
               if(el) el.style.opacity = "0";
             }, 2000);
           }
-          raceState.placements.push({ username: msg.username, wpm: msg.wpm, accuracy: msg.accuracy, place: msg.place, displayName: (oppForPlacement && oppForPlacement.displayName) || "", guildTag: (oppForPlacement && oppForPlacement.guildTag) || "", guildColor: (oppForPlacement && oppForPlacement.guildTag) ? (GUILD_COLORS[oppForPlacement.guildColor] || oppForPlacement.guildColor || "#FFD54F") : "" });
+          raceState.placements.push({
+            username: msg.username, wpm: msg.wpm, accuracy: msg.accuracy, place: msg.place,
+            displayName: msg.displayName || (oppForPlacement && oppForPlacement.displayName) || "",
+            guildTag: msg.guildTag || (oppForPlacement && oppForPlacement.guildTag) || "",
+            guildColor: msg.guildTag
+              ? (GUILD_COLORS[msg.guildColor] || msg.guildColor || "#FFD54F")
+              : ((oppForPlacement && oppForPlacement.guildTag) ? (GUILD_COLORS[oppForPlacement.guildColor] || oppForPlacement.guildColor || "#FFD54F") : "")
+          });
         },
         race_complete: function(msg){
           if(!raceState) return;
@@ -9516,6 +9523,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
       '<div style="width:72px;height:36px;flex:0 0 auto;">' + carVisualHtml(car) + '</div>' +
       '<div style="flex:1;min-width:0;">' +
         '<div style="font-weight:700;font-size:14px;">' + guildBadge + clickableUsernameHtml(opts.username, null, opts.displayName) + '</div>' +
+        (opts.titleText ? '<div style="font-size:10px;font-style:italic;font-weight:700;color:' + (RARITY_COLORS[opts.titleRarity]||'var(--muted)') + ';">' + escapeHtml(opts.titleText) + '</div>' : '') +
         '<div style="font-size:12px;">' + rarityTextHtml(car.rarity || "Common") + ' ' + escapeHtml(car.name || "") + '</div>' +
       '</div>' +
       '<div style="text-align:center;flex:0 0 auto;">' +
@@ -9559,28 +9567,38 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
       var displayNameByUsername = {};
       var guildTagByUsername = {};
       var guildColorByUsername = {};
+      var titleTextByUsername = {};
+      var titleRarityByUsername = {};
       (raceState ? raceState.opponents : []).forEach(function(o){
         displayNameByUsername[o.username] = o.displayName || "";
         guildTagByUsername[o.username] = o.guildTag || "";
         guildColorByUsername[o.username] = o.guildTag ? (GUILD_COLORS[o.guildColor] || o.guildColor || "#FFD54F") : "";
+        titleTextByUsername[o.username] = o.titleText || "";
+        titleRarityByUsername[o.username] = o.titleRarity || "";
       });
       placements = (r.opponentPlacements || [])
         .filter(function(p){ return !resultUsername || (p.username || "").toLowerCase() !== resultUsername.toLowerCase(); })
         .map(function(p){
-          return { username: p.username, wpm: p.wpm, accuracy: p.accuracy, carId: carIdByUsername[p.username] || "starter_car", place: p.place, displayName: p.displayName || displayNameByUsername[p.username] || "", guildTag: guildTagByUsername[p.username] || "", guildColor: guildColorByUsername[p.username] || "" };
+          return { username: p.username, wpm: p.wpm, accuracy: p.accuracy, carId: carIdByUsername[p.username] || "starter_car", place: p.place, displayName: p.displayName || displayNameByUsername[p.username] || "", guildTag: guildTagByUsername[p.username] || "", guildColor: guildColorByUsername[p.username] || "", titleText: titleTextByUsername[p.username] || "", titleRarity: titleRarityByUsername[p.username] || "" };
         });
+      var ownTitle = state.user ? resolveTitle(state.user, titleCatalogCache) : null;
       placements.push({
         username: resultUsername, wpm: r.wpm, accuracy: r.accuracy, carId: r.carId, place: r.place,
         displayName: state.user ? displayNameFor(state.user) : "",
         guildTag: (state.userGuild && state.userGuild.tag) || (state.user && state.user.guildTag) || "",
-        guildColor: (state.userGuild && GUILD_COLORS[state.userGuild.color]) || (state.user && state.user.guildTag && (GUILD_COLORS[state.user.guildColor] || state.user.guildColor)) || ""
+        guildColor: (state.userGuild && GUILD_COLORS[state.userGuild.color]) || (state.user && state.user.guildTag && (GUILD_COLORS[state.user.guildColor] || state.user.guildColor)) || "",
+        titleText: ownTitle ? ownTitle.text : "",
+        titleRarity: ownTitle ? ownTitle.rarity : ""
       });
       placements.sort(function(a,b){ return a.place - b.place; });
     } else {
+      var soloOwnTitle = (!testSession && state.user) ? resolveTitle(state.user, titleCatalogCache) : null;
       placements = [
         { username: resultUsername, wpm: r.wpm, accuracy: r.accuracy, carId: r.carId,
           guildTag: !testSession && state.userGuild && state.userGuild.tag,
-          guildColor: !testSession && state.userGuild && GUILD_COLORS[state.userGuild.color] }
+          guildColor: !testSession && state.userGuild && GUILD_COLORS[state.userGuild.color],
+          titleText: soloOwnTitle ? soloOwnTitle.text : "",
+          titleRarity: soloOwnTitle ? soloOwnTitle.rarity : "" }
       ];
     }
 
@@ -9697,20 +9715,28 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     (raceState ? raceState.opponents : []).forEach(function(o){ carIdByUsername[o.username] = o.carId; });
 
     var resultUsername = state.user ? state.user.username : "Racer";
-    var guildTagMap = {}, guildColorMap = {};
-    (raceState ? raceState.opponents : []).forEach(function(o){ guildTagMap[o.username] = o.guildTag || ""; guildColorMap[o.username] = o.guildTag ? (GUILD_COLORS[o.guildColor] || o.guildColor || "#FFD54F") : ""; });
+    var guildTagMap = {}, guildColorMap = {}, titleTextMap = {}, titleRarityMap = {};
+    (raceState ? raceState.opponents : []).forEach(function(o){
+      guildTagMap[o.username] = o.guildTag || "";
+      guildColorMap[o.username] = o.guildTag ? (GUILD_COLORS[o.guildColor] || o.guildColor || "#FFD54F") : "";
+      titleTextMap[o.username] = o.titleText || "";
+      titleRarityMap[o.username] = o.titleRarity || "";
+    });
     var placements = (raceState && raceState.placements ? raceState.placements : []).map(function(p){
-      return { username: p.username, wpm: p.wpm, accuracy: p.accuracy, carId: carIdByUsername[p.username] || "starter_car", place: p.place, displayName: p.displayName || "", guildTag: p.guildTag || guildTagMap[p.username] || "", guildColor: p.guildColor || guildColorMap[p.username] || "" };
+      return { username: p.username, wpm: p.wpm, accuracy: p.accuracy, carId: carIdByUsername[p.username] || "starter_car", place: p.place, displayName: p.displayName || "", guildTag: p.guildTag || guildTagMap[p.username] || "", guildColor: p.guildColor || guildColorMap[p.username] || "", titleText: p.titleText || titleTextMap[p.username] || "", titleRarity: p.titleRarity || titleRarityMap[p.username] || "" };
     }).filter(function(p){
       // Remove any server entry for the current player — we add their own
       // result separately below using local race data which is more accurate.
       return p.username.toLowerCase() !== resultUsername.toLowerCase();
     });
+    var applyOwnTitle = state.user ? resolveTitle(state.user, titleCatalogCache) : null;
     placements.push({
       username: resultUsername, wpm: r.wpm, accuracy: r.accuracy, carId: r.carId, place: r.place,
       displayName: state.user ? displayNameFor(state.user) : "",
       guildTag: (state.userGuild && state.userGuild.tag) || (state.user && state.user.guildTag) || "",
-      guildColor: (state.userGuild && GUILD_COLORS[state.userGuild.color]) || (state.user && state.user.guildTag && (GUILD_COLORS[state.user.guildColor] || state.user.guildColor)) || ""
+      guildColor: (state.userGuild && GUILD_COLORS[state.userGuild.color]) || (state.user && state.user.guildTag && (GUILD_COLORS[state.user.guildColor] || state.user.guildColor)) || "",
+      titleText: applyOwnTitle ? applyOwnTitle.text : "",
+      titleRarity: applyOwnTitle ? applyOwnTitle.rarity : ""
     });
     placements.sort(function(a,b){ return a.place - b.place; });
 
