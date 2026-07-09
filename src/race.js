@@ -35,6 +35,63 @@ const PASSAGE_CACHE_MS = 60 * 1000; // reload from DB at most once per minute
 let db = null;
 function setDb(dbModule) { db = dbModule; }
 
+// ── Filler race bots ────────────────────────────────────────────────────────
+// A small roster of server-simulated "players" that can fill an otherwise
+// solo race so nobody races completely alone. These are NOT designed to
+// impersonate a specific real person or to pass off fabricated results as a
+// real human's performance -- they're plainly filler opponents, excluded
+// from every leaderboard, with fixed/frozen profile stats that never change.
+// Their races never touch a real account, never call back into any
+// client-side stat-saving code, and never affect any real player's data.
+const RACE_BOTS = [
+  { username: "shadowtypist", displayName: "ShadowTypist", carId: "starter_car" },
+  { username: "velocityvex",  displayName: "VelocityVex",  carId: "starter_car" },
+  { username: "typhoonscribe",displayName: "TyphoonScribe",carId: "starter_car" },
+  { username: "quillrunner",  displayName: "QuillRunner",  carId: "starter_car" },
+  { username: "nightdrifter", displayName: "NightDrifter", carId: "starter_car" },
+];
+const BOT_MIN_WPM = 60;
+const BOT_MAX_WPM = 100;
+const BOT_PROGRESS_TICKS = 5; // how many opponent_progress updates a bot sends over the course of a race
+
+// Creates each bot's account in storage if it doesn't already exist yet.
+// Never overwrites an existing one (so nothing here can clobber any manual
+// admin tweaks made to a bot account later). Fire-and-forget at startup --
+// the race server itself doesn't need to wait on this to start listening.
+async function ensureBotAccountsExist() {
+  if (!db) return;
+  for (const bot of RACE_BOTS) {
+    try {
+      const key = "account:" + bot.username;
+      const existing = await db.get("system", key, true);
+      if (existing && existing.value) continue;
+      const account = {
+        username: bot.username,
+        displayName: bot.displayName,
+        // Random, never-revealed password -- these accounts are never meant
+        // to be logged into through the normal auth flow at all.
+        passwordHash: crypto.randomBytes(32).toString("hex"),
+        races: 100,
+        sumWpm: 100 * 100,      // averages out to exactly 100 avg WPM
+        sumAccuracy: 95 * 100,  // averages out to exactly 95% avg accuracy
+        bestWpm: 100,
+        coins: 0,
+        equippedCarId: bot.carId,
+        ownedCarIds: [],
+        ownedTitles: [],
+        equippedTitle: null,
+        excludedFromLeaderboard: true,
+        isBot: true,
+        createdAt: Date.now(),
+      };
+      await db.set("system", key, JSON.stringify(account), true);
+      console.log(`[race bots] created bot account: ${bot.username}`);
+    } catch (e) {
+      console.warn(`[race bots] failed to ensure bot account ${bot.username}:`, e.message);
+    }
+  }
+}
+
 // Load passage texts from shared storage key "race_passages".
 // Uses a short cache so rapid room creation doesn't hammer the DB,
 // but always reloads if the cache is stale so admin changes take effect.
@@ -138,6 +195,12 @@ function makeRaceServer(httpServer) {
   // Prevents the same player from joining two rooms simultaneously.
   const activePlayers = new Map(); // username -> ws
 
+  // Track which bots are currently occupying a room, so the same bot can
+  // never appear in two rooms at once.
+  const activeBotUsernames = new Set();
+
+  ensureBotAccountsExist().catch(() => {});
+
   function send(ws, msg) {
     if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
   }
@@ -156,6 +219,61 @@ function makeRaceServer(httpServer) {
       list.push({ username, carId: p.carId, displayName: p.displayName || "", guildTag: p.guildTag || "", guildColor: p.guildColor || "", titleText: p.titleText || "", titleRarity: p.titleRarity || "" });
     });
     return list;
+  }
+
+  function roomHasRealPlayer(room) {
+    for (const [, p] of room.players) { if (!p.isBot) return true; }
+    return false;
+  }
+
+  // If a room is about to lock with only one participant, fill it with one
+  // available bot so that player doesn't race completely alone. If a second
+  // real player joins in time on their own, this never fires at all.
+  function injectBotIfNeeded(room) {
+    if (!rooms.has(room.id) || room.locked) return;
+    if (room.players.size !== 1) return;
+    const available = RACE_BOTS.filter(b => !activeBotUsernames.has(b.username));
+    if (!available.length) return; // all bots already busy elsewhere -- just skip
+    const bot = available[Math.floor(Math.random() * available.length)];
+    activeBotUsernames.add(bot.username);
+
+    const fakeWs = { readyState: WebSocket.OPEN, send: () => {}, roomId: room.id };
+    const recentWpm = BOT_MIN_WPM + Math.floor(Math.random() * (BOT_MAX_WPM - BOT_MIN_WPM + 1));
+    room.players.set(bot.username, {
+      ws: fakeWs, carId: bot.carId, recentWpm,
+      displayName: bot.displayName, guildTag: "", guildColor: "", titleText: "", titleRarity: "",
+      isBot: true,
+    });
+    broadcastToRoom(room, { type: "room_joined", roomId: room.id, opponentsSoFar: opponentList(room, null) }, null);
+  }
+
+  // Simulates a bot's whole race after the countdown ends: a handful of
+  // progress updates broadcast to the real player(s) in the room over the
+  // course of the race, then a finish at a duration consistent with the
+  // bot's assigned WPM for this race. None of this touches the bot's own
+  // account -- its profile stats stay exactly as seeded, always.
+  function scheduleBotRace(room, username, playerData, passage) {
+    const wpm = playerData.recentWpm;
+    const totalChars = passage.length;
+    const durationMs = Math.max(4000, Math.round(((totalChars / CHARS_PER_WORD) / wpm) * 60000));
+    const accuracy = Math.round((92 + Math.random() * 6) * 10) / 10; // ~92-98%, cosmetic only
+
+    const untilStart = Math.max(0, room.startsAt - Date.now());
+
+    for (let i = 1; i <= BOT_PROGRESS_TICKS; i++) {
+      const tickDelay = untilStart + Math.round((durationMs * i) / (BOT_PROGRESS_TICKS + 1));
+      setTimeout(() => {
+        if (!rooms.has(room.id) || room.finishedOrder.some(f => f.username === username)) return;
+        const charsTyped = Math.round((totalChars * i) / (BOT_PROGRESS_TICKS + 1));
+        const jitteredWpm = Math.max(1, Math.round(wpm + (Math.random() * 10 - 5)));
+        broadcastToRoom(room, { type: "opponent_progress", username, charsTyped, wpm: jitteredWpm }, username);
+      }, tickDelay);
+    }
+
+    setTimeout(() => {
+      if (!rooms.has(room.id)) return;
+      finishPlayerRace(room, username, Math.round(wpm), accuracy, durationMs, true);
+    }, untilStart + durationMs);
   }
 
   async function lockAndStartCountdown(room) {
@@ -188,6 +306,7 @@ function makeRaceServer(httpServer) {
         passage: passage,
         startsAt: room.startsAt,
       });
+      if (p.isBot) scheduleBotRace(room, username, p, passage);
     });
   }
 
@@ -195,10 +314,13 @@ function makeRaceServer(httpServer) {
     let room = openRoom;
     if (!room || room.locked || room.players.size >= ROOM_SIZE) {
       const roomId = crypto.randomBytes(6).toString("hex");
-      room = { id: roomId, players: new Map(), locked: false, joinTimer: null, finishedOrder: [] };
+      room = { id: roomId, players: new Map(), locked: false, joinTimer: null, botCheckTimer: null, finishedOrder: [] };
       rooms.set(roomId, room);
       openRoom = room;
       room.joinTimer = setTimeout(() => lockAndStartCountdown(room), JOIN_WINDOW_MS);
+      // Give real players a couple seconds to join naturally first -- if a
+      // second real player joins in time, injectBotIfNeeded is a no-op.
+      room.botCheckTimer = setTimeout(() => injectBotIfNeeded(room), Math.max(500, JOIN_WINDOW_MS - 1000));
     }
 
     room.players.set(username, { ws, carId, recentWpm: recentWpm || DEFAULT_WPM, displayName: displayName || "", guildTag: guildTag || "", guildColor: guildColor || "", titleText: titleText || "", titleRarity: titleRarity || "" });
@@ -210,9 +332,49 @@ function makeRaceServer(httpServer) {
 
     if (room.players.size >= ROOM_SIZE && !room.locked) {
       clearTimeout(room.joinTimer);
+      if (room.botCheckTimer) clearTimeout(room.botCheckTimer);
       // Small delay so all players receive room_joined before race_starting,
       // ensuring the full countdown plays on every client.
       room.joinTimer = setTimeout(() => lockAndStartCountdown(room), 1000);
+    }
+  }
+
+  // Shared by both a real "finished" message and a bot's simulated finish.
+  // skipWpmCheck is used for bots, since their wpm/timeMs pair is already
+  // internally consistent (the server generated both itself) -- the
+  // sanity check exists to catch manipulated results from a real client.
+  function finishPlayerRace(room, username, wpm, accuracy, timeMs, skipWpmCheck) {
+    if (!room || !room.locked) return;
+    if (room.finishedOrder.some((f) => f.username === username)) return;
+
+    if (!skipWpmCheck) {
+      const playerData = room.players.get(username);
+      if (playerData && room.startsAt && timeMs > 0) {
+        const passageLen = playerData.passage ? playerData.passage.length : 0;
+        if (passageLen > 0) {
+          const elapsedMinutes = timeMs / 60000;
+          const impliedWpm = Math.round((passageLen / 5) / elapsedMinutes);
+          const SERVER_WPM_CAP = 350;
+          if (impliedWpm > SERVER_WPM_CAP) {
+            wpm = SERVER_WPM_CAP;
+            console.warn(`[race] WPM clamped for ${username}: implied ${impliedWpm} → ${SERVER_WPM_CAP}`);
+          }
+        }
+      }
+    }
+
+    const place = room.finishedOrder.length + 1;
+    room.finishedOrder.push({ username, wpm, accuracy, timeMs, place });
+
+    broadcastToRoom(room, { type: "opponent_finished", username, wpm, accuracy, timeMs, place }, username);
+
+    if (room.finishedOrder.length >= room.players.size) {
+      broadcastToRoom(room, { type: "race_complete", placements: room.finishedOrder }, null);
+      room.players.forEach((p, uname) => {
+        p.ws.roomId = null;
+        if (p.isBot) activeBotUsernames.delete(uname);
+      });
+      rooms.delete(room.id);
     }
   }
 
@@ -262,47 +424,7 @@ function makeRaceServer(httpServer) {
 
       if (msg.type === "finished") {
         const room = rooms.get(ws.roomId);
-        if (!room || !room.locked) return;
-        if (room.finishedOrder.some((f) => f.username === ws.username)) return;
-
-        // Server-side WPM sanity check — the server knows the passage
-        // length assigned to this player and when the race started, so
-        // it can compute the maximum possible WPM and reject manipulated
-        // results that exceed what any human could physically type.
-        const playerData = room.players.get(ws.username);
-        if (playerData && room.startsAt && msg.timeMs > 0) {
-          const passageLen = playerData.passage ? playerData.passage.length : 0;
-          if (passageLen > 0) {
-            const elapsedMinutes = msg.timeMs / 60000;
-            const impliedWpm = Math.round((passageLen / 5) / elapsedMinutes);
-            const SERVER_WPM_CAP = 350; // matches client cap
-            if (impliedWpm > SERVER_WPM_CAP) {
-              // Clamp to the cap rather than rejecting outright — legitimate
-              // fast typists near the boundary shouldn't be penalised, and
-              // a cheater getting capped at 350 is far less harmful than
-              // having their manipulated result accepted.
-              msg.wpm = SERVER_WPM_CAP;
-              console.warn(`[race] WPM clamped for ${ws.username}: implied ${impliedWpm} → ${SERVER_WPM_CAP}`);
-            }
-          }
-        }
-        const place = room.finishedOrder.length + 1;
-        room.finishedOrder.push({ username: ws.username, wpm: msg.wpm, accuracy: msg.accuracy, timeMs: msg.timeMs, place });
-
-        broadcastToRoom(room, {
-          type: "opponent_finished",
-          username: ws.username,
-          wpm: msg.wpm,
-          accuracy: msg.accuracy,
-          timeMs: msg.timeMs,
-          place,
-        }, ws.username);
-
-        if (room.finishedOrder.length >= room.players.size) {
-          broadcastToRoom(room, { type: "race_complete", placements: room.finishedOrder }, null);
-          room.players.forEach((p) => { p.ws.roomId = null; });
-          rooms.delete(room.id);
-        }
+        finishPlayerRace(room, ws.username, msg.wpm, msg.accuracy, msg.timeMs, false);
         return;
       }
     });
@@ -320,8 +442,13 @@ function makeRaceServer(httpServer) {
       room.players.delete(ws.username);
       broadcastToRoom(room, { type: "opponent_left", username: ws.username }, null);
 
-      if (room.players.size === 0) {
+      // Clean up fully if nobody's left, OR if the only ones left are
+      // bots -- a room with just a bot in it and no real player watching
+      // has no reason to keep running.
+      if (room.players.size === 0 || !roomHasRealPlayer(room)) {
+        room.players.forEach((p, uname) => { if (p.isBot) activeBotUsernames.delete(uname); });
         if (room.joinTimer) clearTimeout(room.joinTimer);
+        if (room.botCheckTimer) clearTimeout(room.botCheckTimer);
         if (openRoom === room) openRoom = null;
         rooms.delete(room.id);
       }
