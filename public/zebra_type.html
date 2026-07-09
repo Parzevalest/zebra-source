@@ -3099,49 +3099,55 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
       tiers: ["Common", "Rare", "Ultra Rare", "Legendary"],
       weights: { "Common": 60, "Rare": 28, "Ultra Rare": 10, "Legendary": 2 },
       costCoins: 2500,
-      allowedTypes: ["car", "nameTag", "avatar"]
+      allowedTypes: ["car"]
     },
     {
       id: "decent", label: "Advanced Wheel",
       tiers: ["Common", "Rare", "Ultra Rare", "Legendary", "Mythic", "Ascended"],
       weights: { "Common": 48.9, "Rare": 29.4, "Ultra Rare": 15.7, "Legendary": 5, "Mythic": 0.9, "Ascended": 0.1 },
       costCoins: 5000,
-      allowedTypes: ["car", "nameTag", "avatar"]
+      allowedTypes: ["car"]
     },
     {
       id: "great", label: "Champion Wheel",
       tiers: ["Common", "Rare", "Ultra Rare", "Legendary", "Mythic", "Ascended", "Unobtainable"],
       weights: { "Common": 10, "Rare": 49.1, "Ultra Rare": 32.7, "Legendary": 5.7, "Mythic": 1.6, "Ascended": 0.8, "Unobtainable": 0.1 },
       costCoins: 8000,
-      allowedTypes: ["car", "nameTag", "avatar"]
+      allowedTypes: ["car"]
     },
     {
-      id: "titles_bad", label: "Beginner Titles Wheel",
-      tiers: ["Common", "Rare", "Ultra Rare", "Legendary"],
-      weights: { "Common": 60, "Rare": 28, "Ultra Rare": 10, "Legendary": 2 },
-      costCoins: 1500,
-      allowedTypes: ["title"]
-    },
-    {
-      id: "titles_decent", label: "Advanced Titles Wheel",
-      tiers: ["Common", "Rare", "Ultra Rare", "Legendary", "Mythic", "Ascended"],
-      weights: { "Common": 48.9, "Rare": 29.4, "Ultra Rare": 15.7, "Legendary": 5, "Mythic": 0.9, "Ascended": 0.1 },
+      // Consolidated from the former three-tier Titles Wheels into one --
+      // this keeps the "titles_decent" id on purpose (rather than a fresh
+      // id) so any titles already added to this specific wheel stay
+      // attached to it with zero migration needed. The other two tiers'
+      // titles get migrated into this one instead (see the migration step
+      // in fetchWheelConfigs).
+      id: "titles_decent", label: "Titles Wheel",
+      tiers: ["Common", "Rare", "Ultra Rare", "Legendary", "Mythic", "Ascended", "Unobtainable"],
+      weights: { "Common": 48.6, "Rare": 29.4, "Ultra Rare": 15.7, "Legendary": 5, "Mythic": 0.9, "Ascended": 0.1, "Unobtainable": 0.3 },
       costCoins: 2500,
       allowedTypes: ["title"]
     },
     {
-      id: "titles_great", label: "Champion Titles Wheel",
+      id: "avatars", label: "Avatar Wheel",
       tiers: ["Common", "Rare", "Ultra Rare", "Legendary", "Mythic", "Ascended", "Unobtainable"],
-      weights: { "Common": 10, "Rare": 49.1, "Ultra Rare": 32.7, "Legendary": 5.7, "Mythic": 1.6, "Ascended": 0.8, "Unobtainable": 0.1 },
-      costCoins: 5000,
-      allowedTypes: ["title"]
+      weights: { "Common": 48.6, "Rare": 29.4, "Ultra Rare": 15.7, "Legendary": 5, "Mythic": 0.9, "Ascended": 0.1, "Unobtainable": 0.3 },
+      costCoins: 2500,
+      allowedTypes: ["avatar"]
+    },
+    {
+      id: "nametags", label: "Name Tag Wheel",
+      tiers: ["Common", "Rare", "Ultra Rare", "Legendary", "Mythic", "Ascended", "Unobtainable"],
+      weights: { "Common": 48.6, "Rare": 29.4, "Ultra Rare": 15.7, "Legendary": 5, "Mythic": 0.9, "Ascended": 0.1, "Unobtainable": 0.3 },
+      costCoins: 2500,
+      allowedTypes: ["nameTag"]
     },
     {
       id: "premium", label: "Premium Wheel",
       tiers: ["Common", "Rare", "Ultra Rare", "Legendary", "Mythic", "Ascended", "Unobtainable"],
       weights: { "Common": 5, "Rare": 35, "Ultra Rare": 30, "Legendary": 13, "Mythic": 11, "Ascended": 5, "Unobtainable": 1 },
       costCoins: 8500,
-      allowedTypes: ["car", "nameTag", "avatar"],
+      allowedTypes: ["car", "nameTag", "title"],
       premiumOnly: true
     }
   ];
@@ -4491,7 +4497,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
   // default label OR its weights exactly match a known earlier snapshot —
   // meaning the admin never customized it — so any real edits an admin
   // already made are left completely alone.
-  var LEGACY_WHEEL_LABELS = { bad: "Bad Wheel", decent: "Decent Wheel", great: "Great Wheel" };
+  var LEGACY_WHEEL_LABELS = { bad: "Bad Wheel", decent: "Decent Wheel", great: "Great Wheel", titles_decent: "Advanced Titles Wheel" };
   var LEGACY_WHEEL_WEIGHT_SNAPSHOTS = {
     bad: [],
     decent: [
@@ -4501,6 +4507,9 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     great: [
       { "Common": 45, "Rare": 30, "Ultra Rare": 20, "Legendary": 3.5, "Mythic": 1, "Ascended": 0.49, "Unobtainable": 0.01 },
       { "Common": 10, "Rare": 49.0943, "Ultra Rare": 32.7296, "Legendary": 5.7277, "Mythic": 1.6365, "Ascended": 0.8019, "Unobtainable": 0.01 }
+    ],
+    titles_decent: [
+      { "Common": 48.9, "Rare": 29.4, "Ultra Rare": 15.7, "Legendary": 5, "Mythic": 0.9, "Ascended": 0.1 }
     ]
   };
 
@@ -4526,6 +4535,14 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
             if(labelIsLegacy || weightsMatchOldSnapshot){
               w.label = def.label;
               w.weights = def.weights;
+              w.tiers = def.tiers;
+              migrated = true;
+            }
+            // allowedTypes has never been admin-editable (no UI for it) --
+            // always safe to force it to match the current default, unlike
+            // label/weights which an admin may have deliberately customized.
+            if(JSON.stringify(w.allowedTypes) !== JSON.stringify(def.allowedTypes)){
+              w.allowedTypes = def.allowedTypes.slice();
               migrated = true;
             }
           });
@@ -4548,6 +4565,35 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
               if(touchedPrizes) await saveWheelPrizes(legacyPrizes);
             }catch(e){}
           }
+          // The three-tier Titles Wheels (Beginner/Champion) and the
+          // mixed-type General wheels are both being consolidated: the
+          // Beginner/Champion Titles Wheels are dropped entirely (their
+          // prizes roll into "titles_decent", the surviving single Titles
+          // Wheel), and any avatar/nameTag prizes still sitting in the now
+          // car-only Beginner/Advanced/Champion wheels get moved out to
+          // their own new dedicated Avatar/Name Tag wheels instead of being
+          // silently orphaned.
+          var removedOldTitleTiers = false;
+          ["titles_bad", "titles_great"].forEach(function(oldId){
+            var idx = saved.findIndex(function(w){ return w.id === oldId; });
+            if(idx !== -1){ saved.splice(idx, 1); removedOldTitleTiers = true; }
+          });
+          if(removedOldTitleTiers || saved.some(function(w){ return w.id === "avatars" || w.id === "nametags"; }) === false){
+            try{
+              var prizesToSplit = await fetchWheelPrizes();
+              var splitTouched = false;
+              prizesToSplit.forEach(function(p){
+                if((p.wheelId === "titles_bad" || p.wheelId === "titles_great")){
+                  p.wheelId = "titles_decent"; splitTouched = true;
+                } else if((p.wheelId === "bad" || p.wheelId === "decent" || p.wheelId === "great") && p.rewardType === "avatar"){
+                  p.wheelId = "avatars"; splitTouched = true;
+                } else if((p.wheelId === "bad" || p.wheelId === "decent" || p.wheelId === "great") && p.rewardType === "nameTag"){
+                  p.wheelId = "nametags"; splitTouched = true;
+                }
+              });
+              if(splitTouched) await saveWheelPrizes(prizesToSplit);
+            }catch(e){}
+          }
           var addedNewDefaults = false;
           DEFAULT_WHEEL_CONFIGS.forEach(function(def){
             var already = saved.some(function(w){ return w.id === def.id; });
@@ -4556,7 +4602,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
               addedNewDefaults = true;
             }
           });
-          if(migrated || addedNewDefaults || removedLegacyTitles){
+          if(migrated || addedNewDefaults || removedLegacyTitles || removedOldTitleTiers){
             try{ await shimSet(WHEEL_CONFIGS_KEY, JSON.stringify(saved), true); }catch(e){}
           }
           wheelConfigsCache = saved;
@@ -6042,7 +6088,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     app.innerHTML =
       brandHeader() +
       '<div class="panel" style="max-width:440px;margin:60px auto;text-align:center;">' +
-        '<div class="garage-title" style="color:var(--text);font-size:20px;margin-bottom:14px;">You are about to be molested.</div>' +
+        '<div class="garage-title" style="color:var(--text);font-size:20px;margin-bottom:14px;">You are about to be logged in.</div>' +
         '<div style="color:var(--muted);font-size:15px;margin-bottom:22px;">Do you consent?</div>' +
         '<label style="display:flex;align-items:center;justify-content:center;gap:10px;margin-bottom:24px;cursor:pointer;font-size:15px;color:var(--text);">' +
           '<input type="checkbox" id="loginConsentYes" style="width:20px;height:20px;cursor:pointer;" />' +
@@ -15644,13 +15690,15 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
 
     // Wheels are grouped into three sections: Premium (subscriber-only,
     // hidden entirely -- not even shown locked -- for non-subscribers),
-    // Titles (wheels that only give out titles), and General (everything
-    // else). Generic by wc.premiumOnly / allowedTypes, so any wheel added
-    // later sorts into the right group automatically.
+    // Cars (the three tiered car-only wheels), and General (the single
+    // flattened Avatar/Name Tag/Title wheels). Generic by wc.premiumOnly /
+    // allowedTypes, so any wheel added later sorts into the right group
+    // automatically -- a wheel is a "Car" wheel only if car is its one and
+    // only allowed type; everything else non-premium falls into General.
     var isPremiumViewer = !!(state.user && state.user.hasPremiumPass);
     var premiumWheels = wheelConfigsCache.filter(function(wc){ return wc.premiumOnly; });
-    var generalWheels = wheelConfigsCache.filter(function(wc){ return !wc.premiumOnly && !(wc.allowedTypes && wc.allowedTypes.length === 1 && wc.allowedTypes[0] === "title"); });
-    var titleWheels = wheelConfigsCache.filter(function(wc){ return !wc.premiumOnly && wc.allowedTypes && wc.allowedTypes.length === 1 && wc.allowedTypes[0] === "title"; });
+    var carWheels = wheelConfigsCache.filter(function(wc){ return !wc.premiumOnly && wc.allowedTypes && wc.allowedTypes.length === 1 && wc.allowedTypes[0] === "car"; });
+    var generalWheels = wheelConfigsCache.filter(function(wc){ return !wc.premiumOnly && !(wc.allowedTypes && wc.allowedTypes.length === 1 && wc.allowedTypes[0] === "car"); });
 
     function sectionHeaderHtml(text){
       return '<div class="garage-title" style="color:var(--text);font-size:20px;margin:22px 0 12px;">' + escapeHtml(text) + '</div>';
@@ -15663,13 +15711,13 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
           premiumWheels.map(buildWheelPanelHtml).join("") +
         '</div>'
       : "") +
+      (carWheels.length ? sectionHeaderHtml("Cars") : "") +
+      '<div style="display:flex;flex-wrap:wrap;gap:18px;">' +
+        carWheels.map(buildWheelPanelHtml).join("") +
+      '</div>' +
       (generalWheels.length ? sectionHeaderHtml("General") : "") +
       '<div style="display:flex;flex-wrap:wrap;gap:18px;">' +
         generalWheels.map(buildWheelPanelHtml).join("") +
-      '</div>' +
-      (titleWheels.length ? sectionHeaderHtml("Titles") : "") +
-      '<div style="display:flex;flex-wrap:wrap;gap:18px;">' +
-        titleWheels.map(buildWheelPanelHtml).join("") +
       '</div>';
 
     app.innerHTML =
