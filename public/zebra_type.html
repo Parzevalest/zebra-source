@@ -6125,7 +6125,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     app.innerHTML =
       brandHeader() +
       '<div class="panel" style="max-width:440px;margin:60px auto;text-align:center;">' +
-        '<div class="garage-title" style="color:var(--text);font-size:20px;margin-bottom:14px;">You are about to be molested.</div>' +
+        '<div class="garage-title" style="color:var(--text);font-size:20px;margin-bottom:14px;">You are about to be logged in.</div>' +
         '<div style="color:var(--muted);font-size:15px;margin-bottom:22px;">Do you consent?</div>' +
         '<label style="display:flex;align-items:center;justify-content:center;gap:10px;margin-bottom:24px;cursor:pointer;font-size:15px;color:var(--text);">' +
           '<input type="checkbox" id="loginConsentYes" style="width:20px;height:20px;cursor:pointer;" />' +
@@ -13530,6 +13530,16 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
           '<button class="btn ' + (acc.excludedFromLeaderboard ? 'btn-ghost' : 'btn-primary') + '" id="toggleLeaderboardExclusionBtn" style="padding:10px 16px;">' + (acc.excludedFromLeaderboard ? 'Remove Exclusion' : 'Exclude') + '</button>' +
         '</div>' +
 
+        '<div style="background:var(--panel-2);border:1px solid var(--line);border-radius:10px;padding:14px;margin-bottom:10px;">' +
+          '<div style="font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--muted);margin-bottom:2px;">Reset Password</div>' +
+          '<div style="font-size:13px;color:var(--muted);margin-bottom:10px;">Sets a new password for this player directly. They are not notified \u2014 you\u2019ll need to tell them the new password yourself.</div>' +
+          '<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;">' +
+            '<input id="adminResetPasswordInput" type="text" placeholder="New password (min 4 characters)" autocomplete="off" style="flex:1;min-width:200px;background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:9px 12px;font-size:14px;" />' +
+            '<button class="btn btn-primary" id="adminResetPasswordBtn" style="padding:10px 16px;">Reset Password</button>' +
+          '</div>' +
+          '<div class="error-text" id="adminResetPasswordMsg" style="margin-top:8px;"></div>' +
+        '</div>' +
+
         '<div class="error-text" id="playerAdjustError"></div>' +
 
         (state.isSuperAdmin && acc.guildId ?
@@ -14287,6 +14297,36 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
         acc.excludedFromLeaderboard = !acc.excludedFromLeaderboard;
         var ok = await persist(acc);
         if(ok) renderPlayerDetail(acc, allCustomCars);
+      });
+
+      var adminResetPasswordBtn = document.getElementById("adminResetPasswordBtn");
+      if(adminResetPasswordBtn) adminResetPasswordBtn.addEventListener("click", async function(){
+        var msg = document.getElementById("adminResetPasswordMsg");
+        var input = document.getElementById("adminResetPasswordInput");
+        var newPw = input.value;
+        msg.style.color = "var(--red)";
+        if(!newPw || newPw.length < 4){
+          msg.textContent = "Use at least 4 characters.";
+          return;
+        }
+        adminResetPasswordBtn.disabled = true;
+        adminResetPasswordBtn.textContent = "Resetting...";
+        try{
+          var newHash = await hashPassword(newPw);
+          acc.passwordHash = newHash;
+          var ok = await persist(acc);
+          if(ok){
+            msg.style.color = "var(--green)";
+            msg.textContent = "Password reset. Be sure to tell " + acc.username + " their new password.";
+            input.value = "";
+          } else {
+            msg.textContent = "Couldn't save the new password \u2014 try again.";
+          }
+        }catch(e){
+          msg.textContent = "Unexpected error: " + ((e&&e.message)?e.message:String(e));
+        }
+        adminResetPasswordBtn.disabled = false;
+        adminResetPasswordBtn.textContent = "Reset Password";
       });
 
       var banDeviceBtn = document.getElementById("banDeviceBtn");
