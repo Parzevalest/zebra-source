@@ -6125,7 +6125,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     app.innerHTML =
       brandHeader() +
       '<div class="panel" style="max-width:440px;margin:60px auto;text-align:center;">' +
-        '<div class="garage-title" style="color:var(--text);font-size:20px;margin-bottom:14px;">You are about to be molested.</div>' +
+        '<div class="garage-title" style="color:var(--text);font-size:20px;margin-bottom:14px;">You are about to be logged in.</div>' +
         '<div style="color:var(--muted);font-size:15px;margin-bottom:22px;">Do you consent?</div>' +
         '<label style="display:flex;align-items:center;justify-content:center;gap:10px;margin-bottom:24px;cursor:pointer;font-size:15px;color:var(--text);">' +
           '<input type="checkbox" id="loginConsentYes" style="width:20px;height:20px;cursor:pointer;" />' +
@@ -14828,6 +14828,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
         '<div class="admin-car-thumb">' + carVisualHtml(c) + '</div>' +
         '<div class="admin-car-name">' + escapeHtml(c.name) +
           '<span style="margin-left:8px;font-size:11px;font-weight:700;">' + rarityTextHtml(rarity) + '</span>' +
+          '<div style="font-size:11px;color:var(--muted);margin-top:2px;">ID: <code style="color:var(--text);">' + escapeHtml(c.id) + '</code></div>' +
         '</div>' +
         '<button class="small-btn" data-edit-car="' + escapeHtml(c.id) + '" style="margin-right:6px;">Edit</button>' +
         '<button class="small-btn" data-add-to-wheel-car="' + escapeHtml(c.id) + '" style="margin-right:6px;">Add to Wheel</button>' +
