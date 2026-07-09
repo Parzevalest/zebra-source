@@ -229,7 +229,7 @@ function makeRaceServer(httpServer) {
   // If a room is about to lock with only one participant, fill it with one
   // available bot so that player doesn't race completely alone. If a second
   // real player joins in time on their own, this never fires at all.
-  function injectBotIfNeeded(room) {
+  async function injectBotIfNeeded(room) {
     if (!rooms.has(room.id) || room.locked) return;
     if (room.players.size !== 1) return;
     const available = RACE_BOTS.filter(b => !activeBotUsernames.has(b.username));
@@ -237,11 +237,34 @@ function makeRaceServer(httpServer) {
     const bot = available[Math.floor(Math.random() * available.length)];
     activeBotUsernames.add(bot.username);
 
+    // Pull the bot's CURRENT account data (display name, equipped car) so an
+    // admin editing these through the normal admin panel actually takes
+    // effect -- the RACE_BOTS entries above are only used as a fallback if
+    // this lookup fails for any reason, never as the source of truth.
+    let liveAccount = null;
+    if (db) {
+      try {
+        const res = await db.get("system", "account:" + bot.username, true);
+        if (res && res.value) liveAccount = JSON.parse(res.value);
+      } catch (e) {}
+    }
+    // The room may have changed while that lookup was in flight (a second
+    // real player could have joined) -- bail out if it's no longer solo.
+    if (!rooms.has(room.id) || room.locked || room.players.size !== 1) {
+      activeBotUsernames.delete(bot.username);
+      return;
+    }
+
     const fakeWs = { readyState: WebSocket.OPEN, send: () => {}, roomId: room.id };
     const recentWpm = BOT_MIN_WPM + Math.floor(Math.random() * (BOT_MAX_WPM - BOT_MIN_WPM + 1));
     room.players.set(bot.username, {
-      ws: fakeWs, carId: bot.carId, recentWpm,
-      displayName: bot.displayName, guildTag: "", guildColor: "", titleText: "", titleRarity: "",
+      ws: fakeWs,
+      carId: (liveAccount && liveAccount.equippedCarId) || bot.carId,
+      recentWpm,
+      displayName: (liveAccount && liveAccount.displayName) || bot.displayName,
+      guildTag: "", guildColor: "",
+      titleText: bot.titleText || "",
+      titleRarity: bot.titleRarity || "",
       isBot: true,
     });
     broadcastToRoom(room, { type: "room_joined", roomId: room.id, opponentsSoFar: opponentList(room, null) }, null);
@@ -364,9 +387,21 @@ function makeRaceServer(httpServer) {
     }
 
     const place = room.finishedOrder.length + 1;
-    room.finishedOrder.push({ username, wpm, accuracy, timeMs, place });
+    // Include display info directly here rather than making clients look it
+    // up separately -- this is the exact same data already stored on this
+    // player/bot when they joined the room, just carried along with their
+    // result instead of needing a separate cross-reference the client has
+    // to keep in sync.
+    const finisherData = room.players.get(username) || {};
+    const displayName = finisherData.displayName || "";
+    const guildTag = finisherData.guildTag || "";
+    const guildColor = finisherData.guildColor || "";
+    const titleText = finisherData.titleText || "";
+    const titleRarity = finisherData.titleRarity || "";
 
-    broadcastToRoom(room, { type: "opponent_finished", username, wpm, accuracy, timeMs, place }, username);
+    room.finishedOrder.push({ username, wpm, accuracy, timeMs, place, displayName, guildTag, guildColor, titleText, titleRarity });
+
+    broadcastToRoom(room, { type: "opponent_finished", username, wpm, accuracy, timeMs, place, displayName, guildTag, guildColor, titleText, titleRarity }, username);
 
     if (room.finishedOrder.length >= room.players.size) {
       broadcastToRoom(room, { type: "race_complete", placements: room.finishedOrder }, null);
