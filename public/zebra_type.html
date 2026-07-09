@@ -605,11 +605,18 @@
   .guild-member-row{
     display:flex;
     align-items:center;
-    gap:14px;
-    padding:14px 4px;
-    border-bottom:1px solid var(--line);
+    gap:16px;
+    padding:16px;
+    border-radius:12px;
+    background:var(--panel-2);
+    border:1px solid var(--line);
+    margin-bottom:12px;
   }
-  .guild-member-row:last-child{ border-bottom:none; }
+  .guild-member-row:last-child{ margin-bottom:0; }
+  .guild-member-row.is-leader{
+    border-color:var(--amber);
+    background:linear-gradient(90deg, rgba(255,193,7,0.10), var(--panel-2) 45%);
+  }
   .guild-member-name-col{
     flex:0 1 auto;
     min-width:120px;
@@ -618,27 +625,30 @@
     flex:1;
     display:flex;
     flex-wrap:wrap;
-    gap:20px;
+    gap:10px;
     justify-content:flex-start;
-    padding:0 12px;
   }
   .guild-member-stat{
     text-align:center;
-    min-width:64px;
+    min-width:66px;
+    background:var(--panel);
+    border:1px solid var(--line);
+    border-radius:8px;
+    padding:8px 12px;
   }
   .guild-member-stat .num{
     font-family:"Arial Black", Impact, sans-serif;
     font-style:italic;
-    font-size:19px;
-    color:var(--text);
+    font-size:18px;
+    color:var(--amber);
     line-height:1.1;
   }
   .guild-member-stat .lbl{
-    font-size:10px;
+    font-size:9px;
     text-transform:uppercase;
     letter-spacing:0.6px;
     color:var(--muted);
-    margin-top:2px;
+    margin-top:3px;
   }
   .guild-member-actions{
     flex:0 0 auto;
@@ -646,9 +656,36 @@
     flex-direction:column;
     gap:6px;
   }
+  .guild-member-thumb{
+    flex:0 0 84px;
+    width:84px;
+    height:52px;
+    border-radius:8px;
+    background:var(--panel);
+    border:1px solid var(--line);
+    padding:6px;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+  }
+  .guild-member-thumb > *{ width:100%; height:100%; display:block; }
   @media (max-width:680px){
     .guild-member-row{ flex-wrap:wrap; }
-    .guild-member-stats{ flex-basis:100%; padding:10px 0 0; }
+    .guild-member-stats{ flex-basis:100%; }
+  }
+
+  .guild-progress-wrap{
+    background:var(--panel-2);
+    border:1px solid var(--line);
+    border-radius:999px;
+    height:10px;
+    overflow:hidden;
+    margin-top:10px;
+    max-width:280px;
+  }
+  .guild-progress-fill{
+    height:100%;
+    border-radius:999px;
   }
 
   /* ---------- SEASON ---------- */
@@ -6088,7 +6125,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     app.innerHTML =
       brandHeader() +
       '<div class="panel" style="max-width:440px;margin:60px auto;text-align:center;">' +
-        '<div class="garage-title" style="color:var(--text);font-size:20px;margin-bottom:14px;">You are about to be molested.</div>' +
+        '<div class="garage-title" style="color:var(--text);font-size:20px;margin-bottom:14px;">You are about to be logged in.</div>' +
         '<div style="color:var(--muted);font-size:15px;margin-bottom:22px;">Do you consent?</div>' +
         '<label style="display:flex;align-items:center;justify-content:center;gap:10px;margin-bottom:24px;cursor:pointer;font-size:15px;color:var(--text);">' +
           '<input type="checkbox" id="loginConsentYes" style="width:20px;height:20px;cursor:pointer;" />' +
@@ -16741,7 +16778,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     var isCoLeader = (guild.coLeaderUsernames||[]).some(function(u){ return u.toLowerCase() === acc.username.toLowerCase(); });
 
     body.innerHTML =
-      '<div class="panel" style="margin-bottom:18px;border-top:4px solid ' + GUILD_COLORS[guild.color] + ';">' +
+      '<div class="panel" style="margin-bottom:18px;border-top:4px solid ' + GUILD_COLORS[guild.color] + ';background:linear-gradient(135deg, ' + GUILD_COLORS[guild.color] + '18, var(--panel) 55%);">' +
         '<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;">' +
           '<div class="garage-title" style="color:var(--text);font-size:22px;">' +
             '<span style="color:' + GUILD_COLORS[guild.color] + ';">[' + escapeHtml(guild.tag) + ']</span> ' + escapeHtml(guild.name) +
@@ -16749,6 +16786,14 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
           '<button class="small-btn" id="leaveGuildBtn" data-stage="confirm">Leave Guild</button>' +
         '</div>' +
         '<div class="hint-text" style="margin-top:4px;margin-bottom:0;">' + (guild.memberUsernames||[]).length + ' / ' + GUILD_MAX_MEMBERS + ' members</div>' +
+        '<div class="guild-progress-wrap">' +
+          '<div class="guild-progress-fill" style="width:' + Math.round(100 * (guild.memberUsernames||[]).length / GUILD_MAX_MEMBERS) + '%;background:' + GUILD_COLORS[guild.color] + ';"></div>' +
+        '</div>' +
+        '<div id="guildHeaderStats" style="display:flex;gap:10px;flex-wrap:wrap;margin-top:16px;">' +
+          '<div class="guild-member-stat"><div class="num">\u2026</div><div class="lbl">Total Races</div></div>' +
+          '<div class="guild-member-stat"><div class="num">\u2026</div><div class="lbl">Avg WPM</div></div>' +
+          '<div class="guild-member-stat"><div class="num">\u2026</div><div class="lbl">Team Races</div></div>' +
+        '</div>' +
       '</div>' +
 
       ((isLeader || isCoLeader) && guild.pendingRequests && guild.pendingRequests.length ?
@@ -16997,6 +17042,21 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
 
       members.sort(function(a,b){ return (b.guildStats && b.guildStats.races || 0) - (a.guildStats && a.guildStats.races || 0); });
 
+      // Aggregate header stats, now that every member's data has loaded.
+      var headerStatsEl = document.getElementById("guildHeaderStats");
+      if(headerStatsEl){
+        var totalRaces = members.reduce(function(s,m){ return s + (m.races||0); }, 0);
+        var totalTeamRaces = members.reduce(function(s,m){ return s + ((m.guildStats && m.guildStats.guildId === guild.id) ? (m.guildStats.races||0) : 0); }, 0);
+        var wpmSamples = members.filter(function(m){ return (m.races||0) > 0; });
+        var avgGuildWpm = wpmSamples.length
+          ? Math.round(wpmSamples.reduce(function(s,m){ return s + Math.round((m.sumWpm||0)/(m.races||1)); }, 0) / wpmSamples.length)
+          : 0;
+        headerStatsEl.innerHTML =
+          '<div class="guild-member-stat"><div class="num">' + totalRaces.toLocaleString() + '</div><div class="lbl">Total Races</div></div>' +
+          '<div class="guild-member-stat"><div class="num">' + avgGuildWpm + '</div><div class="lbl">Avg WPM</div></div>' +
+          '<div class="guild-member-stat"><div class="num">' + totalTeamRaces.toLocaleString() + '</div><div class="lbl">Team Races</div></div>';
+      }
+
       listEl.innerHTML = members.map(function(m){
         var races = m.races || 0;
         var avgWpm = races ? Math.round((m.sumWpm||0) / races) : 0;
@@ -17006,16 +17066,16 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
         var memberIsLeader = guild.leaderUsername && guild.leaderUsername.toLowerCase() === m.username.toLowerCase();
         var memberIsCoLeader = (guild.coLeaderUsernames||[]).some(function(u){ return u.toLowerCase() === m.username.toLowerCase(); });
         var roleBadge = memberIsLeader
-          ? '<span class="guild-role-badge" style="background:var(--amber);color:#0A0B0D;">Leader</span>'
+          ? '<span class="guild-role-badge" style="background:var(--amber);color:#0A0B0D;">\uD83D\uDC51 Leader</span>'
           : memberIsCoLeader
-            ? '<span class="guild-role-badge" style="background:var(--panel-2);color:var(--text);border:1px solid var(--line);">Co-Leader</span>'
+            ? '<span class="guild-role-badge" style="background:var(--panel-2);color:var(--text);border:1px solid var(--line);">\u2B50 Co-Leader</span>'
             : '';
 
         var canPromote = isLeader && !memberIsLeader && !memberIsCoLeader && (guild.coLeaderUsernames||[]).length < GUILD_MAX_COLEADERS;
         var canDemote = isLeader && memberIsCoLeader;
 
-        return '<div class="guild-member-row">' +
-          '<div class="admin-car-thumb">' + carVisualHtml(equippedCar) + '</div>' +
+        return '<div class="guild-member-row' + (memberIsLeader ? ' is-leader' : '') + '">' +
+          '<div class="guild-member-thumb">' + carVisualHtml(equippedCar) + '</div>' +
           '<div class="guild-member-name-col">' +
             '<div style="font-weight:700;font-size:14px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">' +
               clickableUsernameHtml(m.username, null, m.displayName) +
@@ -17023,7 +17083,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
               (m.isBanned ? '<span style="color:var(--red);font-weight:900;font-size:11px;">BANNED</span>' : '') +
               (m.isSuspended && !m.isBanned ? '<span style="color:var(--amber);font-weight:900;font-size:11px;">SUSPENDED</span>' : '') +
             '</div>' +
-            (roleBadge ? '<div style="margin-top:3px;">' + roleBadge + '</div>' : '') +
+            (roleBadge ? '<div style="margin-top:5px;">' + roleBadge + '</div>' : '') +
           '</div>' +
           '<div class="guild-member-stats">' +
             '<div class="guild-member-stat"><div class="num">' + races + '</div><div class="lbl">All-Time</div></div>' +
