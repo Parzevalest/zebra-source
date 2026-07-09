@@ -3828,7 +3828,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
               points: dayRaces.reduce(function(sum,r){ return sum + (r.points||0); }, 0)
             };
 
-            if(acc.isBanned || acc.isSuspended) continue; // skip banned/suspended
+            if(acc.isBanned || acc.isSuspended || acc.excludedFromLeaderboard) continue; // skip banned/suspended/excluded
             var lbTitleEntry = resolveTitle(acc, titleCatalogCache);
             // Strip stale guild tag — can happen if player left guild but tag wasn't cleared
             var lbGuildTag = acc.guildId ? (acc.guildTag || "") : "";
@@ -3881,7 +3881,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
             var r = results[i];
             if(!r || !r.value) continue;
             var acc = JSON.parse(r.value);
-            if(acc.isBanned || acc.isSuspended) continue;
+            if(acc.isBanned || acc.isSuspended || acc.excludedFromLeaderboard) continue;
             var cs = acc.carStats && acc.carStats[carId];
             if(!cs) continue;
             var rank = masteryRank(cs.races || 0);
@@ -6088,7 +6088,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     app.innerHTML =
       brandHeader() +
       '<div class="panel" style="max-width:440px;margin:60px auto;text-align:center;">' +
-        '<div class="garage-title" style="color:var(--text);font-size:20px;margin-bottom:14px;">You are about to be molested.</div>' +
+        '<div class="garage-title" style="color:var(--text);font-size:20px;margin-bottom:14px;">You are about to be logged in.</div>' +
         '<div style="color:var(--muted);font-size:15px;margin-bottom:22px;">Do you consent?</div>' +
         '<label style="display:flex;align-items:center;justify-content:center;gap:10px;margin-bottom:24px;cursor:pointer;font-size:15px;color:var(--text);">' +
           '<input type="checkbox" id="loginConsentYes" style="width:20px;height:20px;cursor:pointer;" />' +
@@ -13484,6 +13484,15 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
           '</div>'
         : '') +
 
+        '<div style="display:flex;align-items:center;gap:14px;background:var(--panel-2);border:1px solid var(--line);border-radius:10px;padding:14px;margin-bottom:10px;">' +
+          '<div style="flex:1;">' +
+            '<div style="font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--muted);">Leaderboard Exclusion</div>' +
+            '<div style="font-size:13px;color:var(--muted);margin-top:2px;">Hides this player from all leaderboards (Racing, Car Mastery, and their guild\u2019s totals) without banning or suspending them.</div>' +
+            '<div style="font-family:\'Arial Black\',Impact,sans-serif;font-style:italic;font-size:18px;color:' + (acc.excludedFromLeaderboard ? "var(--red)" : "var(--muted)") + ';margin-top:4px;">' + (acc.excludedFromLeaderboard ? "Excluded" : "Included") + '</div>' +
+          '</div>' +
+          '<button class="btn ' + (acc.excludedFromLeaderboard ? 'btn-ghost' : 'btn-primary') + '" id="toggleLeaderboardExclusionBtn" style="padding:10px 16px;">' + (acc.excludedFromLeaderboard ? 'Remove Exclusion' : 'Exclude') + '</button>' +
+        '</div>' +
+
         '<div class="error-text" id="playerAdjustError"></div>' +
 
         (state.isSuperAdmin && acc.guildId ?
@@ -14232,6 +14241,13 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
       var toggleSecretSauceBtn = document.getElementById("toggleSecretSauceBtn");
       if(toggleSecretSauceBtn) toggleSecretSauceBtn.addEventListener("click", async function(){
         acc.secretSauceEnabled = !acc.secretSauceEnabled;
+        var ok = await persist(acc);
+        if(ok) renderPlayerDetail(acc, allCustomCars);
+      });
+
+      var toggleLeaderboardExclusionBtn = document.getElementById("toggleLeaderboardExclusionBtn");
+      if(toggleLeaderboardExclusionBtn) toggleLeaderboardExclusionBtn.addEventListener("click", async function(){
+        acc.excludedFromLeaderboard = !acc.excludedFromLeaderboard;
         var ok = await persist(acc);
         if(ok) renderPlayerDetail(acc, allCustomCars);
       });
@@ -16393,7 +16409,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
       var color = GUILD_COLORS[guild.color] || "#FFD54F";
       var totalRaces = (guild.memberUsernames||[]).reduce(function(sum, u, i){
         var m = memberData[i];
-        if(m && (m.isBanned || m.isSuspended)) return sum; // exclude banned/suspended
+        if(m && (m.isBanned || m.isSuspended || m.excludedFromLeaderboard)) return sum; // exclude banned/suspended/excluded
         return sum + (m && m.guildStats && m.guildStats.guildId === guild.id ? m.guildStats.races : 0);
       }, 0);
 
