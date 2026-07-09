@@ -6125,7 +6125,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     app.innerHTML =
       brandHeader() +
       '<div class="panel" style="max-width:440px;margin:60px auto;text-align:center;">' +
-        '<div class="garage-title" style="color:var(--text);font-size:20px;margin-bottom:14px;">You are about to be molested.</div>' +
+        '<div class="garage-title" style="color:var(--text);font-size:20px;margin-bottom:14px;">You are about to be logged in.</div>' +
         '<div style="color:var(--muted);font-size:15px;margin-bottom:22px;">Do you consent?</div>' +
         '<label style="display:flex;align-items:center;justify-content:center;gap:10px;margin-bottom:24px;cursor:pointer;font-size:15px;color:var(--text);">' +
           '<input type="checkbox" id="loginConsentYes" style="width:20px;height:20px;cursor:pointer;" />' +
@@ -16778,7 +16778,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     var isCoLeader = (guild.coLeaderUsernames||[]).some(function(u){ return u.toLowerCase() === acc.username.toLowerCase(); });
 
     body.innerHTML =
-      '<div class="panel" style="margin-bottom:18px;border-top:4px solid ' + GUILD_COLORS[guild.color] + ';background:linear-gradient(135deg, ' + GUILD_COLORS[guild.color] + '18, var(--panel) 55%);">' +
+      '<div class="panel" style="margin-bottom:18px;border-top:4px solid ' + GUILD_COLORS[guild.color] + ';background-color:var(--panel);background-image:linear-gradient(135deg, ' + GUILD_COLORS[guild.color] + '2E, transparent 60%);">' +
         '<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;">' +
           '<div class="garage-title" style="color:var(--text);font-size:22px;">' +
             '<span style="color:' + GUILD_COLORS[guild.color] + ';">[' + escapeHtml(guild.tag) + ']</span> ' + escapeHtml(guild.name) +
