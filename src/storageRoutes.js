@@ -533,7 +533,13 @@ router.get("/player-flags", async (req, res) => {
     const players = rows.map((row) => {
       try {
         const acc = JSON.parse(row.value);
-        return { username: acc.username || row.key.replace(/^account:/, ""), isBanned: !!acc.isBanned, isSuspended: !!acc.isSuspended };
+        return {
+          username: acc.username || row.key.replace(/^account:/, ""),
+          isBanned: !!acc.isBanned,
+          isSuspended: !!acc.isSuspended,
+          races: acc.races || 0,
+          isBot: !!acc.isBot,
+        };
       } catch (e) { return null; }
     }).filter(Boolean);
     res.json({ players });
