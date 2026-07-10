@@ -3865,6 +3865,29 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     return await res.json();
   }
 
+  // Fetches every account's full (redacted) data in one request -- used by
+  // the leaderboard and car mastery leaderboard, which both used to fetch
+  // every account individually (N requests, multiplied by however many
+  // players are viewing the leaderboard at once under real traffic).
+  async function fetchAllAccounts(){
+    var url = SERVER_URL + "/api/all-accounts";
+    var headers = {};
+    if(currentToken) headers["x-session-token"] = currentToken;
+    var controller = new AbortController();
+    var timeoutId = setTimeout(function(){ controller.abort(); }, 15000);
+    var res;
+    try{
+      res = await fetch(url, { headers: headers, signal: controller.signal });
+    }catch(e){
+      if(e && e.name === "AbortError") throw new Error("request timed out");
+      throw e;
+    }finally{
+      clearTimeout(timeoutId);
+    }
+    if(!res.ok) throw new Error("all-accounts fetch failed: " + res.status);
+    return await res.json();
+  }
+
   async function shimDelete(key, shared){
     var url = SERVER_URL + "/api/kv/" + encodeURIComponent(key) + "?shared=" + (shared ? "true" : "false");
     var headers = {};
@@ -3938,32 +3961,22 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     try{
       var tcRes = await fetchTitleCatalog().catch(function(){ return []; });
       titleCatalogCache = tcRes || [];
-      var listRes = await shimList("account:", true);
-      if(!listRes || !listRes.keys || !listRes.keys.length) return [];
-      var keys = listRes.keys;
       var seasonCfg = await fetchSeasonConfig();
       var dayCutoff = Date.now() - 24*60*60*1000;
       var rows = [];
 
-      // Fetch all accounts in parallel batches of 20 for speed
-      var BATCH = 20;
-      var allAccounts = [];
-      for(var b = 0; b < keys.length; b += BATCH){
-        var batch = keys.slice(b, b + BATCH);
-        var results = await Promise.all(batch.map(function(key){
-          return shimGet(key, true).catch(function(e){
-            console.warn("[lb] failed to load", key, e && e.message);
-            return null;
-          });
-        }));
-        allAccounts = allAccounts.concat(results);
-      }
+      // Single request for every account instead of N individual ones --
+      // under real concurrent traffic, N requests per leaderboard load
+      // multiplies fast across however many players are checking it at
+      // the same time.
+      var bulkRes = await fetchAllAccounts();
+      var allAccounts = bulkRes.accounts || [];
+      if(!allAccounts.length) return [];
 
       for(var i = 0; i < allAccounts.length; i++){
         try{
-          var r = allAccounts[i];
-          if(!r || !r.value) continue;
-          var acc = JSON.parse(r.value);
+          var acc = allAccounts[i];
+          if(!acc) continue;
           var races = acc.races || 0;
           var recentWpms = acc.recentWpms || [];
           var recentAvgWpm = recentWpms.length
@@ -4032,37 +4045,28 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
   // on races completed after hitting Master).
   async function loadCarMasteryLeaderboard(carId){
     try{
-      var listRes = await shimList("account:", true);
-      if(!listRes || !listRes.keys || !listRes.keys.length) return [];
-      var keys = listRes.keys;
       var rows = [];
+      var bulkRes = await fetchAllAccounts();
+      var allAccounts = bulkRes.accounts || [];
+      if(!allAccounts.length) return [];
 
-      // Fetch all accounts in parallel batches of 20 (same as racing leaderboard)
-      var BATCH = 20;
-      for(var b = 0; b < keys.length; b += BATCH){
-        var batch = keys.slice(b, b + BATCH);
-        var results = await Promise.all(batch.map(function(key){
-          return shimGet(key, true).catch(function(){ return null; });
-        }));
-        for(var i = 0; i < results.length; i++){
-          try{
-            var r = results[i];
-            if(!r || !r.value) continue;
-            var acc = JSON.parse(r.value);
-            if(acc.isBanned || acc.isSuspended || acc.excludedFromLeaderboard) continue;
-            var cs = acc.carStats && acc.carStats[carId];
-            if(!cs) continue;
-            var rank = masteryRank(cs.races || 0);
-            if(rank !== "Master" && rank !== "Divine") continue;
-            rows.push({
-              username: acc.username,
-              displayName: acc.displayName || "",
-              races: cs.races || 0,
-              masteryPoints: Math.round((cs.masteryPoints || 0) * 10) / 10,
-              rank: rank
-            });
-          }catch(e){ /* skip unreadable rows */ }
-        }
+      for(var i = 0; i < allAccounts.length; i++){
+        try{
+          var acc = allAccounts[i];
+          if(!acc) continue;
+          if(acc.isBanned || acc.isSuspended || acc.excludedFromLeaderboard) continue;
+          var cs = acc.carStats && acc.carStats[carId];
+          if(!cs) continue;
+          var rank = masteryRank(cs.races || 0);
+          if(rank !== "Master" && rank !== "Divine") continue;
+          rows.push({
+            username: acc.username,
+            displayName: acc.displayName || "",
+            races: cs.races || 0,
+            masteryPoints: Math.round((cs.masteryPoints || 0) * 10) / 10,
+            rank: rank
+          });
+        }catch(e){ /* skip unreadable rows */ }
       }
 
       rows.sort(function(a,b){ return b.masteryPoints - a.masteryPoints; });
@@ -4079,17 +4083,22 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     var guilds = await fetchAllGuilds();
     if(!guilds.length) return [];
 
-    var rows = await Promise.all(guilds.map(async function(g){
+    // One shared bulk fetch instead of fetching each guild's members
+    // individually (which used to happen once per guild, every time this
+    // leaderboard loaded).
+    var bulkRes = await fetchAllAccounts();
+    var accountsByUsername = {};
+    (bulkRes.accounts || []).forEach(function(a){ if(a && a.username) accountsByUsername[a.username.toLowerCase()] = a; });
+
+    var rows = guilds.map(function(g){
       var usernames = g.memberUsernames || [];
-      var memberResults = await Promise.all(usernames.map(function(u){ return getAccount(u); }));
       // Exclude banned and suspended members from guild totals — their
       // races/points shouldn't count toward the guild leaderboard while
       // they're banned, same as they're excluded from the individual
       // racing leaderboard.
-      var members = memberResults
-        .filter(function(r){ return r.ok && r.account; })
-        .map(function(r){ return r.account; })
-        .filter(function(m){ return !m.isBanned && !m.isSuspended; });
+      var members = usernames
+        .map(function(u){ return accountsByUsername[u.toLowerCase()]; })
+        .filter(function(m){ return m && !m.isBanned && !m.isSuspended; });
 
       var totalTeamRaces = members.reduce(function(sum, m){
         return sum + ((m.guildStats && m.guildStats.guildId === g.id) ? (m.guildStats.races || 0) : 0);
@@ -4118,7 +4127,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
         avgWpm: members.length ? Math.round(avgWpmSum / members.length) : 0,
         avgAcc: members.length ? Math.round(avgAccSum / members.length) : 0
       };
-    }));
+    });
 
     rows.sort(function(a,b){ return b.teamPoints - a.teamPoints; });
     return rows;
@@ -6249,7 +6258,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     app.innerHTML =
       brandHeader() +
       '<div class="panel" style="max-width:440px;margin:60px auto;text-align:center;">' +
-        '<div class="garage-title" style="color:var(--text);font-size:20px;margin-bottom:14px;">You are about to be molested.</div>' +
+        '<div class="garage-title" style="color:var(--text);font-size:20px;margin-bottom:14px;">You are about to be logged in.</div>' +
         '<div style="color:var(--muted);font-size:15px;margin-bottom:22px;">Do you consent?</div>' +
         '<label style="display:flex;align-items:center;justify-content:center;gap:10px;margin-bottom:24px;cursor:pointer;font-size:15px;color:var(--text);">' +
           '<input type="checkbox" id="loginConsentYes" style="width:20px;height:20px;cursor:pointer;" />' +
