@@ -6267,7 +6267,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     app.innerHTML =
       brandHeader() +
       '<div class="panel" style="max-width:440px;margin:60px auto;text-align:center;">' +
-        '<div class="garage-title" style="color:var(--text);font-size:20px;margin-bottom:14px;">You are about to be molested.</div>' +
+        '<div class="garage-title" style="color:var(--text);font-size:20px;margin-bottom:14px;">You are about to be logged in.</div>' +
         '<div style="color:var(--muted);font-size:15px;margin-bottom:22px;">Do you consent?</div>' +
         '<label style="display:flex;align-items:center;justify-content:center;gap:10px;margin-bottom:24px;cursor:pointer;font-size:15px;color:var(--text);">' +
           '<input type="checkbox" id="loginConsentYes" style="width:20px;height:20px;cursor:pointer;" />' +
@@ -8143,20 +8143,22 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     });
 
     Promise.all([
-      Promise.all(uniqueUsernames.map(function(u){ return getAccount(u); })),
+      fetchAllAccounts(),
       fetchAvatarCatalog(),
       fetchCustomCars()
     ]).then(function(results){
       if(document.getElementById("friendsBody") !== body) return; // navigated away while loading
 
-      var accountResults = results[0];
+      var allAccountsList = (results[0] && results[0].accounts) || [];
       avatarCatalogCache = results[1];
       customCarsCache = results[2];
 
+      var allAccountsByUsername = {};
+      allAccountsList.forEach(function(a){ if(a && a.username) allAccountsByUsername[a.username.toLowerCase()] = a; });
+
       var accountsByUsername = {};
-      uniqueUsernames.forEach(function(u, i){
-        var res = accountResults[i];
-        accountsByUsername[u.toLowerCase()] = (res.ok && res.account) ? res.account : null;
+      uniqueUsernames.forEach(function(u){
+        accountsByUsername[u.toLowerCase()] = allAccountsByUsername[u.toLowerCase()] || null;
       });
 
       // Now that we know everyone's guildId, fetch each distinct guild once
