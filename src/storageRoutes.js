@@ -100,6 +100,39 @@ async function cascadeBanAccountsForIp(ip) {
 
 function isAccountKey(key) { return key.startsWith("account:"); }
 
+// A session counts as admin-or-moderator if it's the true super-admin
+// session, OR the requesting player's OWN account has isModerator set.
+// Moderator status lives on the account record, not the session token,
+// so it has to be looked up fresh here rather than trusted from the
+// session object alone.
+async function isRequesterAdminOrModerator(session) {
+  if (!session) return false;
+  if (session.isAdmin) return true;
+  try {
+    const raw = await store.get("system", "account:" + session.username, true);
+    if (raw && raw.value) return !!JSON.parse(raw.value).isModerator;
+  } catch (e) {}
+  return false;
+}
+
+// Shared game-content/configuration keys that only an admin or moderator
+// should ever be able to write -- catalogs, wheel/season/streak setup,
+// news, etc. Deliberately does NOT include keys regular players
+// legitimately write themselves during normal play (black market
+// listings, guild records, session/challenge/ban bookkeeping, the race
+// activity log). Without this check, any authenticated player could
+// rewrite wheel odds, season rewards, achievements, news posts, or any
+// other catalog for the entire game just by POSTing to this route
+// directly with a crafted key.
+const ADMIN_ONLY_SHARED_KEYS = new Set([
+  "custom_cars", "nametag_catalog", "avatar_catalog", "achievements_catalog",
+  "wheel_prizes", "wheel_configs", "wheel_configs_backup",
+  "title_catalog", "season_config", "season_config_backup",
+  "race_tracks", "about_sections", "guild_lb_config",
+  "news_posts", "streak_config", "streak_standard_pool", "streak_premium_pool",
+  "race_passages", "site_maintenance",
+]);
+
 // ── Challenge endpoint ────────────────────────────────────────────────────────
 
 router.get("/challenge", async (req, res) => {
@@ -249,6 +282,35 @@ router.get("/kv/:key", async (req, res) => {
   
   const result = await store.get(owner, key, shared);
   if (!result) return res.status(404).json({ error: "not found" });
+
+  // Reading another player's account is legitimate (public profiles,
+  // leaderboards, guild pages all do this) -- but the raw record also
+  // contains fields that must never be exposed to anyone but the owner
+  // or an admin/moderator. passwordHash especially: this login scheme has
+  // no per-account salt, so knowing the hash is functionally equivalent
+  // to knowing the password itself for authentication purposes. IP and
+  // device fingerprint are also private/security-sensitive, not
+  // gameplay data. Redact these rather than blocking the read entirely,
+  // since blocking it would break every feature that shows another
+  // player's stats.
+  if (isAccountKey(key)) {
+    const accountOwner = key.slice("account:".length).toLowerCase();
+    const isSelfRead = session && session.username === accountOwner;
+    if (!isSelfRead) {
+      const authorized = await isRequesterAdminOrModerator(session);
+      if (!authorized) {
+        try {
+          const acc = JSON.parse(result.value);
+          delete acc.passwordHash;
+          delete acc.lastKnownIp;
+          delete acc.deviceFingerprint;
+          delete acc.deviceFingerprintShort;
+          return res.json({ key: result.key, value: JSON.stringify(acc), shared: result.shared });
+        } catch (e) { /* if it doesn't parse as JSON, fall through and return as-is */ }
+      }
+    }
+  }
+
   res.json(result);
 });
 
@@ -262,7 +324,20 @@ router.post("/kv/:key", async (req, res) => {
   if (isAccountKey(key)) {
     if (!session) return res.status(403).json({ error: "forbidden" });
 
-    if (!session.isAdmin) {
+    // CRITICAL: a session may only write to another player's account if
+    // it's an admin or moderator. Without this check, any authenticated
+    // player could overwrite any OTHER player's whole account (coins,
+    // premium status, owned items, ban status, even passwordHash) just by
+    // POSTing to this route with a different account's key.
+    const accountOwner = key.slice("account:".length).toLowerCase();
+    const isSelfWrite = session.username === accountOwner;
+
+    if (!isSelfWrite) {
+      const authorized = await isRequesterAdminOrModerator(session);
+      if (!authorized) return res.status(403).json({ error: "forbidden" });
+    }
+
+    if (!session.isAdmin && isSelfWrite) {
       try {
         const incoming = JSON.parse(req.body.value);
         const currentRaw = await store.get("system", key, true);
@@ -308,6 +383,11 @@ router.post("/kv/:key", async (req, res) => {
     return res.json(result);
   }
 
+  if (shared && ADMIN_ONLY_SHARED_KEYS.has(key)) {
+    const authorized = await isRequesterAdminOrModerator(session);
+    if (!authorized) return res.status(403).json({ error: "forbidden" });
+  }
+
   if (!session) return res.status(401).json({ error: "authentication required" });
   res.json(await store.set(session.username, key, req.body.value, shared));
 });
@@ -319,7 +399,11 @@ router.delete("/kv/:key", async (req, res) => {
   
   if (isAccountKey(key)) {
     const accountOwner = key.slice("account:".length).toLowerCase();
-    if (!session || (session.username !== accountOwner && !session.isAdmin)) return res.status(403).json({ error: "forbidden" });
+    if (!session) return res.status(403).json({ error: "forbidden" });
+    if (session.username !== accountOwner) {
+      const authorized = await isRequesterAdminOrModerator(session);
+      if (!authorized) return res.status(403).json({ error: "forbidden" });
+    }
   } else if (!session) {
     return res.status(401).json({ error: "authentication required" });
   }
@@ -336,40 +420,12 @@ router.get("/kv-list", async (req, res) => {
   res.json(await store.list(owner, prefix, shared));
 });
 
-router.post("/bm-purchase", async (req, res) => {
-  const session = await getSession(req);
-  if (!session) return res.status(401).json({ error: "authentication required" });
-
-  const { listingKey, listingId, buyerUpdate, sellerUsername, sellerUpdate } = req.body;
-  if (!listingKey || !listingId || !buyerUpdate || !sellerUsername || !sellerUpdate) {
-    return res.status(400).json({ error: "missing fields" });
-  }
-
-  try {
-    const listingResult = await store.get("system", listingKey, true);
-    if (!listingResult || !listingResult.value) return res.status(404).json({ error: "listing_not_found" });
-    const listings = JSON.parse(listingResult.value);
-    const listing = Array.isArray(listings) ? listings.find(l => l.id === listingId) : null;
-    if (!listing) return res.status(404).json({ error: "listing_not_found" });
-
-    const buyerKey = "account:" + session.username.toLowerCase();
-    const buyerResult = await store.get("system", buyerKey, true);
-    if (!buyerResult) return res.status(400).json({ error: "buyer_not_found" });
-    const buyerAcc = JSON.parse(buyerResult.value);
-    if ((buyerAcc.coins || 0) < listing.price) return res.status(400).json({ error: "insufficient_coins" });
-
-    const sellerKey = "account:" + sellerUsername.toLowerCase();
-    const sellerResult = await store.get("system", sellerKey, true);
-    if (!sellerResult) return res.status(400).json({ error: "seller_not_found" });
-
-    const updatedListings = listings.filter(l => l.id !== listingId);
-    await store.set("system", listingKey, JSON.stringify(updatedListings), true);
-    await store.set("system", buyerKey, JSON.stringify(buyerUpdate), true);
-    await store.set("system", sellerKey, JSON.stringify(sellerUpdate), true);
-
-    res.json({ ok: true });
-  } catch (e) { res.status(500).json({ error: "server error: " + e.message }); }
-});
+// Note: an earlier "/bm-purchase" endpoint used to live here. It was never
+// actually called by the client (the real black market purchase flow uses
+// the generic /kv/ routes directly, with its own server-side ownership
+// checks), and it trusted client-supplied buyerUpdate/sellerUpdate objects
+// verbatim with no validation -- a real vulnerability with zero actual
+// usage. Removed rather than hardened, since nothing depends on it.
 
 router.get("/maintenance-status", async (req, res) => {
   try {
