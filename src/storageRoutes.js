@@ -348,7 +348,12 @@ router.post("/kv/:key", async (req, res) => {
           if (incoming.sumWpm < (current.sumWpm || 0)) return res.status(400).json({ error: "invalid_stat", field: "sumWpm" });
           const wpmDelta = incoming.sumWpm - (current.sumWpm || 0);
           const raceDelta = (incoming.races || 0) - (current.races || 0);
-          if (raceDelta >= 0 && wpmDelta > 350 * Math.max(1, raceDelta + 1)) return res.status(400).json({ error: "invalid_stat", field: "sumWpm_delta" });
+          // A single race can contribute at most 350 to the sum (the same
+          // ceiling bestWpm itself is capped at) -- the multiplier here
+          // must be raceDelta, not raceDelta + 1, or a client claiming
+          // exactly 1 new race could smuggle in up to 700 worth of sumWpm,
+          // silently doubling their average WPM contribution per race.
+          if (raceDelta >= 0 && wpmDelta > 350 * Math.max(1, raceDelta)) return res.status(400).json({ error: "invalid_stat", field: "sumWpm_delta" });
         }
         if (current && typeof incoming.races === "number") {
           if (incoming.races < (current.races || 0)) return res.status(400).json({ error: "invalid_stat", field: "races" });
@@ -510,6 +515,28 @@ router.get("/device-bans", async (req, res) => {
     const rawList = await store.list("system", "ban_", true);
     const bans = rawList.map(item => JSON.parse(item.value));
     res.json({ bans });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Returns every account's username/ban/suspend status in a single query --
+// used by the admin Players tab to build the index's red/orange outline
+// flags. Deliberately returns only these three lightweight fields per
+// account rather than the full record, keeping the response small; this
+// replaces what used to be one individual account fetch per player (N
+// round-trips) with exactly one.
+router.get("/player-flags", async (req, res) => {
+  const session = await getSession(req);
+  const authorized = await isRequesterAdminOrModerator(session);
+  if (!authorized) return res.status(403).json({ error: "forbidden" });
+  try {
+    const rows = await store.listAllAccounts();
+    const players = rows.map((row) => {
+      try {
+        const acc = JSON.parse(row.value);
+        return { username: acc.username || row.key.replace(/^account:/, ""), isBanned: !!acc.isBanned, isSuspended: !!acc.isSuspended };
+      } catch (e) { return null; }
+    }).filter(Boolean);
+    res.json({ players });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 

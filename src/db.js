@@ -137,5 +137,14 @@ async function findAccountsByLastKnownIp(ip) {
   return rows.map((r) => ({ key: r.key, value: r.value }));
 }
 
+// Fetches every account document's raw key+value in a single query. Used
+// by the admin Players tab to build a lightweight ban/suspend index for
+// every player without needing one HTTP round-trip per account -- what
+// used to be N individual requests is now exactly one query.
+async function listAllAccounts() {
+  const rows = await SharedKV.find({ key: { $regex: /^account:/ } });
+  return rows.map((r) => ({ key: r.key, value: r.value }));
+}
+
 // Export the functions for the router to use
-module.exports = { get, set, del, list, cleanupExpiredAuthKeys, findAccountsByLastKnownIp };
+module.exports = { get, set, del, list, cleanupExpiredAuthKeys, findAccountsByLastKnownIp, listAllAccounts };
