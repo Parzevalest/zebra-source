@@ -546,6 +546,34 @@ router.get("/player-flags", async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// Returns every account's data in a single query, redacted of the same
+// sensitive fields the single-account GET route strips (passwordHash, IP,
+// device fingerprint). Available to any authenticated player, not just
+// admins -- this is what the leaderboard and car-mastery leaderboard need,
+// and both are regular player-facing features. Used to be N individual
+// per-account requests from the client; under real concurrent traffic
+// that's N database queries EVERY TIME ANY PLAYER loads the leaderboard,
+// which multiplies fast as more players are online at once. This is the
+// single-query replacement.
+router.get("/all-accounts", async (req, res) => {
+  const session = await getSession(req);
+  if (!session) return res.status(401).json({ error: "authentication required" });
+  try {
+    const rows = await store.listAllAccounts();
+    const accounts = rows.map((row) => {
+      try {
+        const acc = JSON.parse(row.value);
+        delete acc.passwordHash;
+        delete acc.lastKnownIp;
+        delete acc.deviceFingerprint;
+        delete acc.deviceFingerprintShort;
+        return acc;
+      } catch (e) { return null; }
+    }).filter(Boolean);
+    res.json({ accounts });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // ── IP ban endpoints ──────────────────────────────────────────────────────────
 // Separate from the device-fingerprint ban system above -- an IP ban blocks
 // a network address regardless of which account or device is used from it,
