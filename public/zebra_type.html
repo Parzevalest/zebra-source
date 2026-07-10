@@ -6197,7 +6197,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     app.innerHTML =
       brandHeader() +
       '<div class="panel" style="max-width:440px;margin:60px auto;text-align:center;">' +
-        '<div class="garage-title" style="color:var(--text);font-size:20px;margin-bottom:14px;">You are about to be molested.</div>' +
+        '<div class="garage-title" style="color:var(--text);font-size:20px;margin-bottom:14px;">You are about to be logged in.</div>' +
         '<div style="color:var(--muted);font-size:15px;margin-bottom:22px;">Do you consent?</div>' +
         '<label style="display:flex;align-items:center;justify-content:center;gap:10px;margin-bottom:24px;cursor:pointer;font-size:15px;color:var(--text);">' +
           '<input type="checkbox" id="loginConsentYes" style="width:20px;height:20px;cursor:pointer;" />' +
@@ -13372,7 +13372,15 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
       try{
         var listRes = await shimList("account:", true);
         var keys = (listRes.keys || []).sort();
-        allAccounts = keys.map(function(k){ return k.replace(/^account:/, ""); });
+        var usernames = keys.map(function(k){ return k.replace(/^account:/, ""); });
+        // Fetch each account's ban/suspend status too, so the index can
+        // flag banned/suspended players visually at a glance rather than
+        // needing to click into each one individually to find out.
+        var results = await Promise.all(usernames.map(function(u){ return getAccount(u); }));
+        allAccounts = usernames.map(function(u, i){
+          var acc = results[i] && results[i].ok ? results[i].account : null;
+          return { username: u, isBanned: !!(acc && acc.isBanned), isSuspended: !!(acc && acc.isSuspended) };
+        });
         renderIndex("");
       }catch(e){
         if(listEl) listEl.innerHTML = '<div class="center-note" style="color:var(--muted);">Couldn\u2019t load player list.</div>';
@@ -13383,7 +13391,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
       var listEl = document.getElementById("playerIndexList");
       if(!listEl) return;
       var q = (query || "").toLowerCase().trim();
-      var filtered = q ? allAccounts.filter(function(u){ return u.indexOf(q) !== -1; }) : allAccounts;
+      var filtered = q ? allAccounts.filter(function(a){ return a.username.indexOf(q) !== -1; }) : allAccounts;
       if(!filtered.length){
         listEl.innerHTML = '<div class="center-note" style="color:var(--muted);padding:10px 0;">' + (q ? "No players match \u201c" + escapeHtml(q) + "\u201d." : "No players yet.") + '</div>';
         return;
@@ -13391,8 +13399,9 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
       listEl.innerHTML =
         '<div style="font-size:12px;color:var(--muted);margin-bottom:8px;">' + filtered.length + ' player' + (filtered.length===1?'':'s') + (q ? ' matching \u201c'+escapeHtml(q)+'\u201d' : '') + '</div>' +
         '<div style="display:flex;flex-wrap:wrap;gap:6px;">' +
-          filtered.map(function(u){
-            return '<button class="small-btn player-index-btn" data-username="' + escapeHtml(u) + '" style="font-size:13px;">' + escapeHtml(u) + '</button>';
+          filtered.map(function(a){
+            var flagStyle = a.isBanned ? 'border-color:var(--red);color:var(--red);' : a.isSuspended ? 'border-color:var(--amber);color:var(--amber);' : '';
+            return '<button class="small-btn player-index-btn" data-username="' + escapeHtml(a.username) + '" style="font-size:13px;' + flagStyle + '">' + escapeHtml(a.username) + '</button>';
           }).join("") +
         '</div>';
 
