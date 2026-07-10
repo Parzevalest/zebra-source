@@ -1,6 +1,7 @@
 require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
+const compression = require("compression");
 const http = require("http");
 const path = require("path");
 
@@ -15,6 +16,15 @@ const app = express();
 // return the proxy's internal address instead of the visitor's real IP,
 // which would make IP-based banning completely non-functional.
 app.set("trust proxy", true);
+
+// Nothing was compressing responses at all -- the ~950KB main game file,
+// and every API response carrying base64-encoded car/avatar/name-tag
+// images, was being sent completely uncompressed on every single request.
+// gzip typically shrinks text-heavy payloads like these by 70-90%. This
+// needs to be one of the very first things registered so it applies to
+// every response below, including the static file serving further down.
+app.use(compression());
+
 app.use(cors({
   origin: ["https://pandatype.org", "https://www.pandatype.org", "http://localhost:3000"],
   credentials: true
