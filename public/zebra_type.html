@@ -7270,7 +7270,17 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
           });
         });
       }
-    }).catch(function(e){ console.error("Loot index error:", e); });
+    }).catch(function(e){
+      console.error("Loot index error:", e);
+      var modalBody = document.querySelector(".modal-content") || document.getElementById("modalCloseBtn");
+      var container = document.getElementById("modalCloseBtn");
+      if(container && container.parentElement){
+        container.parentElement.innerHTML = '<button class="small-btn" id="modalCloseBtn" style="position:absolute;top:14px;right:14px;">\u2715</button><div class="center-note" style="padding:20px;">Couldn\u2019t load the loot index right now. <button class="small-btn" id="lootRetryBtn">Try again</button></div>';
+        document.getElementById("modalCloseBtn").addEventListener("click", closeModal);
+        var retryBtn = document.getElementById("lootRetryBtn");
+        if(retryBtn) retryBtn.addEventListener("click", function(){ openLootIndexModal(initialTab); });
+      }
+    });
   }
 
 
@@ -7291,6 +7301,15 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
         avatarCatalogCache = results[1];
         garageCachesLoaded = true;
         if(state.screen === "garageCars" || state.screen === "dashboard") renderGarageCars();
+      }).catch(function(e){
+        if(state.screen !== "garageCars" && state.screen !== "dashboard") return;
+        app.innerHTML =
+          brandHeader() +
+          renderNavBar("garage") +
+          '<div class="panel" style="margin-bottom:18px;"><div class="center-note" style="color:var(--muted);">Couldn\u2019t load the garage right now. <button class="small-btn" id="garageRetryBtn">Try again</button></div></div>';
+        attachNavListeners();
+        var retryBtn = document.getElementById("garageRetryBtn");
+        if(retryBtn) retryBtn.addEventListener("click", function(){ renderGarageCars(); });
       });
       return;
     }
@@ -8177,6 +8196,11 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
 
         renderFriendRows(accountsByUsername, guildsById);
       });
+    }).catch(function(e){
+      if(document.getElementById("friendsBody") !== body) return;
+      body.innerHTML = '<div class="center-note" style="color:var(--muted);">Couldn\u2019t load friends right now. <button class="small-btn" id="friendsRetryBtn">Try again</button></div>';
+      var retryBtn = document.getElementById("friendsRetryBtn");
+      if(retryBtn) retryBtn.addEventListener("click", function(){ renderFriendsBody(acc); });
     });
 
     function renderFriendRows(accountsByUsername, guildsById){
@@ -16707,6 +16731,12 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
           claimBtn.textContent = 'Claim Now';
         }
       });
+    }).catch(function(e){
+      var seasonPanel2 = document.getElementById("seasonPanel");
+      if(seasonPanel2) seasonPanel2.innerHTML =
+        '<div class="center-note" style="color:var(--muted);">Couldn\u2019t load the season right now. <button class="small-btn" id="seasonRetryBtn">Try again</button></div>';
+      var retryBtn = document.getElementById("seasonRetryBtn");
+      if(retryBtn) retryBtn.addEventListener("click", function(){ renderSeason(); });
     });
   }
 
