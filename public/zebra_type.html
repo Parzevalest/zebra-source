@@ -4285,7 +4285,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     }catch(e){ /* non-critical stat tracking */ }
   }
 
-  async function computeRaceActivityStats(){
+  async function computeRaceActivityStats(players){
     var log = [];
     try{
       var res = await shimGet(RACE_LOG_KEY, true);
@@ -4296,18 +4296,11 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     var last24h = log.filter(function(ts){ return now - ts < 24 * 60 * 60 * 1000; }).length;
     var last30d = log.filter(function(ts){ return now - ts < 30 * 24 * 60 * 60 * 1000; }).length;
 
-    var allTime = 0;
-    try{
-      var listRes = await shimList("account:", true);
-      var keys = listRes.keys || [];
-      for(var i = 0; i < keys.length; i++){
-        try{
-          var username = keys[i].replace(/^account:/, "");
-          var accRes = await getAccount(username);
-          if(accRes.ok && accRes.account && !accRes.account.isBot) allTime += (accRes.account.races || 0);
-        }catch(e){}
-      }
-    }catch(e){}
+    // All-time now comes from the same single player-flags fetch the
+    // index already needs, instead of a separate sequential per-account
+    // loop -- that loop (one getAccount() at a time, awaited one after
+    // another) was the actual slow part of this whole screen.
+    var allTime = (players || []).reduce(function(sum, p){ return sum + (p.isBot ? 0 : (p.races || 0)); }, 0);
 
     return { last24h: last24h, last30d: last30d, allTime: allTime };
   }
@@ -6256,7 +6249,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     app.innerHTML =
       brandHeader() +
       '<div class="panel" style="max-width:440px;margin:60px auto;text-align:center;">' +
-        '<div class="garage-title" style="color:var(--text);font-size:20px;margin-bottom:14px;">You are about to be molested.</div>' +
+        '<div class="garage-title" style="color:var(--text);font-size:20px;margin-bottom:14px;">You are about to be logged in.</div>' +
         '<div style="color:var(--muted);font-size:15px;margin-bottom:22px;">Do you consent?</div>' +
         '<label style="display:flex;align-items:center;justify-content:center;gap:10px;margin-bottom:24px;cursor:pointer;font-size:15px;color:var(--text);">' +
           '<input type="checkbox" id="loginConsentYes" style="width:20px;height:20px;cursor:pointer;" />' +
@@ -13413,15 +13406,6 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
 
     attachAdminNavListeners();
 
-    computeRaceActivityStats().then(function(stats){
-      var el24 = document.getElementById("raceStat24h");
-      var el30 = document.getElementById("raceStat30d");
-      var elAll = document.getElementById("raceStatAllTime");
-      if(el24) el24.textContent = stats.last24h.toLocaleString();
-      if(el30) el30.textContent = stats.last30d.toLocaleString();
-      if(elAll) elAll.textContent = stats.allTime.toLocaleString();
-    });
-
     // Load full index
     var allAccounts = [];
 
@@ -13430,7 +13414,18 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
       if(listEl) listEl.innerHTML = '<div class="center-note">Loading players\u2026</div>';
       try{
         var data = await fetchPlayerFlags();
-        allAccounts = (data.players || []).slice().sort(function(a,b){
+        var players = data.players || [];
+
+        computeRaceActivityStats(players).then(function(stats){
+          var el24 = document.getElementById("raceStat24h");
+          var el30 = document.getElementById("raceStat30d");
+          var elAll = document.getElementById("raceStatAllTime");
+          if(el24) el24.textContent = stats.last24h.toLocaleString();
+          if(el30) el30.textContent = stats.last30d.toLocaleString();
+          if(elAll) elAll.textContent = stats.allTime.toLocaleString();
+        });
+
+        allAccounts = players.slice().sort(function(a,b){
           return a.username < b.username ? -1 : a.username > b.username ? 1 : 0;
         });
         renderIndex("");
