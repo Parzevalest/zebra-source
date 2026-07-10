@@ -6125,7 +6125,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     app.innerHTML =
       brandHeader() +
       '<div class="panel" style="max-width:440px;margin:60px auto;text-align:center;">' +
-        '<div class="garage-title" style="color:var(--text);font-size:20px;margin-bottom:14px;">You are about to be molested.</div>' +
+        '<div class="garage-title" style="color:var(--text);font-size:20px;margin-bottom:14px;">You are about to be logged in.</div>' +
         '<div style="color:var(--muted);font-size:15px;margin-bottom:22px;">Do you consent?</div>' +
         '<label style="display:flex;align-items:center;justify-content:center;gap:10px;margin-bottom:24px;cursor:pointer;font-size:15px;color:var(--text);">' +
           '<input type="checkbox" id="loginConsentYes" style="width:20px;height:20px;cursor:pointer;" />' +
@@ -6989,68 +6989,148 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     });
   }
 
-  function openCarIndexModal(){
-    // Load cars, wheel prizes, and achievements in parallel
-    Promise.all([fetchCustomCars(), fetchWheelPrizes(), fetchAchievements()]).then(function(results){
-      var allCars = results[0];
-      var wheelPrizes = results[1];
-      var achievements = results[2];
+  // Gathers every reward object from every system that can hand out a
+  // discrete, named item (wheels, achievements, both daily streak pools,
+  // both streak milestone ladders, and both season tracks) into one flat
+  // list. Used to figure out which catalog items should actually show up
+  // in the Loot Index -- an item nobody can currently obtain from anywhere
+  // shouldn't clutter the list.
+  async function gatherAllRewardSources(){
+    var results = await Promise.all([
+      fetchWheelPrizes(), fetchAchievements(), fetchStreakConfig(),
+      fetchStreakPool(false), fetchStreakPool(true), fetchSeasonConfig()
+    ]);
+    var wheelPrizes = results[0], achievements = results[1], streakCfg = results[2];
+    var streakStandardPool = results[3], streakPremiumPool = results[4], seasonCfg = results[5];
 
-      // Build set of car IDs that are on a wheel or in an achievement
-      var visibleIds = {};
-      wheelPrizes.forEach(function(p){ if(p.rewardType === "car" && p.rewardCarId) visibleIds[p.rewardCarId] = true; });
-      achievements.forEach(function(a){ if(a.rewardType === "car" && a.rewardCarId) visibleIds[a.rewardCarId] = true; });
+    var all = [];
+    wheelPrizes.forEach(function(p){ all.push(p); });
+    achievements.forEach(function(a){ if(a.rewardType) all.push(a); });
+    streakStandardPool.forEach(function(p){ all.push(p); });
+    streakPremiumPool.forEach(function(p){ all.push(p); });
+    (streakCfg.standardLadder || []).forEach(function(l){ if(l.reward) all.push(l.reward); });
+    (streakCfg.premiumLadder || []).forEach(function(l){ if(l.reward) all.push(l.reward); });
+    (seasonCfg && seasonCfg.levels || []).forEach(function(lvl){
+      if(lvl.freeReward) all.push(lvl.freeReward);
+      if(lvl.premiumReward) all.push(lvl.premiumReward);
+    });
+    return all;
+  }
 
-      var cars = allCars.filter(function(c){ return visibleIds[c.id]; });
+  function lootIndexTileHtml(kind, item, owned, acc){
+    var rarColor = RARITY_COLORS[item.rarity] || "var(--muted)";
+    var borderColor = owned ? "var(--green)" : "var(--line)";
+    var label = kind === "title" ? "" : escapeHtml(item.name || "");
+    var boxHeight = kind === "car" ? "64px" : kind === "nameTag" ? "50px" : kind === "avatar" ? "90px" : "56px";
+    var innerContent;
+    if(kind === "car") innerContent = carVisualHtml(item);
+    else if(kind === "nameTag") innerContent = '<img src="' + item.image + '" alt="" style="max-width:100%;max-height:100%;object-fit:contain;image-rendering:pixelated;" />';
+    else if(kind === "avatar") innerContent = '<img src="' + item.image + '" alt="" style="max-width:80%;max-height:100%;object-fit:contain;image-rendering:pixelated;" />';
+    else innerContent = '<div style="font-family:\'Arial Black\',Impact,sans-serif;font-style:italic;font-size:13px;color:' + rarColor + ';text-align:center;padding:4px 6px;line-height:1.2;">' + escapeHtml(item.text || "") + '</div>';
 
-      if(!cars.length){
-        openModal('<button class="small-btn" id="modalCloseBtn" style="position:absolute;top:14px;right:14px;">\u2715</button><div class="center-note" style="padding:20px;">No cars in the index yet.</div>');
-        document.getElementById("modalCloseBtn").addEventListener("click", closeModal);
-        return;
+    return '<div style="width:128px;text-align:center;">' +
+      (label ? '<div style="font-size:10px;font-weight:700;color:' + rarColor + ';margin-bottom:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + label + '</div>' : '') +
+      '<div style="position:relative;width:128px;height:' + boxHeight + ';background:var(--panel-2);border:1px solid ' + borderColor + ';border-radius:8px;overflow:hidden;display:flex;align-items:center;justify-content:center;">' +
+        innerContent +
+        (owned ? '<div style="position:absolute;top:3px;right:4px;font-size:9px;font-weight:700;color:var(--green);">\u2714 Owned</div>' : '') +
+      '</div>' +
+    '</div>';
+  }
+
+  function lootIndexSectionHtml(kind, items, acc){
+    if(!items.length) return '<div class="center-note" style="padding:20px;">Nothing in this category yet.</div>';
+    var byRarity = {};
+    items.forEach(function(it){
+      var r = it.rarity || "Common";
+      if(!byRarity[r]) byRarity[r] = [];
+      byRarity[r].push(it);
+    });
+    var rarityOrder = ["Common","Rare","Ultra Rare","Legendary","Mythic","Ascended","Unobtainable","Admin","Exclusive","Achievement"];
+    var html = "";
+    rarityOrder.forEach(function(rarity){
+      var group = byRarity[rarity];
+      if(!group || !group.length) return;
+      html += '<div style="margin-bottom:18px;">' +
+        '<div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:1px;margin-bottom:10px;padding-bottom:6px;border-bottom:1px solid var(--line);">' +
+          rarityTextHtml(rarity) + ' <span style="color:var(--muted);font-weight:400;">' + group.length + '</span>' +
+        '</div>' +
+        '<div style="display:flex;flex-wrap:wrap;gap:12px;">';
+      group.forEach(function(it){
+        var owned;
+        if(kind === "car") owned = (acc.ownedCarIds || []).indexOf(it.id) !== -1 || acc.equippedCarId === it.id;
+        else if(kind === "nameTag") owned = (acc.ownedNameTags || []).indexOf(it.image) !== -1;
+        else if(kind === "avatar") owned = ((acc.ownedAvatarPieces && acc.ownedAvatarPieces[it.slot]) || []).indexOf(it.id) !== -1;
+        else owned = (acc.ownedTitles || []).indexOf(it.id) !== -1;
+        html += lootIndexTileHtml(kind, it, owned, acc);
+      });
+      html += '</div></div>';
+    });
+    return html;
+  }
+
+  function openLootIndexModal(initialTab){
+    var activeTab = initialTab || "car";
+    openModal('<button class="small-btn" id="modalCloseBtn" style="position:absolute;top:14px;right:14px;">\u2715</button><div class="center-note" style="padding:20px;">Loading\u2026</div>');
+    document.getElementById("modalCloseBtn").addEventListener("click", closeModal);
+
+    Promise.all([
+      fetchCustomCars(), fetchNameTagCatalog(), fetchAvatarCatalog(), fetchTitleCatalog(),
+      gatherAllRewardSources()
+    ]).then(function(results){
+      var allCars = results[0], allTags = results[1], allAvatars = results[2], allTitles = results[3];
+      var sources = results[4];
+
+      var visibleCarIds = {}, visibleTagImages = {}, visibleAvatarIds = {}, visibleTitleIds = {};
+      sources.forEach(function(r){
+        if(r.rewardType === "car" && r.rewardCarId) visibleCarIds[r.rewardCarId] = true;
+        else if(r.rewardType === "nameTag" && r.rewardNameTagImage) visibleTagImages[r.rewardNameTagImage] = true;
+        else if(r.rewardType === "avatar" && r.rewardAvatarPieceId) visibleAvatarIds[r.rewardAvatarPieceId] = true;
+        else if(r.rewardType === "title" && r.rewardTitleId) visibleTitleIds[r.rewardTitleId] = true;
+      });
+
+      var cars = allCars.filter(function(c){ return visibleCarIds[c.id]; });
+      var tags = allTags.filter(function(t){ return visibleTagImages[t.image]; });
+      var avatars = allAvatars.filter(function(a){ return visibleAvatarIds[a.id]; });
+      var titles = allTitles.filter(function(t){ return visibleTitleIds[t.id]; });
+
+      var counts = { car: cars.length, nameTag: tags.length, avatar: avatars.length, title: titles.length };
+      var tabDefs = [
+        { key: "car", label: "Cars" },
+        { key: "nameTag", label: "Name Tags" },
+        { key: "avatar", label: "Avatars" },
+        { key: "title", label: "Titles" }
+      ];
+
+      function fullHtml(){
+        var acc = state.user;
+        var itemsForTab = activeTab === "car" ? cars : activeTab === "nameTag" ? tags : activeTab === "avatar" ? avatars : titles;
+        return '<button class="small-btn" id="modalCloseBtn" style="position:absolute;top:14px;right:14px;">\u2715</button>' +
+          '<div class="garage-title" style="color:var(--text);font-size:20px;margin-bottom:4px;">\uD83D\uDCD6 Loot Index</div>' +
+          '<div class="hint-text" style="margin-top:0;margin-bottom:16px;">Every item currently obtainable from wheels, achievements, daily streaks, or the season pass.</div>' +
+          '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:18px;">' +
+            tabDefs.map(function(t){
+              return '<button class="small-btn' + (activeTab === t.key ? ' active' : '') + '" data-loot-tab="' + t.key + '" style="' + (activeTab === t.key ? 'background:var(--amber);color:#0A0B0D;border-color:var(--amber);' : '') + '">' + t.label + ' (' + counts[t.key] + ')</button>';
+            }).join("") +
+          '</div>' +
+          '<div id="lootIndexBody">' + lootIndexSectionHtml(activeTab, itemsForTab, acc) + '</div>';
       }
 
-      // Group by rarity
-      var byRarity = {};
-      cars.forEach(function(c){
-        var r = c.rarity || "Common";
-        if(!byRarity[r]) byRarity[r] = [];
-        byRarity[r].push(c);
-      });
-      var rarityOrder = ["Common","Rare","Ultra Rare","Legendary","Mythic","Ascended","Unobtainable","Admin","Exclusive","Achievement"];
+      openModal(fullHtml());
+      wireLootIndexModal();
 
-      var html = '<button class="small-btn" id="modalCloseBtn" style="position:absolute;top:14px;right:14px;">\u2715</button>' +
-        '<div class="garage-title" style="color:var(--text);font-size:20px;margin-bottom:16px;">\uD83D\uDCD6 Car Index</div>' +
-        '<div class="hint-text" style="margin-top:0;margin-bottom:16px;">All cars that have been added to the game. ' + cars.length + ' total.</div>';
-
-      rarityOrder.forEach(function(rarity){
-        var group = byRarity[rarity];
-        if(!group || !group.length) return;
-        html += '<div style="margin-bottom:18px;">' +
-          '<div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:1px;margin-bottom:10px;padding-bottom:6px;border-bottom:1px solid var(--line);">' +
-            rarityTextHtml(rarity) + ' <span style="color:var(--muted);font-weight:400;">' + group.length + '</span>' +
-          '</div>' +
-          '<div style="display:flex;flex-wrap:wrap;gap:12px;">';
-
-        group.forEach(function(c){
-          var acc = state.user;
-          var owned = (acc.ownedCarIds || []).indexOf(c.id) !== -1 || (acc.equippedCarId === c.id);
-          var rarColor = RARITY_COLORS[c.rarity] || "var(--muted)";
-          html += '<div style="width:128px;text-align:center;">' +
-            '<div style="font-size:10px;font-weight:700;color:' + rarColor + ';margin-bottom:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + escapeHtml(c.name) + '</div>' +
-            '<div style="position:relative;width:128px;height:64px;background:var(--panel-2);border:1px solid ' + (owned ? 'var(--green)' : 'var(--line)') + ';border-radius:8px;overflow:hidden;display:flex;align-items:center;justify-content:center;">' +
-              carVisualHtml(c) +
-              (owned ? '<div style="position:absolute;top:3px;right:4px;font-size:9px;font-weight:700;color:var(--green);">\u2714 Owned</div>' : '') +
-            '</div>' +
-          '</div>';
+      function wireLootIndexModal(){
+        document.getElementById("modalCloseBtn").addEventListener("click", closeModal);
+        document.querySelectorAll("[data-loot-tab]").forEach(function(btn){
+          btn.addEventListener("click", function(){
+            activeTab = btn.getAttribute("data-loot-tab");
+            openModal(fullHtml());
+            wireLootIndexModal();
+          });
         });
-
-        html += '</div></div>';
-      });
-
-      openModal(html);
-      document.getElementById("modalCloseBtn").addEventListener("click", closeModal);
-    }).catch(function(e){ console.error("Car index error:", e); });
+      }
+    }).catch(function(e){ console.error("Loot index error:", e); });
   }
+
 
   function renderGarageCars(){
     var acc = state.user;
@@ -7095,7 +7175,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
           '<div class="garage-title" style="color:var(--text);">My Cars ' +
             '<span class="garage-count">| ' + totalCars + '</span>' +
           '</div>' +
-          '<button class="small-btn" id="openCarIndexBtn" style="padding:14px 24px;font-size:16px;">\uD83D\uDCD6 Car Index</button>' +
+          '<button class="small-btn" id="openCarIndexBtn" style="padding:14px 24px;font-size:16px;">\uD83D\uDCD6 Loot Index</button>' +
         '</div>' +
         '<div class="garage-floor" id="garageFloor">' + garageGridHtml(state.garageOrder, state.equippedCarIndex) + '</div>' +
       '</div>';
@@ -7107,7 +7187,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     // button — single delegated listener on the floor div. We re-render the
     // grid contents in-place (not the floor div itself) so the listener
     // stays attached through equips.
-    document.getElementById("openCarIndexBtn").addEventListener("click", function(){ openCarIndexModal(); });
+    document.getElementById("openCarIndexBtn").addEventListener("click", function(){ openLootIndexModal(); });
 
     var garageFloorEl = document.getElementById("garageFloor");
     garageFloorEl.addEventListener("click", function(e){
@@ -7385,7 +7465,8 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
         '<img src="' + p.image + '" alt="" style="max-width:80%;max-height:80px;object-fit:contain;image-rendering:pixelated;" />' +
       '</div>' +
       '<div class="garage-title" style="color:var(--text);font-size:19px;margin-bottom:2px;">' + escapeHtml(p.name || "") + '</div>' +
-      '<div style="font-size:12px;color:var(--muted);margin-bottom:14px;">' + escapeHtml(AVATAR_SLOT_LABELS[p.slot] || p.slot || "") + '</div>' +
+      '<div style="font-size:12px;color:var(--muted);margin-bottom:2px;">' + escapeHtml(AVATAR_SLOT_LABELS[p.slot] || p.slot || "") + '</div>' +
+      '<div style="font-size:12px;color:var(--muted);margin-bottom:14px;">By ' + escapeHtml(p.creator || "Unknown") + '</div>' +
       '<div style="display:flex;align-items:center;gap:14px;background:var(--panel-2);border:1px solid var(--line);border-radius:10px;padding:14px;margin-bottom:12px;">' +
         rarityIconHtml(rarity, 40) +
         '<div>' +
@@ -15403,6 +15484,10 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
           '<input id="avatarPieceName" maxlength="30" placeholder="e.g. Racing Helmet" style="width:100%;background:var(--panel-2);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:11px 12px;font-size:15px;" />' +
         '</div>' +
         '<div class="field">' +
+          '<label for="avatarPieceCreator">Creator</label>' +
+          '<input id="avatarPieceCreator" maxlength="30" placeholder="e.g. Panda Type" style="width:100%;background:var(--panel-2);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:11px 12px;font-size:15px;" />' +
+        '</div>' +
+        '<div class="field">' +
           '<label for="avatarPieceRarity">Rarity</label>' +
           '<select id="avatarPieceRarity" style="width:100%;background:var(--panel-2);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:11px 12px;font-size:14px;">' +
             RARITY_TIERS.map(function(r){ return '<option value="' + escapeHtml(r) + '">' + escapeHtml(r) + '</option>'; }).join("") +
@@ -15515,6 +15600,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
         var piece = list.find(function(p){ return p.id === editingId; });
         if(!piece) return;
         document.getElementById("avatarPieceName").value = piece.name || "";
+        document.getElementById("avatarPieceCreator").value = piece.creator || "";
         document.getElementById("avatarPieceRarity").value = piece.rarity || "Common";
         var avSeasonalCb = document.getElementById("avatarPieceSeasonal");
         if(avSeasonalCb) avSeasonalCb.checked = !!piece.isSeasonal;
@@ -15536,6 +15622,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
 
     document.getElementById("saveAvatarPieceBtn").addEventListener("click", async function(){
       var name = document.getElementById("avatarPieceName").value.trim();
+      var creator = document.getElementById("avatarPieceCreator").value.trim();
       var rarity = document.getElementById("avatarPieceRarity").value;
       var isSeasonal = document.getElementById("avatarPieceSeasonal") && document.getElementById("avatarPieceSeasonal").checked;
       var errEl = document.getElementById("avatarPieceError");
@@ -15549,7 +15636,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
         var list = await fetchAvatarCatalog();
         var isSeasonal = document.getElementById("avatarPieceSeasonal") && document.getElementById("avatarPieceSeasonal").checked;
         var entry = {
-          name: name, slot: slot, rarity: rarity || "Common", image: pendingAvatarImage, isSeasonal: !!isSeasonal
+          name: name, creator: creator || "Unknown", slot: slot, rarity: rarity || "Common", image: pendingAvatarImage, isSeasonal: !!isSeasonal
         };
         if(slot === "head"){
           entry.headOffsetX = pendingHeadOffsetX;
