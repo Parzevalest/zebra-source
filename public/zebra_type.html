@@ -4180,7 +4180,14 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
       var res = await shimGet(CUSTOM_CARS_KEY, true);
       return res && res.value ? JSON.parse(res.value) : [];
     }catch(e){
-      return [];
+      // Only a genuine "key doesn't exist yet" is safe to treat as an
+      // empty catalog. Any OTHER failure (timeout, network error, server
+      // error) must propagate rather than being silently swallowed --
+      // otherwise a transient fetch failure during an admin add/edit
+      // action (fetch list, modify, save list back) would save an
+      // incomplete list over the real one, wiping out everything else.
+      if(e && e.message === "not found") return [];
+      throw e;
     }
   }
 
@@ -4198,7 +4205,8 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
       var res = await shimGet(NAME_TAG_CATALOG_KEY, true);
       return res && res.value ? JSON.parse(res.value) : [];
     }catch(e){
-      return [];
+      if(e && e.message === "not found") return [];
+      throw e;
     }
   }
 
@@ -4216,7 +4224,8 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
       var res = await shimGet(AVATAR_CATALOG_KEY, true);
       return res && res.value ? JSON.parse(res.value) : [];
     }catch(e){
-      return [];
+      if(e && e.message === "not found") return [];
+      throw e;
     }
   }
 
@@ -4233,7 +4242,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     try{
       var res = await shimGet(ACHIEVEMENTS_KEY, true);
       return res && res.value ? JSON.parse(res.value) : [];
-    }catch(e){ return []; }
+    }catch(e){ if(e && e.message === "not found") return []; throw e; }
   }
 
   async function saveAchievements(list){
@@ -4253,7 +4262,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
       // wheel redesigns) and drop anything that can't resolve to a real
       // car or name tag.
       return raw.map(normalizeWheelPrize).filter(function(p){ return p !== null; });
-    }catch(e){ return []; }
+    }catch(e){ if(e && e.message === "not found") return []; throw e; }
   }
 
   async function saveWheelPrizes(list){
@@ -4322,7 +4331,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     try{
       var res = await shimGet(NEWS_POSTS_KEY, true);
       return res && res.value ? JSON.parse(res.value) : [];
-    }catch(e){ return []; }
+    }catch(e){ if(e && e.message === "not found") return []; throw e; }
   }
 
   async function saveNewsPosts(list){
@@ -4448,7 +4457,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
       var res = await shimGet(isPremium ? STREAK_PREMIUM_POOL_KEY : STREAK_STANDARD_POOL_KEY, true);
       var raw = res && res.value ? JSON.parse(res.value) : [];
       return raw.map(normalizeStreakPoolItem).filter(function(p){ return p !== null; });
-    }catch(e){ return []; }
+    }catch(e){ if(e && e.message === "not found") return []; throw e; }
   }
 
   async function saveStreakPool(isPremium, list){
@@ -4819,7 +4828,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     try{
       var res = await shimGet(BLACK_MARKET_KEY, true);
       return res && res.value ? JSON.parse(res.value) : [];
-    }catch(e){ return []; }
+    }catch(e){ if(e && e.message === "not found") return []; throw e; }
   }
 
   async function saveBlackMarketListings(list){
@@ -4835,14 +4844,14 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     try{
       var res = await shimGet(BM_ITEMS_KEY, true);
       return res && res.value ? JSON.parse(res.value) : [];
-    }catch(e){ return []; }
+    }catch(e){ if(e && e.message === "not found") return []; throw e; }
   }
 
   async function fetchTitleCatalog(){
     try{
       var res = await shimGet(TITLE_CATALOG_KEY, true);
       return res && res.value ? JSON.parse(res.value) : [];
-    }catch(e){ return []; }
+    }catch(e){ if(e && e.message === "not found") return []; throw e; }
   }
 
   async function saveTitleCatalog(list){
@@ -4856,7 +4865,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     try{
       var res = await shimGet(ABOUT_SECTIONS_KEY, true);
       return res && res.value ? JSON.parse(res.value) : [];
-    }catch(e){ return []; }
+    }catch(e){ if(e && e.message === "not found") return []; throw e; }
   }
 
   async function saveAboutSections(sections){
@@ -4962,7 +4971,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     try{
       var res = await shimGet(TRACKS_KEY, true);
       return res && res.value ? JSON.parse(res.value) : [];
-    }catch(e){ return []; }
+    }catch(e){ if(e && e.message === "not found") return []; throw e; }
   }
 
   async function saveTracks(list){
@@ -6258,7 +6267,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     app.innerHTML =
       brandHeader() +
       '<div class="panel" style="max-width:440px;margin:60px auto;text-align:center;">' +
-        '<div class="garage-title" style="color:var(--text);font-size:20px;margin-bottom:14px;">You are about to be molested.</div>' +
+        '<div class="garage-title" style="color:var(--text);font-size:20px;margin-bottom:14px;">You are about to be logged in.</div>' +
         '<div style="color:var(--muted);font-size:15px;margin-bottom:22px;">Do you consent?</div>' +
         '<label style="display:flex;align-items:center;justify-content:center;gap:10px;margin-bottom:24px;cursor:pointer;font-size:15px;color:var(--text);">' +
           '<input type="checkbox" id="loginConsentYes" style="width:20px;height:20px;cursor:pointer;" />' +
@@ -18335,8 +18344,12 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     // Route based on current URL path.
     navigate(window.location.pathname, false);
 
-    // Poll maintenance status every 3 seconds so all clients are
-    // kicked immediately when maintenance mode is toggled on.
+    // Poll maintenance status periodically so all clients are kicked when
+    // maintenance mode is toggled on. Every open tab does this for as long
+    // as it stays open, so the interval matters a lot at scale -- 15s is
+    // still fast enough to react to a deliberate admin toggle promptly,
+    // while cutting total request volume by 5x compared to every 3s,
+    // across however many tabs are sitting open at once.
     var maintPollFailures = 0;
     var maintPollRendering = false; // prevent poll from stomping an in-progress leaderboard load
     setInterval(async function(){
@@ -18366,7 +18379,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
           renderApp();
         }
       }catch(e){}
-    }, 3000);
+    }, 15000);
   });
 
 })();
