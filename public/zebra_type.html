@@ -3778,7 +3778,22 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     var url = SERVER_URL + "/api/kv/" + encodeURIComponent(key) + "?shared=" + (shared ? "true" : "false");
     var headers = {};
     if(currentToken) headers["x-session-token"] = currentToken;
-    var res = await fetch(url, { headers: headers });
+    // A hung request with no timeout at all would leave whatever UI
+    // triggered it stuck forever (e.g. a "Searching..." button that never
+    // resets) -- 15s is generous enough for a slow-but-working server,
+    // while still eventually giving up and letting the UI show an error
+    // instead of hanging indefinitely.
+    var controller = new AbortController();
+    var timeoutId = setTimeout(function(){ controller.abort(); }, 15000);
+    var res;
+    try{
+      res = await fetch(url, { headers: headers, signal: controller.signal });
+    }catch(e){
+      if(e && e.name === "AbortError") throw new Error("request timed out");
+      throw e;
+    }finally{
+      clearTimeout(timeoutId);
+    }
     if(res.status === 404) throw new Error("not found");
     if(!res.ok) throw new Error("storage get failed: " + res.status);
     return await res.json();
@@ -3788,11 +3803,22 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     var url = SERVER_URL + "/api/kv/" + encodeURIComponent(key);
     var headers = { "Content-Type": "application/json" };
     if(currentToken) headers["x-session-token"] = currentToken;
-    var res = await fetch(url, {
-      method: "POST",
-      headers: headers,
-      body: JSON.stringify({ value: value, shared: !!shared })
-    });
+    var controller = new AbortController();
+    var timeoutId = setTimeout(function(){ controller.abort(); }, 15000);
+    var res;
+    try{
+      res = await fetch(url, {
+        method: "POST",
+        headers: headers,
+        body: JSON.stringify({ value: value, shared: !!shared }),
+        signal: controller.signal
+      });
+    }catch(e){
+      if(e && e.name === "AbortError") throw new Error("request timed out");
+      throw e;
+    }finally{
+      clearTimeout(timeoutId);
+    }
     if(!res.ok) throw new Error("storage set failed: " + res.status);
     return await res.json();
   }
@@ -3801,8 +3827,41 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     var url = SERVER_URL + "/api/kv-list?prefix=" + encodeURIComponent(prefix || "") + "&shared=" + (shared ? "true" : "false");
     var headers = {};
     if(currentToken) headers["x-session-token"] = currentToken;
-    var res = await fetch(url, { headers: headers });
+    var controller = new AbortController();
+    var timeoutId = setTimeout(function(){ controller.abort(); }, 15000);
+    var res;
+    try{
+      res = await fetch(url, { headers: headers, signal: controller.signal });
+    }catch(e){
+      if(e && e.name === "AbortError") throw new Error("request timed out");
+      throw e;
+    }finally{
+      clearTimeout(timeoutId);
+    }
     if(!res.ok) throw new Error("storage list failed: " + res.status);
+    return await res.json();
+  }
+
+  // Fetches every account's username/ban/suspend status in one request --
+  // used by the admin Players tab index. Replaces what used to be one
+  // individual getAccount() call per player (N round-trips, slow and
+  // heavier on the server) with exactly one.
+  async function fetchPlayerFlags(){
+    var url = SERVER_URL + "/api/player-flags";
+    var headers = {};
+    if(currentToken) headers["x-session-token"] = currentToken;
+    var controller = new AbortController();
+    var timeoutId = setTimeout(function(){ controller.abort(); }, 15000);
+    var res;
+    try{
+      res = await fetch(url, { headers: headers, signal: controller.signal });
+    }catch(e){
+      if(e && e.name === "AbortError") throw new Error("request timed out");
+      throw e;
+    }finally{
+      clearTimeout(timeoutId);
+    }
+    if(!res.ok) throw new Error("player-flags fetch failed: " + res.status);
     return await res.json();
   }
 
@@ -6197,7 +6256,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     app.innerHTML =
       brandHeader() +
       '<div class="panel" style="max-width:440px;margin:60px auto;text-align:center;">' +
-        '<div class="garage-title" style="color:var(--text);font-size:20px;margin-bottom:14px;">You are about to be molested.</div>' +
+        '<div class="garage-title" style="color:var(--text);font-size:20px;margin-bottom:14px;">You are about to be logged in.</div>' +
         '<div style="color:var(--muted);font-size:15px;margin-bottom:22px;">Do you consent?</div>' +
         '<label style="display:flex;align-items:center;justify-content:center;gap:10px;margin-bottom:24px;cursor:pointer;font-size:15px;color:var(--text);">' +
           '<input type="checkbox" id="loginConsentYes" style="width:20px;height:20px;cursor:pointer;" />' +
@@ -13370,16 +13429,9 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
       var listEl = document.getElementById("playerIndexList");
       if(listEl) listEl.innerHTML = '<div class="center-note">Loading players\u2026</div>';
       try{
-        var listRes = await shimList("account:", true);
-        var keys = (listRes.keys || []).sort();
-        var usernames = keys.map(function(k){ return k.replace(/^account:/, ""); });
-        // Fetch each account's ban/suspend status too, so the index can
-        // flag banned/suspended players visually at a glance rather than
-        // needing to click into each one individually to find out.
-        var results = await Promise.all(usernames.map(function(u){ return getAccount(u); }));
-        allAccounts = usernames.map(function(u, i){
-          var acc = results[i] && results[i].ok ? results[i].account : null;
-          return { username: u, isBanned: !!(acc && acc.isBanned), isSuspended: !!(acc && acc.isSuspended) };
+        var data = await fetchPlayerFlags();
+        allAccounts = (data.players || []).slice().sort(function(a,b){
+          return a.username < b.username ? -1 : a.username > b.username ? 1 : 0;
         });
         renderIndex("");
       }catch(e){
