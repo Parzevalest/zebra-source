@@ -1918,6 +1918,55 @@ const AntiCheat = (() => {
              clickCount:clicks.length, likelyStat: dist<30&&moves.length<5 };
   }
 
+  //  Headless / automation-tool environment check 
+  // Static browser-environment characteristics rather than per-race
+  // behavior, so this is computed once and cached rather than re-derived
+  // on every verdict() call. navigator.webdriver and known automation
+  // globals have essentially no legitimate false-positive path — a real
+  // human's ordinary browser cannot produce these on its own. Software
+  // (non-GPU) WebGL rendering is very common in headless/server-side
+  // automation but not impossible on a real machine with unusual
+  // drivers, so it's weighted meaningfully but not treated as an
+  // automatic hard signal on its own.
+  const _detectHeadless = (() => {
+    let cached = null;
+    return () => {
+      if (cached) return cached;
+      const result = { webdriverFlag:false, automationArtifacts:false, artifactNames:[], softwareRenderer:false, rendererString:'', emptyPlugins:false, emptyLanguages:false };
+      try { if (navigator.webdriver === true) result.webdriverFlag = true; } catch(e){}
+      try {
+        const artifacts = [];
+        if (window.callPhantom || window._phantom) artifacts.push('phantomjs');
+        if (window.__nightmare) artifacts.push('nightmare');
+        if (document.__selenium_unwrapped || document.__webdriver_evaluate || document.__driver_evaluate) artifacts.push('selenium');
+        if (document.documentElement && document.documentElement.getAttribute && document.documentElement.getAttribute('webdriver')) artifacts.push('webdriver-attr');
+        // ChromeDriver injects a randomized-but-prefixed global like cdc_XXXXXXX_Array
+        for (const key in window) {
+          if (key.indexOf('cdc_') === 0 || key.indexOf('$cdc_') === 0) { artifacts.push('chromedriver'); break; }
+        }
+        if (artifacts.length) { result.automationArtifacts = true; result.artifactNames = artifacts; }
+      } catch(e){}
+      try {
+        const canvas = document.createElement('canvas');
+        const gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
+        if (gl) {
+          const dbgExt = gl.getExtension('WEBGL_debug_renderer_info');
+          if (dbgExt) {
+            const renderer = gl.getParameter(dbgExt.UNMASKED_RENDERER_WEBGL) || '';
+            if (/swiftshader|llvmpipe|software rasterizer|mesa offscreen/i.test(renderer)) {
+              result.softwareRenderer = true;
+              result.rendererString = renderer;
+            }
+          }
+        }
+      } catch(e){}
+      try { if (!navigator.plugins || navigator.plugins.length === 0) result.emptyPlugins = true; } catch(e){}
+      try { if (!navigator.languages || navigator.languages.length === 0) result.emptyLanguages = true; } catch(e){}
+      cached = result;
+      return result;
+    };
+  })();
+
   //  Confidence curve 
   function _confidence(score) {
     if (score>=100) return 99;
@@ -1969,6 +2018,11 @@ const AntiCheat = (() => {
       timings:    result.timings,
       mouse:      result.mouse,
       session:    result.session,
+      // Was being attached to `result` by initAntiCheatWithFingerprint's
+      // onBot/onSuspect wrapper, but never actually included in what gets
+      // sent here -- meaning the server never received a hash to ban,
+      // regardless of how confident the detection was.
+      fingerprint: result.fingerprint || null,
     });
     if (_N.fetch) {
       _N.fetch(_opts.reportUrl, {
@@ -2082,12 +2136,28 @@ const AntiCheat = (() => {
     if (mouse.likelyStat && score>=20)
       { signals.push(`No mouse movement (${mouse.totalDist}px)`); score+=10; }
 
+    //  Environment (headless / automation tools) 
+    const env = _detectHeadless();
+    if (env.webdriverFlag)
+      { signals.push('navigator.webdriver flag set'); score+=70; }
+    if (env.automationArtifacts)
+      { signals.push(`Automation tool artifacts detected (${env.artifactNames.join(', ')})`); score+=70; }
+    if (env.softwareRenderer)
+      { signals.push(`Software-rendered WebGL (${env.rendererString || 'unknown renderer'})`); score+=35; }
+    if (env.emptyPlugins && env.emptyLanguages)
+      { signals.push('No browser plugins or languages reported'); score+=10; } // was always low-weight — modern browsers vary here even for real users
+
     //  Session
     const sessionBotRate = _session.races>2 ? _session.botRaces/_session.races : 0;
     if (sessionBotRate>0.5)
       { signals.push(`Session bot rate ${Math.round(sessionBotRate*100)}% (${_session.races} races)`); score+=20; }
 
-    const confidence = _confidence(score);
+    // A confirmed navigator.webdriver flag or automation-tool artifact has
+    // no legitimate false-positive path -- force confidence to the
+    // auto-ban threshold directly rather than relying on the general
+    // score curve, which a single 70-point signal wouldn't otherwise
+    // reach on its own.
+    const confidence = (env.webdriverFlag || env.automationArtifacts) ? 99 : _confidence(score);
     // Only signals that CANNOT be explained by privacy extensions / dev tools /
     // tabbing with the keyboard count as "hard" evidence of a bot.
     // perfNowMocked, dateNowMocked, pollerSuppressed, dispatchEventOverridden,
@@ -2101,7 +2171,9 @@ const AntiCheat = (() => {
       execCommandDetected ||
       descriptorRepatched ||
       keypressValueMismatches >= 5 ||
-      valueJumps.length >= 3;
+      valueJumps.length >= 3 ||
+      env.webdriverFlag ||
+      env.automationArtifacts;
 
     // Timing hard signal — physically impossible speeds need no DOM evidence
     const timingHardSignal = !timings.insufficient && (
@@ -6125,7 +6197,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     app.innerHTML =
       brandHeader() +
       '<div class="panel" style="max-width:440px;margin:60px auto;text-align:center;">' +
-        '<div class="garage-title" style="color:var(--text);font-size:20px;margin-bottom:14px;">You are about to be molested.</div>' +
+        '<div class="garage-title" style="color:var(--text);font-size:20px;margin-bottom:14px;">You are about to be logged in.</div>' +
         '<div style="color:var(--muted);font-size:15px;margin-bottom:22px;">Do you consent?</div>' +
         '<label style="display:flex;align-items:center;justify-content:center;gap:10px;margin-bottom:24px;cursor:pointer;font-size:15px;color:var(--text);">' +
           '<input type="checkbox" id="loginConsentYes" style="width:20px;height:20px;cursor:pointer;" />' +
