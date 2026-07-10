@@ -4173,7 +4173,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
         try{
           var username = keys[i].replace(/^account:/, "");
           var accRes = await getAccount(username);
-          if(accRes.ok && accRes.account) allTime += (accRes.account.races || 0);
+          if(accRes.ok && accRes.account && !accRes.account.isBot) allTime += (accRes.account.races || 0);
         }catch(e){}
       }
     }catch(e){}
@@ -6125,7 +6125,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     app.innerHTML =
       brandHeader() +
       '<div class="panel" style="max-width:440px;margin:60px auto;text-align:center;">' +
-        '<div class="garage-title" style="color:var(--text);font-size:20px;margin-bottom:14px;">You are about to be molested.</div>' +
+        '<div class="garage-title" style="color:var(--text);font-size:20px;margin-bottom:14px;">You are about to be logged in.</div>' +
         '<div style="color:var(--muted);font-size:15px;margin-bottom:22px;">Do you consent?</div>' +
         '<label style="display:flex;align-items:center;justify-content:center;gap:10px;margin-bottom:24px;cursor:pointer;font-size:15px;color:var(--text);">' +
           '<input type="checkbox" id="loginConsentYes" style="width:20px;height:20px;cursor:pointer;" />' +
@@ -13360,6 +13360,11 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
 
     panel.innerHTML =
       '<div class="panel" style="margin-top:18px;">' +
+        (acc.isBot ?
+          '<div style="background:rgba(255,193,7,0.12);border:1px solid var(--amber);border-radius:8px;padding:10px 14px;margin-bottom:14px;font-size:13px;color:var(--amber);font-weight:700;">' +
+            '\uD83E\uDD16 RACE BOT ACCOUNT \u2014 this is a filler opponent, not a real player. Its races/WPM/accuracy are permanently frozen and won\u2019t change no matter what happens in-game. Its display name and equipped car are read live from this account, but its equipped title is set directly in race.js, not here. Leaving it excluded from leaderboards is intentional \u2014 removing that exclusion would show its fake frozen stats as if they were a real player\u2019s.' +
+          '</div>'
+        : '') +
         '<div class="garage-title" style="color:var(--text);font-size:18px;margin-bottom:2px;">' + escapeHtml(acc.username) + '</div>' +
         '<div class="hint-text" style="margin-top:0;margin-bottom:16px;">' + (acc.races||0) + ' total races \u2022 ' + (acc.coins||0).toLocaleString() + ' coins \u2022 best ' + (acc.bestWpm||0) + ' WPM</div>' +
 
