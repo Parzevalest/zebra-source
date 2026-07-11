@@ -3778,22 +3778,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     var url = SERVER_URL + "/api/kv/" + encodeURIComponent(key) + "?shared=" + (shared ? "true" : "false");
     var headers = {};
     if(currentToken) headers["x-session-token"] = currentToken;
-    // A hung request with no timeout at all would leave whatever UI
-    // triggered it stuck forever (e.g. a "Searching..." button that never
-    // resets) -- 15s is generous enough for a slow-but-working server,
-    // while still eventually giving up and letting the UI show an error
-    // instead of hanging indefinitely.
-    var controller = new AbortController();
-    var timeoutId = setTimeout(function(){ controller.abort(); }, 15000);
-    var res;
-    try{
-      res = await fetch(url, { headers: headers, signal: controller.signal });
-    }catch(e){
-      if(e && e.name === "AbortError") throw new Error("request timed out");
-      throw e;
-    }finally{
-      clearTimeout(timeoutId);
-    }
+    var res = await fetch(url, { headers: headers });
     if(res.status === 404) throw new Error("not found");
     if(!res.ok) throw new Error("storage get failed: " + res.status);
     return await res.json();
@@ -3803,22 +3788,11 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     var url = SERVER_URL + "/api/kv/" + encodeURIComponent(key);
     var headers = { "Content-Type": "application/json" };
     if(currentToken) headers["x-session-token"] = currentToken;
-    var controller = new AbortController();
-    var timeoutId = setTimeout(function(){ controller.abort(); }, 15000);
-    var res;
-    try{
-      res = await fetch(url, {
-        method: "POST",
-        headers: headers,
-        body: JSON.stringify({ value: value, shared: !!shared }),
-        signal: controller.signal
-      });
-    }catch(e){
-      if(e && e.name === "AbortError") throw new Error("request timed out");
-      throw e;
-    }finally{
-      clearTimeout(timeoutId);
-    }
+    var res = await fetch(url, {
+      method: "POST",
+      headers: headers,
+      body: JSON.stringify({ value: value, shared: !!shared })
+    });
     if(!res.ok) throw new Error("storage set failed: " + res.status);
     return await res.json();
   }
@@ -3827,64 +3801,8 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     var url = SERVER_URL + "/api/kv-list?prefix=" + encodeURIComponent(prefix || "") + "&shared=" + (shared ? "true" : "false");
     var headers = {};
     if(currentToken) headers["x-session-token"] = currentToken;
-    var controller = new AbortController();
-    var timeoutId = setTimeout(function(){ controller.abort(); }, 15000);
-    var res;
-    try{
-      res = await fetch(url, { headers: headers, signal: controller.signal });
-    }catch(e){
-      if(e && e.name === "AbortError") throw new Error("request timed out");
-      throw e;
-    }finally{
-      clearTimeout(timeoutId);
-    }
+    var res = await fetch(url, { headers: headers });
     if(!res.ok) throw new Error("storage list failed: " + res.status);
-    return await res.json();
-  }
-
-  // Fetches every account's username/ban/suspend status in one request --
-  // used by the admin Players tab index. Replaces what used to be one
-  // individual getAccount() call per player (N round-trips, slow and
-  // heavier on the server) with exactly one.
-  async function fetchPlayerFlags(){
-    var url = SERVER_URL + "/api/player-flags";
-    var headers = {};
-    if(currentToken) headers["x-session-token"] = currentToken;
-    var controller = new AbortController();
-    var timeoutId = setTimeout(function(){ controller.abort(); }, 15000);
-    var res;
-    try{
-      res = await fetch(url, { headers: headers, signal: controller.signal });
-    }catch(e){
-      if(e && e.name === "AbortError") throw new Error("request timed out");
-      throw e;
-    }finally{
-      clearTimeout(timeoutId);
-    }
-    if(!res.ok) throw new Error("player-flags fetch failed: " + res.status);
-    return await res.json();
-  }
-
-  // Fetches every account's full (redacted) data in one request -- used by
-  // the leaderboard and car mastery leaderboard, which both used to fetch
-  // every account individually (N requests, multiplied by however many
-  // players are viewing the leaderboard at once under real traffic).
-  async function fetchAllAccounts(){
-    var url = SERVER_URL + "/api/all-accounts";
-    var headers = {};
-    if(currentToken) headers["x-session-token"] = currentToken;
-    var controller = new AbortController();
-    var timeoutId = setTimeout(function(){ controller.abort(); }, 15000);
-    var res;
-    try{
-      res = await fetch(url, { headers: headers, signal: controller.signal });
-    }catch(e){
-      if(e && e.name === "AbortError") throw new Error("request timed out");
-      throw e;
-    }finally{
-      clearTimeout(timeoutId);
-    }
-    if(!res.ok) throw new Error("all-accounts fetch failed: " + res.status);
     return await res.json();
   }
 
@@ -3961,22 +3879,32 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     try{
       var tcRes = await fetchTitleCatalog().catch(function(){ return []; });
       titleCatalogCache = tcRes || [];
+      var listRes = await shimList("account:", true);
+      if(!listRes || !listRes.keys || !listRes.keys.length) return [];
+      var keys = listRes.keys;
       var seasonCfg = await fetchSeasonConfig();
       var dayCutoff = Date.now() - 24*60*60*1000;
       var rows = [];
 
-      // Single request for every account instead of N individual ones --
-      // under real concurrent traffic, N requests per leaderboard load
-      // multiplies fast across however many players are checking it at
-      // the same time.
-      var bulkRes = await fetchAllAccounts();
-      var allAccounts = bulkRes.accounts || [];
-      if(!allAccounts.length) return [];
+      // Fetch all accounts in parallel batches of 20 for speed
+      var BATCH = 20;
+      var allAccounts = [];
+      for(var b = 0; b < keys.length; b += BATCH){
+        var batch = keys.slice(b, b + BATCH);
+        var results = await Promise.all(batch.map(function(key){
+          return shimGet(key, true).catch(function(e){
+            console.warn("[lb] failed to load", key, e && e.message);
+            return null;
+          });
+        }));
+        allAccounts = allAccounts.concat(results);
+      }
 
       for(var i = 0; i < allAccounts.length; i++){
         try{
-          var acc = allAccounts[i];
-          if(!acc) continue;
+          var r = allAccounts[i];
+          if(!r || !r.value) continue;
+          var acc = JSON.parse(r.value);
           var races = acc.races || 0;
           var recentWpms = acc.recentWpms || [];
           var recentAvgWpm = recentWpms.length
@@ -4045,28 +3973,37 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
   // on races completed after hitting Master).
   async function loadCarMasteryLeaderboard(carId){
     try{
+      var listRes = await shimList("account:", true);
+      if(!listRes || !listRes.keys || !listRes.keys.length) return [];
+      var keys = listRes.keys;
       var rows = [];
-      var bulkRes = await fetchAllAccounts();
-      var allAccounts = bulkRes.accounts || [];
-      if(!allAccounts.length) return [];
 
-      for(var i = 0; i < allAccounts.length; i++){
-        try{
-          var acc = allAccounts[i];
-          if(!acc) continue;
-          if(acc.isBanned || acc.isSuspended || acc.excludedFromLeaderboard) continue;
-          var cs = acc.carStats && acc.carStats[carId];
-          if(!cs) continue;
-          var rank = masteryRank(cs.races || 0);
-          if(rank !== "Master" && rank !== "Divine") continue;
-          rows.push({
-            username: acc.username,
-            displayName: acc.displayName || "",
-            races: cs.races || 0,
-            masteryPoints: Math.round((cs.masteryPoints || 0) * 10) / 10,
-            rank: rank
-          });
-        }catch(e){ /* skip unreadable rows */ }
+      // Fetch all accounts in parallel batches of 20 (same as racing leaderboard)
+      var BATCH = 20;
+      for(var b = 0; b < keys.length; b += BATCH){
+        var batch = keys.slice(b, b + BATCH);
+        var results = await Promise.all(batch.map(function(key){
+          return shimGet(key, true).catch(function(){ return null; });
+        }));
+        for(var i = 0; i < results.length; i++){
+          try{
+            var r = results[i];
+            if(!r || !r.value) continue;
+            var acc = JSON.parse(r.value);
+            if(acc.isBanned || acc.isSuspended || acc.excludedFromLeaderboard) continue;
+            var cs = acc.carStats && acc.carStats[carId];
+            if(!cs) continue;
+            var rank = masteryRank(cs.races || 0);
+            if(rank !== "Master" && rank !== "Divine") continue;
+            rows.push({
+              username: acc.username,
+              displayName: acc.displayName || "",
+              races: cs.races || 0,
+              masteryPoints: Math.round((cs.masteryPoints || 0) * 10) / 10,
+              rank: rank
+            });
+          }catch(e){ /* skip unreadable rows */ }
+        }
       }
 
       rows.sort(function(a,b){ return b.masteryPoints - a.masteryPoints; });
@@ -4083,22 +4020,17 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     var guilds = await fetchAllGuilds();
     if(!guilds.length) return [];
 
-    // One shared bulk fetch instead of fetching each guild's members
-    // individually (which used to happen once per guild, every time this
-    // leaderboard loaded).
-    var bulkRes = await fetchAllAccounts();
-    var accountsByUsername = {};
-    (bulkRes.accounts || []).forEach(function(a){ if(a && a.username) accountsByUsername[a.username.toLowerCase()] = a; });
-
-    var rows = guilds.map(function(g){
+    var rows = await Promise.all(guilds.map(async function(g){
       var usernames = g.memberUsernames || [];
+      var memberResults = await Promise.all(usernames.map(function(u){ return getAccount(u); }));
       // Exclude banned and suspended members from guild totals — their
       // races/points shouldn't count toward the guild leaderboard while
       // they're banned, same as they're excluded from the individual
       // racing leaderboard.
-      var members = usernames
-        .map(function(u){ return accountsByUsername[u.toLowerCase()]; })
-        .filter(function(m){ return m && !m.isBanned && !m.isSuspended; });
+      var members = memberResults
+        .filter(function(r){ return r.ok && r.account; })
+        .map(function(r){ return r.account; })
+        .filter(function(m){ return !m.isBanned && !m.isSuspended; });
 
       var totalTeamRaces = members.reduce(function(sum, m){
         return sum + ((m.guildStats && m.guildStats.guildId === g.id) ? (m.guildStats.races || 0) : 0);
@@ -4127,7 +4059,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
         avgWpm: members.length ? Math.round(avgWpmSum / members.length) : 0,
         avgAcc: members.length ? Math.round(avgAccSum / members.length) : 0
       };
-    });
+    }));
 
     rows.sort(function(a,b){ return b.teamPoints - a.teamPoints; });
     return rows;
@@ -4303,7 +4235,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     }catch(e){ /* non-critical stat tracking */ }
   }
 
-  async function computeRaceActivityStats(players){
+  async function computeRaceActivityStats(){
     var log = [];
     try{
       var res = await shimGet(RACE_LOG_KEY, true);
@@ -4314,11 +4246,18 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     var last24h = log.filter(function(ts){ return now - ts < 24 * 60 * 60 * 1000; }).length;
     var last30d = log.filter(function(ts){ return now - ts < 30 * 24 * 60 * 60 * 1000; }).length;
 
-    // All-time now comes from the same single player-flags fetch the
-    // index already needs, instead of a separate sequential per-account
-    // loop -- that loop (one getAccount() at a time, awaited one after
-    // another) was the actual slow part of this whole screen.
-    var allTime = (players || []).reduce(function(sum, p){ return sum + (p.isBot ? 0 : (p.races || 0)); }, 0);
+    var allTime = 0;
+    try{
+      var listRes = await shimList("account:", true);
+      var keys = listRes.keys || [];
+      for(var i = 0; i < keys.length; i++){
+        try{
+          var username = keys[i].replace(/^account:/, "");
+          var accRes = await getAccount(username);
+          if(accRes.ok && accRes.account && !accRes.account.isBot) allTime += (accRes.account.races || 0);
+        }catch(e){}
+      }
+    }catch(e){}
 
     return { last24h: last24h, last30d: last30d, allTime: allTime };
   }
@@ -7270,17 +7209,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
           });
         });
       }
-    }).catch(function(e){
-      console.error("Loot index error:", e);
-      var modalBody = document.querySelector(".modal-content") || document.getElementById("modalCloseBtn");
-      var container = document.getElementById("modalCloseBtn");
-      if(container && container.parentElement){
-        container.parentElement.innerHTML = '<button class="small-btn" id="modalCloseBtn" style="position:absolute;top:14px;right:14px;">\u2715</button><div class="center-note" style="padding:20px;">Couldn\u2019t load the loot index right now. <button class="small-btn" id="lootRetryBtn">Try again</button></div>';
-        document.getElementById("modalCloseBtn").addEventListener("click", closeModal);
-        var retryBtn = document.getElementById("lootRetryBtn");
-        if(retryBtn) retryBtn.addEventListener("click", function(){ openLootIndexModal(initialTab); });
-      }
-    });
+    }).catch(function(e){ console.error("Loot index error:", e); });
   }
 
 
@@ -7301,15 +7230,6 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
         avatarCatalogCache = results[1];
         garageCachesLoaded = true;
         if(state.screen === "garageCars" || state.screen === "dashboard") renderGarageCars();
-      }).catch(function(e){
-        if(state.screen !== "garageCars" && state.screen !== "dashboard") return;
-        app.innerHTML =
-          brandHeader() +
-          renderNavBar("garage") +
-          '<div class="panel" style="margin-bottom:18px;"><div class="center-note" style="color:var(--muted);">Couldn\u2019t load the garage right now. <button class="small-btn" id="garageRetryBtn">Try again</button></div></div>';
-        attachNavListeners();
-        var retryBtn = document.getElementById("garageRetryBtn");
-        if(retryBtn) retryBtn.addEventListener("click", function(){ renderGarageCars(); });
       });
       return;
     }
@@ -8162,22 +8082,20 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     });
 
     Promise.all([
-      fetchAllAccounts(),
+      Promise.all(uniqueUsernames.map(function(u){ return getAccount(u); })),
       fetchAvatarCatalog(),
       fetchCustomCars()
     ]).then(function(results){
       if(document.getElementById("friendsBody") !== body) return; // navigated away while loading
 
-      var allAccountsList = (results[0] && results[0].accounts) || [];
+      var accountResults = results[0];
       avatarCatalogCache = results[1];
       customCarsCache = results[2];
 
-      var allAccountsByUsername = {};
-      allAccountsList.forEach(function(a){ if(a && a.username) allAccountsByUsername[a.username.toLowerCase()] = a; });
-
       var accountsByUsername = {};
-      uniqueUsernames.forEach(function(u){
-        accountsByUsername[u.toLowerCase()] = allAccountsByUsername[u.toLowerCase()] || null;
+      uniqueUsernames.forEach(function(u, i){
+        var res = accountResults[i];
+        accountsByUsername[u.toLowerCase()] = (res.ok && res.account) ? res.account : null;
       });
 
       // Now that we know everyone's guildId, fetch each distinct guild once
@@ -8196,11 +8114,6 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
 
         renderFriendRows(accountsByUsername, guildsById);
       });
-    }).catch(function(e){
-      if(document.getElementById("friendsBody") !== body) return;
-      body.innerHTML = '<div class="center-note" style="color:var(--muted);">Couldn\u2019t load friends right now. <button class="small-btn" id="friendsRetryBtn">Try again</button></div>';
-      var retryBtn = document.getElementById("friendsRetryBtn");
-      if(retryBtn) retryBtn.addEventListener("click", function(){ renderFriendsBody(acc); });
     });
 
     function renderFriendRows(accountsByUsername, guildsById){
@@ -13450,6 +13363,15 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
 
     attachAdminNavListeners();
 
+    computeRaceActivityStats().then(function(stats){
+      var el24 = document.getElementById("raceStat24h");
+      var el30 = document.getElementById("raceStat30d");
+      var elAll = document.getElementById("raceStatAllTime");
+      if(el24) el24.textContent = stats.last24h.toLocaleString();
+      if(el30) el30.textContent = stats.last30d.toLocaleString();
+      if(elAll) elAll.textContent = stats.allTime.toLocaleString();
+    });
+
     // Load full index
     var allAccounts = [];
 
@@ -13457,21 +13379,9 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
       var listEl = document.getElementById("playerIndexList");
       if(listEl) listEl.innerHTML = '<div class="center-note">Loading players\u2026</div>';
       try{
-        var data = await fetchPlayerFlags();
-        var players = data.players || [];
-
-        computeRaceActivityStats(players).then(function(stats){
-          var el24 = document.getElementById("raceStat24h");
-          var el30 = document.getElementById("raceStat30d");
-          var elAll = document.getElementById("raceStatAllTime");
-          if(el24) el24.textContent = stats.last24h.toLocaleString();
-          if(el30) el30.textContent = stats.last30d.toLocaleString();
-          if(elAll) elAll.textContent = stats.allTime.toLocaleString();
-        });
-
-        allAccounts = players.slice().sort(function(a,b){
-          return a.username < b.username ? -1 : a.username > b.username ? 1 : 0;
-        });
+        var listRes = await shimList("account:", true);
+        var keys = (listRes.keys || []).sort();
+        allAccounts = keys.map(function(k){ return k.replace(/^account:/, ""); });
         renderIndex("");
       }catch(e){
         if(listEl) listEl.innerHTML = '<div class="center-note" style="color:var(--muted);">Couldn\u2019t load player list.</div>';
@@ -13482,7 +13392,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
       var listEl = document.getElementById("playerIndexList");
       if(!listEl) return;
       var q = (query || "").toLowerCase().trim();
-      var filtered = q ? allAccounts.filter(function(a){ return a.username.indexOf(q) !== -1; }) : allAccounts;
+      var filtered = q ? allAccounts.filter(function(u){ return u.indexOf(q) !== -1; }) : allAccounts;
       if(!filtered.length){
         listEl.innerHTML = '<div class="center-note" style="color:var(--muted);padding:10px 0;">' + (q ? "No players match \u201c" + escapeHtml(q) + "\u201d." : "No players yet.") + '</div>';
         return;
@@ -13490,9 +13400,8 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
       listEl.innerHTML =
         '<div style="font-size:12px;color:var(--muted);margin-bottom:8px;">' + filtered.length + ' player' + (filtered.length===1?'':'s') + (q ? ' matching \u201c'+escapeHtml(q)+'\u201d' : '') + '</div>' +
         '<div style="display:flex;flex-wrap:wrap;gap:6px;">' +
-          filtered.map(function(a){
-            var flagStyle = a.isBanned ? 'border-color:var(--red);color:var(--red);' : a.isSuspended ? 'border-color:var(--amber);color:var(--amber);' : '';
-            return '<button class="small-btn player-index-btn" data-username="' + escapeHtml(a.username) + '" style="font-size:13px;' + flagStyle + '">' + escapeHtml(a.username) + '</button>';
+          filtered.map(function(u){
+            return '<button class="small-btn player-index-btn" data-username="' + escapeHtml(u) + '" style="font-size:13px;">' + escapeHtml(u) + '</button>';
           }).join("") +
         '</div>';
 
@@ -16731,12 +16640,6 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
           claimBtn.textContent = 'Claim Now';
         }
       });
-    }).catch(function(e){
-      var seasonPanel2 = document.getElementById("seasonPanel");
-      if(seasonPanel2) seasonPanel2.innerHTML =
-        '<div class="center-note" style="color:var(--muted);">Couldn\u2019t load the season right now. <button class="small-btn" id="seasonRetryBtn">Try again</button></div>';
-      var retryBtn = document.getElementById("seasonRetryBtn");
-      if(retryBtn) retryBtn.addEventListener("click", function(){ renderSeason(); });
     });
   }
 
