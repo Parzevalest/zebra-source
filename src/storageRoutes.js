@@ -394,7 +394,12 @@ router.post("/kv/:key", async (req, res) => {
   }
 
   if (!session) return res.status(401).json({ error: "authentication required" });
-  res.json(await store.set(session.username, key, req.body.value, shared));
+  const genericResult = await store.set(session.username, key, req.body.value, shared);
+  // Invalidate the maintenance-status cache immediately on a deliberate
+  // toggle, rather than letting up to MAINTENANCE_CACHE_MS pass before an
+  // admin's own change to their own site actually takes effect.
+  if (key === "site_maintenance") maintenanceStatusCache = { value: null, cachedAt: 0 };
+  return res.json(genericResult);
 });
 
 router.delete("/kv/:key", async (req, res) => {
@@ -432,10 +437,24 @@ router.get("/kv-list", async (req, res) => {
 // verbatim with no validation -- a real vulnerability with zero actual
 // usage. Removed rather than hardened, since nothing depends on it.
 
+// Cached briefly in memory so a burst of concurrent clients polling this
+// (every open tab checks this repeatedly) doesn't each trigger a fresh
+// database query for a value that only changes when an admin deliberately
+// toggles maintenance mode -- effectively never, compared to how often
+// this gets polled.
+let maintenanceStatusCache = { value: null, cachedAt: 0 };
+const MAINTENANCE_CACHE_MS = 5000;
+
 router.get("/maintenance-status", async (req, res) => {
   try {
-      const result = await store.get("system", "site_maintenance", true);
-      res.json({ maintenance: !!(result && result.value && JSON.parse(result.value)) });
+    const now = Date.now();
+    if (maintenanceStatusCache.value !== null && (now - maintenanceStatusCache.cachedAt) < MAINTENANCE_CACHE_MS) {
+      return res.json({ maintenance: maintenanceStatusCache.value });
+    }
+    const result = await store.get("system", "site_maintenance", true);
+    const maintenance = !!(result && result.value && JSON.parse(result.value));
+    maintenanceStatusCache = { value: maintenance, cachedAt: now };
+    res.json({ maintenance });
   } catch (e) { res.json({ maintenance: false }); }
 });
 
@@ -515,62 +534,6 @@ router.get("/device-bans", async (req, res) => {
     const rawList = await store.list("system", "ban_", true);
     const bans = rawList.map(item => JSON.parse(item.value));
     res.json({ bans });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-// Returns every account's username/ban/suspend status in a single query --
-// used by the admin Players tab to build the index's red/orange outline
-// flags. Deliberately returns only these three lightweight fields per
-// account rather than the full record, keeping the response small; this
-// replaces what used to be one individual account fetch per player (N
-// round-trips) with exactly one.
-router.get("/player-flags", async (req, res) => {
-  const session = await getSession(req);
-  const authorized = await isRequesterAdminOrModerator(session);
-  if (!authorized) return res.status(403).json({ error: "forbidden" });
-  try {
-    const rows = await store.listAllAccounts();
-    const players = rows.map((row) => {
-      try {
-        const acc = JSON.parse(row.value);
-        return {
-          username: acc.username || row.key.replace(/^account:/, ""),
-          isBanned: !!acc.isBanned,
-          isSuspended: !!acc.isSuspended,
-          races: acc.races || 0,
-          isBot: !!acc.isBot,
-        };
-      } catch (e) { return null; }
-    }).filter(Boolean);
-    res.json({ players });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-// Returns every account's data in a single query, redacted of the same
-// sensitive fields the single-account GET route strips (passwordHash, IP,
-// device fingerprint). Available to any authenticated player, not just
-// admins -- this is what the leaderboard and car-mastery leaderboard need,
-// and both are regular player-facing features. Used to be N individual
-// per-account requests from the client; under real concurrent traffic
-// that's N database queries EVERY TIME ANY PLAYER loads the leaderboard,
-// which multiplies fast as more players are online at once. This is the
-// single-query replacement.
-router.get("/all-accounts", async (req, res) => {
-  const session = await getSession(req);
-  if (!session) return res.status(401).json({ error: "authentication required" });
-  try {
-    const rows = await store.listAllAccounts();
-    const accounts = rows.map((row) => {
-      try {
-        const acc = JSON.parse(row.value);
-        delete acc.passwordHash;
-        delete acc.lastKnownIp;
-        delete acc.deviceFingerprint;
-        delete acc.deviceFingerprintShort;
-        return acc;
-      } catch (e) { return null; }
-    }).filter(Boolean);
-    res.json({ accounts });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
