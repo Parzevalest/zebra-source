@@ -33,6 +33,11 @@ app.use(express.json({ limit: "10mb" }));
 app.use("/api", storageRoutes);
 app.use("/api", stripeRoutes);
 
+// ONE-TIME database migration endpoint. Gated behind MIGRATION_SECRET.
+// Remove this (and migrate.js) once the migration is done and verified.
+const { handleMigrate } = require("./migrate");
+app.get("/api/migrate-database", handleMigrate);
+
 app.get("/health", (req, res) => {
   res.json({ ok: true, time: Date.now() });
 });
