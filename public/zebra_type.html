@@ -6206,7 +6206,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     app.innerHTML =
       brandHeader() +
       '<div class="panel" style="max-width:440px;margin:60px auto;text-align:center;">' +
-        '<div class="garage-title" style="color:var(--text);font-size:20px;margin-bottom:14px;">You are about to be molested.</div>' +
+        '<div class="garage-title" style="color:var(--text);font-size:20px;margin-bottom:14px;">You are about to be logged in.</div>' +
         '<div style="color:var(--muted);font-size:15px;margin-bottom:22px;">Do you consent?</div>' +
         '<label style="display:flex;align-items:center;justify-content:center;gap:10px;margin-bottom:24px;cursor:pointer;font-size:15px;color:var(--text);">' +
           '<input type="checkbox" id="loginConsentYes" style="width:20px;height:20px;cursor:pointer;" />' +
@@ -13466,6 +13466,40 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     }
   }
 
+  // Builds the owned-titles list for the Super Admin player detail panel.
+  // Resolves each title ID to its text/rarity via the title catalog cache
+  // when available, falling back to showing the raw ID if the cache isn't
+  // warm yet (renderPlayerDetail is synchronous and can't fetch it itself).
+  // The default title is shown but has no Remove button, since it can't be
+  // taken away.
+  function adminOwnedTitlesHtml(acc){
+    var owned = (acc.ownedTitles || []).slice();
+    // Always show the default title first (every account implicitly has it).
+    if(owned.indexOf(DEFAULT_TITLE_ID) === -1) owned.unshift(DEFAULT_TITLE_ID);
+    if(!owned.length) return '<div style="font-size:13px;color:var(--muted);">This player owns no titles.</div>';
+
+    return '<div style="display:flex;flex-direction:column;gap:8px;">' +
+      owned.map(function(tid){
+        var isDefault = (tid === DEFAULT_TITLE_ID);
+        var entry = isDefault ? DEFAULT_TITLE : (titleCatalogCache || []).find(function(x){ return x.id === tid; });
+        var text = entry ? entry.text : tid;
+        var rarity = entry ? entry.rarity : "";
+        var color = rarity ? (RARITY_COLORS[rarity] || "var(--muted)") : "var(--text)";
+        var isEquipped = (acc.equippedTitle || DEFAULT_TITLE_ID) === tid;
+        return '<div style="display:flex;align-items:center;gap:10px;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:9px 12px;">' +
+            '<div style="flex:1;min-width:0;">' +
+              '<span style="font-style:italic;font-weight:700;font-size:14px;color:' + color + ';">' + escapeHtml(text) + '</span>' +
+              (rarity ? ' <span style="font-size:11px;color:var(--muted);">\u2022 ' + escapeHtml(rarity) + '</span>' : '') +
+              (isEquipped ? ' <span style="font-size:11px;color:var(--green);font-weight:700;">\u2022 Equipped</span>' : '') +
+              (isDefault ? ' <span style="font-size:11px;color:var(--muted);">\u2022 Default</span>' : '') +
+            '</div>' +
+            (isDefault ? '' :
+              '<button class="small-btn admin-remove-title-btn" data-title-id="' + escapeHtml(tid) + '" style="color:var(--red);border-color:var(--red);flex:0 0 auto;">Remove</button>') +
+          '</div>';
+      }).join("") +
+    '</div>';
+  }
+
   function renderPlayerDetail(acc, allCustomCars){
     var panel = document.getElementById("playerDetailPanel");
     if(!panel) return;
@@ -13732,6 +13766,15 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
           '</div>' +
           '<div class="error-text" id="adminResetPasswordMsg" style="margin-top:8px;"></div>' +
         '</div>' +
+
+        (state.isSuperAdmin ?
+          '<div style="background:var(--panel-2);border:1px solid var(--line);border-radius:10px;padding:14px;margin-bottom:10px;">' +
+            '<div style="font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--muted);margin-bottom:2px;">Titles</div>' +
+            '<div style="font-size:13px;color:var(--muted);margin-bottom:10px;">Every title this player owns. Removing one takes it out of their collection \u2014 if it\u2019s currently equipped, they\u2019ll revert to the default title. The default \u201cPanda Typist\u201d title can\u2019t be removed.</div>' +
+            '<div id="adminTitlesList">' + adminOwnedTitlesHtml(acc) + '</div>' +
+            '<div class="error-text" id="adminTitlesMsg" style="margin-top:8px;"></div>' +
+          '</div>'
+        : '') +
 
         '<div class="error-text" id="playerAdjustError"></div>' +
 
@@ -14520,6 +14563,43 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
         }
         adminResetPasswordBtn.disabled = false;
         adminResetPasswordBtn.textContent = "Reset Password";
+      });
+
+      // Super Admin: remove an owned title from this player.
+      document.querySelectorAll(".admin-remove-title-btn").forEach(function(btn){
+        btn.addEventListener("click", async function(){
+          var tid = btn.getAttribute("data-title-id");
+          if(tid === DEFAULT_TITLE_ID) return; // safety: never removable
+          var msg = document.getElementById("adminTitlesMsg");
+          if(msg){ msg.style.color = "var(--red)"; msg.textContent = ""; }
+          btn.disabled = true;
+          btn.textContent = "Removing...";
+          try{
+            // Re-fetch the freshest copy so we don't clobber concurrent changes.
+            var latest = await getAccount(acc.username);
+            var target = (latest.ok && latest.account) ? latest.account : acc;
+            target.ownedTitles = (target.ownedTitles || []).filter(function(x){ return x !== tid; });
+            // If they had it equipped, revert them to the default title.
+            if((target.equippedTitle || DEFAULT_TITLE_ID) === tid){
+              target.equippedTitle = DEFAULT_TITLE_ID;
+            }
+            var ok = await persist(target);
+            if(ok){
+              acc = target;
+              document.getElementById("adminTitlesList").innerHTML = adminOwnedTitlesHtml(acc);
+              // Re-attach handlers to the freshly rendered buttons.
+              renderPlayerDetail(acc, allCustomCars);
+            } else {
+              btn.disabled = false;
+              btn.textContent = "Remove";
+              if(msg) msg.textContent = "Couldn\u2019t remove that title \u2014 try again.";
+            }
+          }catch(e){
+            btn.disabled = false;
+            btn.textContent = "Remove";
+            if(msg) msg.textContent = "Unexpected error: " + ((e&&e.message)?e.message:String(e));
+          }
+        });
       });
 
       var banDeviceBtn = document.getElementById("banDeviceBtn");
