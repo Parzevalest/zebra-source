@@ -92,6 +92,29 @@ async function handleStripeWebhook(req, res) {
     switch (event.type) {
       case "checkout.session.completed": {
         const session = event.data.object;
+
+        // Gift path: a one-time payment (no subscription) that grants the
+        // RECIPIENT a fixed year of premium. Identified by the metadata we
+        // set when creating the gift checkout. Handled before the normal
+        // subscription path since a gift session has no subscription.
+        if (session.metadata && session.metadata.gift === "true") {
+          const recipient = session.metadata.recipient;
+          const gifter = session.metadata.gifter || "unknown";
+          if (recipient) {
+            // One year from now. Deliberately NOT tied to a Stripe
+            // customer/subscription -- nothing renews, so we don't create
+            // a customer->username mapping (that mapping is only for
+            // recurring subscriptions).
+            const GIFT_DURATION_MS = 365 * 24 * 60 * 60 * 1000;
+            const expiresAt = Date.now() + GIFT_DURATION_MS;
+            await grantPremiumToUsername(recipient, expiresAt, null, null);
+            console.log("[stripe webhook] GIFT premium granted to", recipient, "from", gifter, "until", new Date(expiresAt).toISOString());
+          } else {
+            console.error("[stripe webhook] gift session missing recipient metadata:", session.id);
+          }
+          break;
+        }
+
         const username = session.client_reference_id || (session.metadata && session.metadata.username);
         if (username && session.subscription) {
           const sub = await stripe.subscriptions.retrieve(session.subscription);
