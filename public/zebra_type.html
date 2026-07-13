@@ -18229,11 +18229,22 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
         '<button class="small-btn" id="acClearBtn" style="color:var(--red);border-color:var(--red);">Clear All Flags</button>' +
         '<span id="acMsg" style="font-size:13px;color:var(--muted);"></span>' +
       '</div>' +
-      '<div id="acFlagsList"><div class="center-note">Loading\u2026</div></div>';
+      '<div id="acFlagsList"><div class="center-note">Loading\u2026</div></div>' +
+
+      '<div class="panel" style="margin:26px 0 18px;">' +
+        '<div class="garage-title" style="color:var(--text);font-size:18px;margin-bottom:6px;">\uD83D\uDEAB Ban Log</div>' +
+        '<div class="hint-text" style="margin-top:0;margin-bottom:4px;">Every device and IP ban on record, newest first. Auto-bans show the exact signals that triggered them (e.g. how many synthetic keystrokes were detected). Manual bans and IP-cascade bans are labeled as such.</div>' +
+      '</div>' +
+      '<div style="display:flex;gap:10px;align-items:center;margin-bottom:12px;">' +
+        '<button class="small-btn" id="acBanRefreshBtn">\u21BB Refresh Ban Log</button>' +
+        '<span id="acBanMsg" style="font-size:13px;color:var(--muted);"></span>' +
+      '</div>' +
+      '<div id="acBanLogList"><div class="center-note">Loading\u2026</div></div>';
 
     attachAdminNavListeners();
 
     document.getElementById("acRefreshBtn").addEventListener("click", loadAnticheatFlags);
+    document.getElementById("acBanRefreshBtn").addEventListener("click", loadBanLog);
     document.getElementById("acClearBtn").addEventListener("click", async function(){
       var msg = document.getElementById("acMsg");
       msg.style.color = "var(--muted)";
@@ -18249,6 +18260,127 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     });
 
     loadAnticheatFlags();
+    loadBanLog();
+  }
+
+  // Fetches device + IP bans and renders them as one merged, newest-first
+  // log. Device bans carry the anticheat signals (or confidence:100 for a
+  // manual device ban); IP bans carry a reason (anticheat_auto_ban vs a
+  // manual ban, which has no reason field).
+  async function loadBanLog(){
+    var listEl = document.getElementById("acBanLogList");
+    if(!listEl) return;
+    listEl.innerHTML = '<div class="center-note">Loading\u2026</div>';
+    try{
+      var headers = { "x-session-token": currentToken || "" };
+      var results = await Promise.all([
+        fetch(SERVER_URL + "/api/device-bans", { headers: headers }).then(function(r){ return r.ok ? r.json() : { bans: [] }; }).catch(function(){ return { bans: [] }; }),
+        fetch(SERVER_URL + "/api/ip-bans", { headers: headers }).then(function(r){ return r.ok ? r.json() : { bans: [] }; }).catch(function(){ return { bans: [] }; })
+      ]);
+      var deviceBans = (results[0] && results[0].bans) || [];
+      var ipBans = (results[1] && results[1].bans) || [];
+
+      var entries = [];
+
+      deviceBans.forEach(function(b){
+        // A manual device ban is stored with confidence 100 and empty
+        // signals (see the /ban route); an auto-ban has real signals and
+        // confidence 99. Distinguish them for the label.
+        var isManual = (!b.signals || !b.signals.length) && b.confidence === 100;
+        entries.push({
+          type: "device",
+          isManual: isManual,
+          at: b.banned_at || 0,
+          username: b.username || null,
+          shortHash: b.short_hash || null,
+          confidence: b.confidence,
+          score: b.score,
+          signals: b.signals || []
+        });
+      });
+
+      ipBans.forEach(function(b){
+        // An IP ban with reason "anticheat_auto_ban" came from the cascade;
+        // one with no reason was a manual IP ban.
+        var isManual = !b.reason;
+        entries.push({
+          type: "ip",
+          isManual: isManual,
+          at: b.banned_at || 0,
+          username: b.username || null,
+          ip: b.ip || null,
+          reason: b.reason || null
+        });
+      });
+
+      if(!entries.length){
+        listEl.innerHTML = '<div class="center-note" style="color:var(--muted);padding:20px 0;">No bans on record.</div>';
+        return;
+      }
+
+      // Newest first.
+      entries.sort(function(a, b){ return b.at - a.at; });
+
+      listEl.innerHTML =
+        '<div style="font-size:12px;color:var(--muted);margin-bottom:8px;">' + entries.length + ' ban' + (entries.length===1?'':'s') + ' on record</div>' +
+        '<div style="display:flex;flex-direction:column;gap:10px;">' +
+          entries.map(banLogEntryHtml).join("") +
+        '</div>';
+    }catch(e){
+      listEl.innerHTML = '<div class="center-note" style="color:var(--muted);">Error loading ban log: ' + escapeHtml((e&&e.message)?e.message:String(e)) + '</div>';
+    }
+  }
+
+  function banLogEntryHtml(e){
+    var when = e.at ? new Date(e.at).toLocaleString() : "unknown time";
+
+    // Header line: type + source label.
+    var typeLabel, sourceLabel, sourceColor;
+    if(e.type === "device"){
+      typeLabel = "\uD83D\uDCF1 Device ban";
+      if(e.isManual){ sourceLabel = "Manual"; sourceColor = "var(--muted)"; }
+      else { sourceLabel = "Auto-ban (" + (e.confidence != null ? e.confidence + "% conf" : "anticheat") + ")"; sourceColor = "var(--red)"; }
+    } else {
+      typeLabel = "\uD83C\uDF10 IP ban";
+      if(e.isManual){ sourceLabel = "Manual"; sourceColor = "var(--muted)"; }
+      else { sourceLabel = "Auto-ban / cascade"; sourceColor = "var(--red)"; }
+    }
+
+    var idLine = "";
+    if(e.type === "device") idLine = e.shortHash ? 'Device: <code style="color:var(--text);">' + escapeHtml(e.shortHash) + '</code>' : "";
+    else idLine = e.ip ? 'IP: <code style="color:var(--text);">' + escapeHtml(e.ip) + '</code>' : "";
+
+    var whoLine = e.username
+      ? 'Account: <b>' + escapeHtml(e.username) + '</b>'
+      : '<span style="color:var(--muted);">No account attached (was logged out)</span>';
+
+    // Signals -- the reasons. Spell them out plainly, one per line.
+    var signalsHtml = "";
+    if(e.type === "device" && e.signals && e.signals.length){
+      signalsHtml =
+        '<div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--line);">' +
+          '<div style="font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--muted);margin-bottom:4px;">Trigger signals</div>' +
+          '<ul style="margin:0;padding-left:18px;font-size:13px;color:var(--text);line-height:1.6;">' +
+            e.signals.map(function(s){ return '<li>' + escapeHtml(s) + '</li>'; }).join("") +
+          '</ul>' +
+          (e.score != null ? '<div style="font-size:12px;color:var(--muted);margin-top:6px;">Score: ' + escapeHtml(String(e.score)) + '</div>' : '') +
+        '</div>';
+    } else if(e.type === "device" && e.isManual){
+      signalsHtml = '<div style="margin-top:6px;font-size:13px;color:var(--muted);">Manually banned by an admin \u2014 no automated signals.</div>';
+    } else if(e.type === "ip"){
+      signalsHtml = '<div style="margin-top:6px;font-size:13px;color:var(--muted);">' + (e.isManual ? 'Manually banned by an admin.' : 'Triggered by the anticheat auto-ban, which also cascades to accounts sharing this IP.') + '</div>';
+    }
+
+    return '<div style="background:var(--panel-2);border:1px solid var(--line);border-radius:10px;padding:13px 15px;">' +
+        '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:6px;">' +
+          '<span style="font-weight:700;font-size:14px;color:var(--text);">' + typeLabel + '</span>' +
+          '<span style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:' + sourceColor + ';border:1px solid ' + sourceColor + ';border-radius:6px;padding:2px 7px;">' + escapeHtml(sourceLabel) + '</span>' +
+          '<span style="font-size:12px;color:var(--muted);margin-left:auto;">' + escapeHtml(when) + '</span>' +
+        '</div>' +
+        (idLine ? '<div style="font-size:13px;color:var(--muted);margin-bottom:3px;">' + idLine + '</div>' : '') +
+        '<div style="font-size:13px;color:var(--muted);">' + whoLine + '</div>' +
+        signalsHtml +
+      '</div>';
   }
 
   async function loadAnticheatFlags(){
