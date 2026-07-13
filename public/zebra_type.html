@@ -13876,6 +13876,9 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
             '<div style="font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--muted);margin-bottom:4px;">Login Info</div>' +
             '<div style="font-size:13px;color:var(--text);">Last IP: <span style="font-family:monospace;color:var(--muted);">' + (acc.lastKnownIp ? escapeHtml(acc.lastKnownIp) : "\u2014 (none on record yet)") + '</span></div>' +
             '<div style="font-size:13px;color:var(--text);margin-top:4px;">Last login: <span style="color:var(--muted);">' + (acc.lastLoginAt ? new Date(acc.lastLoginAt).toLocaleString() : "\u2014 (none on record yet)") + '</span></div>' +
+            (acc.chargebackFlag ?
+              '<div style="font-size:13px;color:var(--red);margin-top:8px;padding-top:8px;border-top:1px solid var(--line);">\u26A0\uFE0F Chargeback on record (' + escapeHtml(acc.chargebackReason || "dispute") + ')' + (acc.chargebackAt ? ' \u2014 ' + new Date(acc.chargebackAt).toLocaleString() : '') + '. Premium was auto-revoked.</div>'
+            : '') +
           '</div>'
         : '') +
 
