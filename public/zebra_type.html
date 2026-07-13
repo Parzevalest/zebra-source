@@ -7917,6 +7917,10 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
         '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:18px;">' +
           '<button class="btn btn-primary" id="profileSendCoinsBtn">\uD83D\uDCB0 Send Coins</button>' +
           friendBtnHtml +
+          // Gift Premium: only when viewing someone else's profile (this
+          // block only renders when !isOwnProfile && viewerAcc) AND they
+          // aren't already premium. A one-time yearly gift.
+          (!targetAcc.hasPremiumPass ? '<button class="btn btn-ghost" id="profileGiftPremiumBtn">\uD83C\uDF81 Gift Premium</button>' : '') +
         '</div>' +
         '<div class="error-text" id="profileActionError"></div>';
     }
@@ -8018,6 +8022,44 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     var sendCoinsBtn = document.getElementById("profileSendCoinsBtn");
     if(sendCoinsBtn) sendCoinsBtn.addEventListener("click", function(){
       openSendCoinsModal(targetAcc.username);
+    });
+
+    var giftPremiumBtn = document.getElementById("profileGiftPremiumBtn");
+    if(giftPremiumBtn) giftPremiumBtn.addEventListener("click", async function(){
+      var errEl = document.getElementById("profileActionError");
+      if(errEl){ errEl.style.color = ""; errEl.textContent = ""; }
+      var displayName = targetAcc.displayName || targetAcc.username;
+      if(!confirm("Gift a full year of Premium to " + displayName + "?\n\nYou'll be taken to a secure checkout to pay. This is a one-time charge \u2014 it does not auto-renew.")) return;
+
+      giftPremiumBtn.disabled = true;
+      var originalText = giftPremiumBtn.textContent;
+      giftPremiumBtn.textContent = "Opening checkout...";
+      try{
+        var res = await fetch(SERVER_URL + "/api/create-gift-checkout-session", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "x-session-token": currentToken || "" },
+          body: JSON.stringify({ recipient: targetAcc.username })
+        });
+        var data = await res.json().catch(function(){ return {}; });
+        if(res.ok && data.url){
+          window.location.href = data.url; // off to Stripe checkout
+          return;
+        }
+        // Friendly messages for the known error cases.
+        var msg = "Couldn\u2019t start the gift checkout. Please try again.";
+        if(data.error === "recipient_already_premium") msg = displayName + " already has Premium.";
+        else if(data.error === "recipient_not_found") msg = "That player couldn\u2019t be found.";
+        else if(data.error === "cannot_gift_self") msg = "You can\u2019t gift Premium to yourself \u2014 use the normal upgrade instead.";
+        else if(data.error === "gift_not_configured") msg = "Gifting isn\u2019t available right now. Please check back later.";
+        else if(data.error === "authentication required") msg = "Please log in again to gift Premium.";
+        if(errEl){ errEl.style.color = "var(--red)"; errEl.textContent = msg; }
+        giftPremiumBtn.disabled = false;
+        giftPremiumBtn.textContent = originalText;
+      }catch(e){
+        if(errEl){ errEl.style.color = "var(--red)"; errEl.textContent = "Network error \u2014 please try again."; }
+        giftPremiumBtn.disabled = false;
+        giftPremiumBtn.textContent = originalText;
+      }
     });
 
     var friendBtn = document.getElementById("profileFriendActionBtn");
@@ -18581,6 +18623,20 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
         }catch(e){}
       }
       if(postCheckoutQs.indexOf("premium=") !== -1){
+        window.history.replaceState({}, "", window.location.pathname);
+      }
+
+      // Gift checkout return. Unlike a self-purchase, the GIFTER's own
+      // premium status doesn't change here -- the recipient's does (via the
+      // webhook) -- so there's nothing to poll on this account. Just show a
+      // confirmation. Defer the alert slightly so it fires after the first
+      // render rather than against a blank page.
+      if(postCheckoutQs.indexOf("gift=success") !== -1){
+        setTimeout(function(){
+          alert("Thank you! Your Premium gift is on its way \u2014 it should appear on their account within a moment.");
+        }, 600);
+      }
+      if(postCheckoutQs.indexOf("gift=") !== -1){
         window.history.replaceState({}, "", window.location.pathname);
       }
     }catch(e){}
