@@ -362,6 +362,94 @@ function makeRaceServer(httpServer) {
     }
   }
 
+  // Records a soft timing-suspicion flag for admin review (NOT a ban).
+  // Appends to a capped, rolling list under a single storage key. Failures
+  // are swallowed by the caller -- a flag never blocks or delays a race.
+  const TIMING_FLAGS_KEY = "anticheat_timing_flags";
+  async function recordTimingFlag(username, wpm, accuracy, timing) {
+    if (!db) return;
+    try {
+      let list = [];
+      try {
+        const row = await db.get("system", TIMING_FLAGS_KEY, true);
+        if (row && row.value) list = JSON.parse(row.value);
+        if (!Array.isArray(list)) list = [];
+      } catch (e) { list = []; }
+
+      list.push({
+        username,
+        wpm,
+        accuracy,
+        cv: timing.cv,
+        clusterRatio: timing.clusterRatio,
+        reason: timing.roboticallyUniform ? "uniform_cadence" : "tight_cluster",
+        at: Date.now(),
+      });
+
+      // Keep only the most recent 200 flags so this never grows unbounded.
+      if (list.length > 200) list = list.slice(list.length - 200);
+
+      await db.set("system", TIMING_FLAGS_KEY, JSON.stringify(list), true);
+      console.log(`[race] timing flag recorded for ${username} (cv=${timing.cv}, cluster=${timing.clusterRatio})`);
+    } catch (e) {
+      // Non-fatal -- never let flag storage interfere with the race.
+    }
+  }
+
+  // Analyzes the server-observed spacing between a player's progress
+  // updates. Returns a suspicion result. This runs entirely on data the
+  // server collected itself (arrival timestamps), so it cannot be spoofed
+  // by a manipulated client the way a self-reported WPM/accuracy can.
+  //
+  // The core idea: real human typing is bursty -- fast runs, natural
+  // pauses, variable rhythm. An autotyper that types at a fixed WPM (like
+  // the extension autotyper) produces progress updates at a near-constant
+  // interval. We measure how much the char-per-second rate varies between
+  // consecutive samples; too little variation across a long-enough race is
+  // a strong tell.
+  function analyzeProgressTiming(samples) {
+    if (!samples || samples.length < 8) return { insufficient: true };
+
+    // Build per-interval typing rates (chars per second) between updates.
+    const rates = [];
+    for (let i = 1; i < samples.length; i++) {
+      const dtMs = samples[i].at - samples[i - 1].at;
+      const dChars = samples[i].chars - samples[i - 1].chars;
+      // Ignore zero/negative intervals and non-advancing samples.
+      if (dtMs > 0 && dChars > 0) {
+        rates.push((dChars / dtMs) * 1000);
+      }
+    }
+    if (rates.length < 6) return { insufficient: true };
+
+    const mean = rates.reduce((a, b) => a + b, 0) / rates.length;
+    if (mean <= 0) return { insufficient: true };
+    const variance = rates.reduce((a, b) => a + (b - mean) ** 2, 0) / rates.length;
+    const std = Math.sqrt(variance);
+    const cv = std / mean; // coefficient of variation -- lower = more robotic
+
+    // Also measure how many intervals fall very close to the mean rate --
+    // an autotyper clusters tightly around its target rate.
+    const nearMean = rates.filter((r) => Math.abs(r - mean) / mean < 0.12).length;
+    const clusterRatio = nearMean / rates.length;
+
+    // Thresholds chosen conservatively so ordinary humans (who vary a lot)
+    // don't trip them. A real typist's CV is typically well above 0.35;
+    // metronomic automation sits far below that.
+    const roboticallyUniform = cv < 0.18 && rates.length >= 10;
+    const tightlyClustered = clusterRatio > 0.85 && rates.length >= 10;
+
+    return {
+      insufficient: false,
+      sampleCount: rates.length,
+      cv: +cv.toFixed(3),
+      clusterRatio: +clusterRatio.toFixed(2),
+      roboticallyUniform,
+      tightlyClustered,
+      suspicious: roboticallyUniform || tightlyClustered,
+    };
+  }
+
   // Shared by both a real "finished" message and a bot's simulated finish.
   // skipWpmCheck is used for bots, since their wpm/timeMs pair is already
   // internally consistent (the server generated both itself) -- the
@@ -382,6 +470,15 @@ function makeRaceServer(httpServer) {
             wpm = SERVER_WPM_CAP;
             console.warn(`[race] WPM clamped for ${username}: implied ${impliedWpm} → ${SERVER_WPM_CAP}`);
           }
+        }
+
+        // Server-side timing analysis on the progress updates we timestamped
+        // ourselves. This is a SOFT signal -- an unusually steady human could
+        // in principle trip it -- so it records a review flag rather than
+        // auto-banning. Admins see flagged players in the panel and decide.
+        const timing = analyzeProgressTiming(playerData.progressSamples);
+        if (timing && timing.suspicious) {
+          recordTimingFlag(username, wpm, accuracy, timing).catch(() => {});
         }
       }
     }
@@ -448,6 +545,24 @@ function makeRaceServer(httpServer) {
       if (msg.type === "progress") {
         const room = rooms.get(ws.roomId);
         if (!room || !room.locked) return;
+        // Record the SERVER-observed arrival time of each progress update.
+        // The client controls charsTyped, but it cannot control when the
+        // server actually receives the message -- so the spacing between
+        // these timestamps is an un-fakeable window into the real typing
+        // cadence. A human bursts and pauses; an autotyper ticks at a
+        // near-constant interval. We analyze this at finish.
+        const playerData = room.players.get(ws.username);
+        if (playerData && !playerData.isBot) {
+          if (!playerData.progressSamples) playerData.progressSamples = [];
+          // Cap the array so a flood of progress spam can't grow memory
+          // unbounded -- 400 samples is far more than any real race needs.
+          if (playerData.progressSamples.length < 400) {
+            playerData.progressSamples.push({
+              at: Date.now(),
+              chars: typeof msg.charsTyped === "number" ? msg.charsTyped : 0,
+            });
+          }
+        }
         broadcastToRoom(room, {
           type: "opponent_progress",
           username: ws.username,

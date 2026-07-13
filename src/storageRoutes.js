@@ -130,7 +130,7 @@ const ADMIN_ONLY_SHARED_KEYS = new Set([
   "title_catalog", "season_config", "season_config_backup",
   "race_tracks", "about_sections", "guild_lb_config",
   "news_posts", "streak_config", "streak_standard_pool", "streak_premium_pool",
-  "race_passages", "site_maintenance", "tos_content",
+  "race_passages", "site_maintenance", "tos_content", "anticheat_timing_flags",
 ]);
 
 // ── Challenge endpoint ────────────────────────────────────────────────────────
@@ -504,6 +504,29 @@ router.post("/anticheat", async (req, res) => {
     }
   } catch (e) {}
   res.json({ received: true });
+});
+
+router.get("/timing-flags", async (req, res) => {
+  const session = await getSession(req);
+  if (!session || !session.isAdmin) return res.status(403).json({ error: "forbidden" });
+  try {
+    const row = await store.get("system", "anticheat_timing_flags", true);
+    let flags = [];
+    if (row && row.value) { try { flags = JSON.parse(row.value); } catch (e) { flags = []; } }
+    if (!Array.isArray(flags)) flags = [];
+    // Newest first for the admin view.
+    flags.reverse();
+    res.json({ flags });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+router.post("/timing-flags/clear", async (req, res) => {
+  const session = await getSession(req);
+  if (!session || !session.isAdmin) return res.status(403).json({ error: "forbidden" });
+  try {
+    await store.set("system", "anticheat_timing_flags", JSON.stringify([]), true);
+    res.json({ cleared: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 router.post("/ban", async (req, res) => {
