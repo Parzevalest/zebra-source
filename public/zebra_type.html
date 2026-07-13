@@ -2157,7 +2157,21 @@ const AntiCheat = (() => {
     // auto-ban threshold directly rather than relying on the general
     // score curve, which a single 70-point signal wouldn't otherwise
     // reach on its own.
-    const confidence = (env.webdriverFlag || env.automationArtifacts) ? 99 : _confidence(score);
+    //
+    // The same is true of confirmed synthetic-input injection: keystrokes
+    // arriving with isTrusted=false, the native value setter being driven
+    // outside a real keystroke, or execCommand('insertText') injection.
+    // These are exactly the fingerprints of a userscript / extension
+    // autotyper driving the input programmatically, and no ordinary human
+    // browser produces them. (Note these are the STRICT injection signals
+    // only -- the softer, extension-prone ones like perfNowMocked /
+    // dispatchEventOverridden are deliberately NOT included here, since
+    // privacy browsers and ad blockers trip those on legitimate users.)
+    const certainInjection =
+      syntheticKeyDetected ||
+      nativeSetterTampered ||
+      execCommandDetected;
+    const confidence = (env.webdriverFlag || env.automationArtifacts || certainInjection) ? 99 : _confidence(score);
     // Only signals that CANNOT be explained by privacy extensions / dev tools /
     // tabbing with the keyboard count as "hard" evidence of a bot.
     // perfNowMocked, dateNowMocked, pollerSuppressed, dispatchEventOverridden,
@@ -5578,6 +5592,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     else if(state.screen === "adminPassages") renderAdminPassages();
     else if(state.screen === "adminTestRace") renderAdminTestRace();
     else if(state.screen === "adminAbout") renderAdminAbout();
+    else if(state.screen === "adminAnticheat") renderAdminAnticheat();
     else if(state.screen === "account") renderAccount();
     else if(state.screen === "shop") renderShop();
     else if(state.screen === "leaderboard") renderLeaderboard();
@@ -10237,6 +10252,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
         '<button class="admin-navbar-tab' + (activeTab==="passages" ? " active" : "") + '" data-admin-tab="passages">\uD83D\uDCDD Passages</button>' +
         '<button class="admin-navbar-tab' + (activeTab==="players" ? " active" : "") + '" data-admin-tab="players">\uD83D\uDC64 Players</button>' +
         (state.isSuperAdmin ? '<button class="admin-navbar-tab' + (activeTab==="about" ? " active" : "") + '" data-admin-tab="about">\uD83D\uDCD6 About</button>' : '') +
+        (state.isSuperAdmin ? '<button class="admin-navbar-tab' + (activeTab==="anticheat" ? " active" : "") + '" data-admin-tab="anticheat">\uD83D\uDEE1\uFE0F Anti-Cheat</button>' : '') +
       '</div>' +
       '<div class="admin-navbar-right">' +
         '<div class="userpill">Admin: <b>' + escapeHtml(state.adminUsername || "") + '</b></div>' +
@@ -10285,6 +10301,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
           : tab === "passages" ? "adminPassages"
           : tab === "testrace" ? "adminTestRace"
           : tab === "about" ? "adminAbout"
+          : tab === "anticheat" ? "adminAnticheat"
           : "adminAchievements";
         renderApp();
       });
@@ -13505,6 +13522,17 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     });
 
     loadIndex();
+
+    // If we arrived here from the Anti-Cheat review panel (clicking a
+    // flagged player's name), auto-open that player's detail immediately.
+    if(state.pendingPlayerLookup){
+      var pendingUser = state.pendingPlayerLookup;
+      state.pendingPlayerLookup = null;
+      var searchInput = document.getElementById("playerSearchInput");
+      var errEl2 = document.getElementById("playerSearchError");
+      if(searchInput) searchInput.value = pendingUser;
+      loadPlayerForAdmin(pendingUser, errEl2);
+    }
   }
 
   async function loadPlayerForAdmin(username, errEl){
@@ -18141,6 +18169,92 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
         renderAdminAboutList();
       });
     });
+  }
+
+  /* ============ ANTI-CHEAT REVIEW ============ */
+  function renderAdminAnticheat(){
+    if(!state.isSuperAdmin){ state.screen="adminCars"; renderApp(); return; }
+    state.adminTab = "anticheat";
+    app.innerHTML =
+      brandHeader() +
+      adminNavBar("anticheat") +
+      '<div class="panel" style="margin-bottom:18px;">' +
+        '<div class="garage-title" style="color:var(--text);font-size:18px;margin-bottom:6px;">\uD83D\uDEE1\uFE0F Timing Review Flags</div>' +
+        '<div class="hint-text" style="margin-top:0;margin-bottom:4px;">These are races where the server-observed typing rhythm looked unusually mechanical (a possible autotyper). This is a <b>soft signal</b> \u2014 an unusually steady human can occasionally appear here, so review before acting rather than banning automatically. Confirmed injection bots are already auto-banned separately and won\u2019t show up here.</div>' +
+      '</div>' +
+      '<div style="display:flex;gap:10px;align-items:center;margin-bottom:12px;">' +
+        '<button class="small-btn" id="acRefreshBtn">\u21BB Refresh</button>' +
+        '<button class="small-btn" id="acClearBtn" style="color:var(--red);border-color:var(--red);">Clear All Flags</button>' +
+        '<span id="acMsg" style="font-size:13px;color:var(--muted);"></span>' +
+      '</div>' +
+      '<div id="acFlagsList"><div class="center-note">Loading\u2026</div></div>';
+
+    attachAdminNavListeners();
+
+    document.getElementById("acRefreshBtn").addEventListener("click", loadAnticheatFlags);
+    document.getElementById("acClearBtn").addEventListener("click", async function(){
+      var msg = document.getElementById("acMsg");
+      msg.style.color = "var(--muted)";
+      msg.textContent = "Clearing\u2026";
+      try{
+        var res = await fetch(SERVER_URL + "/api/timing-flags/clear", {
+          method: "POST",
+          headers: { "x-session-token": currentToken || "" }
+        });
+        if(res.ok){ msg.textContent = "Cleared."; loadAnticheatFlags(); }
+        else { msg.style.color = "var(--red)"; msg.textContent = "Couldn\u2019t clear (status " + res.status + ")."; }
+      }catch(e){ msg.style.color = "var(--red)"; msg.textContent = "Error: " + ((e&&e.message)?e.message:String(e)); }
+    });
+
+    loadAnticheatFlags();
+  }
+
+  async function loadAnticheatFlags(){
+    var listEl = document.getElementById("acFlagsList");
+    if(!listEl) return;
+    listEl.innerHTML = '<div class="center-note">Loading\u2026</div>';
+    try{
+      var res = await fetch(SERVER_URL + "/api/timing-flags", {
+        headers: { "x-session-token": currentToken || "" }
+      });
+      if(!res.ok){ listEl.innerHTML = '<div class="center-note" style="color:var(--muted);">Couldn\u2019t load flags (status ' + res.status + ').</div>'; return; }
+      var data = await res.json();
+      var flags = (data && data.flags) || [];
+      if(!flags.length){
+        listEl.innerHTML = '<div class="center-note" style="color:var(--muted);padding:20px 0;">No timing flags right now. \uD83C\uDF89</div>';
+        return;
+      }
+      listEl.innerHTML =
+        '<div style="font-size:12px;color:var(--muted);margin-bottom:8px;">' + flags.length + ' flag' + (flags.length===1?'':'s') + ' (newest first)</div>' +
+        '<div style="display:flex;flex-direction:column;gap:8px;">' +
+          flags.map(function(f){
+            var when = f.at ? new Date(f.at).toLocaleString() : "unknown time";
+            var reason = f.reason === "uniform_cadence" ? "Robotically uniform pace" : f.reason === "tight_cluster" ? "Tightly clustered pace" : (f.reason || "flagged");
+            return '<div style="background:var(--panel-2);border:1px solid var(--line);border-radius:8px;padding:11px 13px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;">' +
+                '<button class="small-btn ac-view-player" data-username="' + escapeHtml(f.username||"") + '" style="font-weight:700;">' + escapeHtml(f.username||"(unknown)") + '</button>' +
+                '<span style="font-size:13px;color:var(--muted);">' + escapeHtml(reason) + '</span>' +
+                '<span style="font-size:12px;color:var(--muted);">WPM ' + escapeHtml(String(f.wpm != null ? f.wpm : "?")) + ' \u2022 Acc ' + escapeHtml(String(f.accuracy != null ? f.accuracy : "?")) + '%</span>' +
+                '<span style="font-size:12px;color:var(--muted);" title="lower = more mechanical">CV ' + escapeHtml(String(f.cv != null ? f.cv : "?")) + ' \u2022 cluster ' + escapeHtml(String(f.clusterRatio != null ? f.clusterRatio : "?")) + '</span>' +
+                '<span style="font-size:12px;color:var(--muted);margin-left:auto;">' + escapeHtml(when) + '</span>' +
+              '</div>';
+          }).join("") +
+        '</div>';
+
+      // Clicking a flagged player's name jumps straight to their admin
+      // detail, where the full ban/suspend controls live.
+      listEl.querySelectorAll(".ac-view-player").forEach(function(btn){
+        btn.addEventListener("click", function(){
+          var username = btn.getAttribute("data-username");
+          if(!username) return;
+          state.adminTab = "players";
+          state.screen = "adminPlayers";
+          state.pendingPlayerLookup = username;
+          renderApp();
+        });
+      });
+    }catch(e){
+      listEl.innerHTML = '<div class="center-note" style="color:var(--muted);">Error loading flags: ' + escapeHtml((e&&e.message)?e.message:String(e)) + '</div>';
+    }
   }
 
   /* ============ ACHIEVEMENTS ============ */
