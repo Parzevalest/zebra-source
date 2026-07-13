@@ -1,6 +1,7 @@
 const express = require("express");
 const crypto = require("crypto");
 const store = require("./db");
+const security = require("./security");
 
 const router = express.Router();
 
@@ -143,7 +144,10 @@ router.get("/challenge", async (req, res) => {
 
 // ── Auth endpoints ────────────────────────────────────────────────────────────
 
-router.post("/register", async (req, res) => {
+router.post("/register", security.rateLimit({
+  max: 40, windowMs: 60 * 60 * 1000, keyPrefix: "register",
+  message: "Too many accounts created from this network recently. Please try again later.",
+}), async (req, res) => {
   const { username, passwordHash, account, fingerprintHash } = req.body;
   if (!username || !passwordHash || !account) return res.status(400).json({ error: "missing fields" });
 
@@ -170,9 +174,22 @@ router.get("/check-username/:username", async (req, res) => {
   res.json({ taken: !!existing });
 });
 
-router.post("/login", async (req, res) => {
+router.post("/login", security.rateLimit({
+  max: 20, windowMs: 5 * 60 * 1000, keyPrefix: "login",
+  message: "Too many login attempts. Please wait a few minutes and try again.",
+}), async (req, res) => {
   const { username, challengeResponse, nonce, fingerprintHash } = req.body;
   if (!username || !challengeResponse || !nonce) return res.status(400).json({ error: "missing fields" });
+
+  // Per-account brute-force lockout. Checked before doing any crypto work,
+  // so a locked account short-circuits immediately. This defends a single
+  // account's password even against an attacker rotating IPs (which the
+  // per-IP rate limit above wouldn't catch on its own).
+  const lock = security.checkAccountLock(username);
+  if (lock.locked) {
+    res.set("Retry-After", String(lock.retryAfterSec));
+    return res.status(429).json({ error: "account_locked", message: "Too many failed attempts for this account. Try again in a few minutes." });
+  }
 
   const clientIp = req.ip;
   if (await isFingerprintBanned(fingerprintHash)) return res.status(403).json({ error: "device_banned" });
@@ -186,12 +203,23 @@ router.post("/login", async (req, res) => {
   if (!validChallenge) return res.status(401).json({ error: "invalid or expired challenge" });
   
   const result = await store.get("system", "account:" + username.toLowerCase(), true);
-  if (!result || !result.value) return res.status(401).json({ error: "invalid credentials" });
-  
+  if (!result || !result.value) {
+    // Count a login attempt against a nonexistent username too, so the
+    // lockout can't be sidestepped by fishing usernames.
+    security.recordFailedLogin(username);
+    return res.status(401).json({ error: "invalid credentials" });
+  }
+
   try {
     const acc = JSON.parse(result.value);
     const expected = crypto.createHash("sha256").update(acc.passwordHash + nonce).digest("hex");
-    if (challengeResponse !== expected) return res.status(401).json({ error: "invalid credentials" });
+    if (challengeResponse !== expected) {
+      security.recordFailedLogin(username);
+      return res.status(401).json({ error: "invalid credentials" });
+    }
+
+    // Correct password -- clear any accumulated failed-attempt counter.
+    security.clearFailedLogins(username);
 
     // Credentials are verified at this point, so it's now safe to check
     // and act on IP-ban status. If this account isn't already banned but
@@ -222,7 +250,10 @@ router.post("/login", async (req, res) => {
   } catch (e) { res.status(500).json({ error: "server error" }); }
 });
 
-router.post("/admin-login", async (req, res) => {
+router.post("/admin-login", security.rateLimit({
+  max: 10, windowMs: 10 * 60 * 1000, keyPrefix: "adminlogin",
+  message: "Too many admin login attempts. Please wait several minutes.",
+}), async (req, res) => {
   const { challengeResponse, nonce } = req.body;
   if (!challengeResponse || !nonce) return res.status(400).json({ error: "missing fields" });
   
