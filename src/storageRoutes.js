@@ -130,7 +130,7 @@ const ADMIN_ONLY_SHARED_KEYS = new Set([
   "title_catalog", "season_config", "season_config_backup",
   "race_tracks", "about_sections", "guild_lb_config",
   "news_posts", "streak_config", "streak_standard_pool", "streak_premium_pool",
-  "race_passages", "site_maintenance",
+  "race_passages", "site_maintenance", "tos_content",
 ]);
 
 // ── Challenge endpoint ────────────────────────────────────────────────────────
@@ -156,6 +156,7 @@ router.post("/register", async (req, res) => {
   if (existing) return res.status(409).json({ error: "username taken" });
 
   account.lastKnownIp = clientIp;
+  account.lastLoginAt = Date.now();
   if (fingerprintHash) account.deviceFingerprint = fingerprintHash;
   await store.set("system", key, JSON.stringify(account), true);
   const token = generateToken();
@@ -207,6 +208,7 @@ router.post("/login", async (req, res) => {
     }
 
     acc.lastKnownIp = clientIp;
+    acc.lastLoginAt = Date.now();
     // Note: acc.deviceFingerprint is intentionally NOT overwritten here --
     // that field is what "Ban Device" in the admin panel bans, and it's
     // meant to stay pinned to whichever device actually got flagged by the
