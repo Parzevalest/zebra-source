@@ -6390,7 +6390,12 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
   function resolveCarById(carId){
     if(!carId || carId === "starter_car") return STARTER_CAR;
     var found = customCarsCache.find(function(c){ return c.id === carId; });
-    return found || null;
+    // Never return null -- an equipped car that isn't in the catalog
+    // (deleted, or catalog not loaded yet) falls back to the starter car
+    // rather than returning null, which callers would crash on when they
+    // read car.name / car.rarity / etc. Callers that specifically need to
+    // know "was this an unknown car" can compare the result's id.
+    return found || STARTER_CAR;
   }
 
   /* ============ CAR INVENTORY (stackable quantities) ============ */
@@ -8234,6 +8239,9 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
         var otherAcc = accountsByUsername[username.toLowerCase()];
         if(!otherAcc) return '<div style="width:90px;height:45px;flex:0 0 auto;"></div>';
         var car = resolveCarById(otherAcc.equippedCarId);
+        // resolveCarById never returns null now (falls back to the starter
+        // car), but keep a defensive guard anyway.
+        if(!car) return '<div style="width:90px;height:45px;flex:0 0 auto;"></div>';
         return '<div style="width:90px;height:45px;flex:0 0 auto;" title="' + escapeHtml(car.name || "Car") + '">' + carVisualHtml(car) + '</div>';
       }
 
