@@ -2768,6 +2768,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     "/leaderboard": "leaderboard",
     "/account":     "account",
     "/about":       "about",
+    "/tos":         "tos",
     "/race":        "raceEntry"
   };
 
@@ -2824,6 +2825,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     "leaderboard":  "/leaderboards",
     "account":      "/account",
     "about":        "/about",
+    "tos":          "/tos",
     "raceWaiting":       "/race",
     "race":              "/race",
     "raceConnectError":  "/race",
@@ -4085,6 +4087,17 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
   var GUILD_KEY_PREFIX = "guild:";
   var TRACKS_KEY = "race_tracks"; // catalog: array of {id, name, image, width, height, carStartX, carStartYByLane:[y0,y1,y2,y3], createdAt}
   var ABOUT_SECTIONS_KEY = "about_sections"; // array of {id, title, paragraphs:[], order}
+  var TOS_CONTENT_KEY = "tos_content"; // single editable Terms of Service body (string)
+  var DEFAULT_TOS_CONTENT =
+    "By logging in and playing Panda Type, you agree to the following:\n\n" +
+    "\u2022 You will not use cheats, bots, scripts, automation, or any tool that gives an unfair advantage.\n" +
+    "\u2022 You will not exploit bugs or attempt to manipulate races, leaderboards, coins, or rewards.\n" +
+    "\u2022 You will not harass, threaten, or abuse other players.\n" +
+    "\u2022 You will not attempt to gain unauthorized access to accounts, servers, or systems.\n" +
+    "\u2022 You understand that violating these terms may result in suspension or a permanent ban, at the operators\u2019 discretion.\n" +
+    "\u2022 You understand that your IP address and device information may be recorded for security and anti-cheat purposes.\n\n" +
+    "These terms may be updated at any time. Continued play constitutes acceptance of the current terms.";
+  var tosContentCache = null;
   var GUILD_LB_CONFIG_KEY = "guild_lb_config"; // { endsAt: timestamp|null, paused: bool }
 
   async function getAdminAccount(){
@@ -4810,6 +4823,28 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
   async function saveAboutSections(sections){
     try{
       await shimSet(ABOUT_SECTIONS_KEY, JSON.stringify(sections), true);
+      return { ok:true };
+    }catch(e){ return { ok:false, error:(e&&e.message)?e.message:String(e) }; }
+  }
+
+  // Terms of Service is a single editable string. Falls back to the
+  // built-in default text if nothing's been saved yet. Cached so the
+  // login screen doesn't have to re-fetch it every time.
+  async function fetchTosContent(){
+    try{
+      var res = await shimGet(TOS_CONTENT_KEY, true);
+      var val = (res && typeof res.value === "string") ? JSON.parse(res.value) : null;
+      tosContentCache = (typeof val === "string" && val.length) ? val : DEFAULT_TOS_CONTENT;
+    }catch(e){
+      tosContentCache = DEFAULT_TOS_CONTENT;
+    }
+    return tosContentCache;
+  }
+
+  async function saveTosContent(text){
+    try{
+      await shimSet(TOS_CONTENT_KEY, JSON.stringify(text), true);
+      tosContentCache = text;
       return { ok:true };
     }catch(e){ return { ok:false, error:(e&&e.message)?e.message:String(e) }; }
   }
@@ -5552,6 +5587,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     else if(state.screen === "season") renderSeason();
     else if(state.screen === "guilds") renderGuilds();
     else if(state.screen === "about") renderAbout();
+    else if(state.screen === "tos") renderTosEditor();
     else if(state.screen === "guildView") renderGuildView();
 
     // Wire up the floating "Back to Admin" pill if present (brandHeader
@@ -5824,6 +5860,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
               })() +
             '</button>' +
             '<button class="nav-dropdown-item" id="navDropAbout">\uD83D\uDCD6 About</button>' +
+            (state.isSuperAdmin ? '<button class="nav-dropdown-item" id="navDropTos">\uD83D\uDCDC Terms of Service</button>' : '') +
             '<button class="nav-dropdown-item" id="navDropAccount">\uD83D\uDC64 Account</button>' +
             '<button class="nav-dropdown-item" id="navDropProfile">\uD83D\uDC65 Public Profile</button>' +
             '<button class="nav-dropdown-item danger" id="navDropLogout">Logout</button>' +
@@ -5859,6 +5896,8 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     }
     var navAbout = document.getElementById("navDropAbout");
     if(navAbout) navAbout.addEventListener("click", function(){ if(dropMenu) dropMenu.classList.remove("open"); navigate("/about"); });
+    var navDropTos = document.getElementById("navDropTos");
+    if(navDropTos) navDropTos.addEventListener("click", function(){ if(dropMenu) dropMenu.classList.remove("open"); navigate("/tos"); });
     var navDropAchievements = document.getElementById("navDropAchievements");
     if(navDropAchievements) navDropAchievements.addEventListener("click", function(){ if(dropMenu) dropMenu.classList.remove("open"); navigate("/achievements"); });
     var navDropNews = document.getElementById("navDropNews");
@@ -6118,20 +6157,17 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
       }
       var loginData = await loginRes.json();
 
-      // If this account has the "secret sauce" consent flag enabled, hold
-      // off on finalizing the login (session token, state.user, etc.) and
-      // show the consent screen first. The server has already validated
-      // credentials, bans, maintenance, etc. by this point -- all that's
-      // left is finalizing, so finalizeLoginAndEnter can run either
-      // immediately (below) or later once consent is given.
-      if(loginData.account && loginData.account.secretSauceEnabled){
-        state.pendingLoginData = loginData;
-        state.screen = "loginConsent";
-        renderApp();
-        return;
-      }
-
-      await finalizeLoginAndEnter(loginData);
+      // Every login now requires the player to acknowledge the Terms of
+      // Service before the login is finalized. Credentials, bans,
+      // maintenance, etc. have already been validated server-side by this
+      // point -- all that's left is finalizing, which happens only after
+      // the TOS box is checked on the consent screen. Pre-fetch the (admin-
+      // editable) TOS text first so the screen shows the current version.
+      state.pendingLoginData = loginData;
+      try{ await fetchTosContent(); }catch(e){}
+      state.screen = "loginConsent";
+      renderApp();
+      return;
     }catch(e){
       errEl.textContent = "Unexpected error: " + ((e && e.message) ? e.message : String(e));
     }finally{
@@ -6197,29 +6233,39 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     renderApp();
   }
 
-  // Renders the "secret sauce" consent screen -- shown after credentials
+  // Renders the Terms of Service consent screen -- shown after credentials
   // are already verified server-side, before the login is actually
-  // finalized client-side. Checking "Yes" finalizes the pending login;
-  // "No" discards the already-issued session token and returns to the
-  // login screen as if nothing happened.
+  // finalized client-side, on EVERY login. The player must tick the TOS
+  // box and click Agree to finalize; declining discards the already-issued
+  // session token and returns to the login screen as if nothing happened.
   function renderLoginConsent(){
+    var tosText = tosContentCache || DEFAULT_TOS_CONTENT;
+    var tosHtml = escapeHtml(tosText).replace(/\n/g, "<br>");
     app.innerHTML =
       brandHeader() +
-      '<div class="panel" style="max-width:440px;margin:60px auto;text-align:center;">' +
-        '<div class="garage-title" style="color:var(--text);font-size:20px;margin-bottom:14px;">You are about to be molested.</div>' +
-        '<div style="color:var(--muted);font-size:15px;margin-bottom:22px;">Do you consent?</div>' +
-        '<label style="display:flex;align-items:center;justify-content:center;gap:10px;margin-bottom:24px;cursor:pointer;font-size:15px;color:var(--text);">' +
-          '<input type="checkbox" id="loginConsentYes" style="width:20px;height:20px;cursor:pointer;" />' +
-          'Yes' +
+      '<div class="panel" style="max-width:480px;margin:60px auto;">' +
+        '<div class="garage-title" style="color:var(--text);font-size:20px;margin-bottom:14px;text-align:center;">Terms of Service</div>' +
+        '<div style="color:var(--muted);font-size:14px;line-height:1.6;margin-bottom:20px;max-height:240px;overflow-y:auto;border:1px solid var(--line);border-radius:8px;padding:14px;background:var(--panel-2);">' +
+          tosHtml +
+        '</div>' +
+        '<label style="display:flex;align-items:center;gap:10px;margin-bottom:20px;cursor:pointer;font-size:14px;color:var(--text);">' +
+          '<input type="checkbox" id="loginConsentYes" style="width:20px;height:20px;cursor:pointer;flex:0 0 auto;" />' +
+          '<span>By logging in, I acknowledge that I have read and agree to the Terms of Service.</span>' +
         '</label>' +
         '<div style="display:flex;gap:12px;justify-content:center;">' +
-          '<button class="btn btn-ghost" id="loginConsentNoBtn">No</button>' +
+          '<button class="btn btn-ghost" id="loginConsentNoBtn">Decline</button>' +
+          '<button class="btn btn-primary" id="loginConsentAgreeBtn">Agree & Continue</button>' +
         '</div>' +
-        '<div class="error-text" id="loginConsentError" style="margin-top:14px;"></div>' +
+        '<div class="error-text" id="loginConsentError" style="margin-top:14px;text-align:center;"></div>' +
       '</div>';
 
-    document.getElementById("loginConsentYes").addEventListener("change", async function(){
-      if(!this.checked) return;
+    document.getElementById("loginConsentAgreeBtn").addEventListener("click", async function(){
+      var box = document.getElementById("loginConsentYes");
+      var err = document.getElementById("loginConsentError");
+      if(!box.checked){
+        err.textContent = "You must agree to the Terms of Service to continue.";
+        return;
+      }
       var data = state.pendingLoginData;
       state.pendingLoginData = null;
       if(!data){
@@ -7767,11 +7813,16 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     });
 
     fetchTitleCatalog().then(function(tc){ titleCatalogCache = tc || []; });
-    Promise.all([getAccount(targetUsername), fetchCustomCars(), fetchAvatarCatalog()]).then(function(results){
+    Promise.all([
+      getAccount(targetUsername),
+      garageCachesLoaded ? Promise.resolve(customCarsCache) : fetchCustomCars(),
+      garageCachesLoaded ? Promise.resolve(avatarCatalogCache) : fetchAvatarCatalog()
+    ]).then(function(results){
       if(state.screen !== "profile" || state.profileUsername !== targetUsername) return; // navigated away while loading
       var res = results[0];
       customCarsCache = results[1];
       avatarCatalogCache = results[2];
+      garageCachesLoaded = true;
 
       var panelArea = app.querySelector(".panel");
       if(!res.ok){
@@ -8083,14 +8134,19 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
 
     Promise.all([
       Promise.all(uniqueUsernames.map(function(u){ return getAccount(u); })),
-      fetchAvatarCatalog(),
-      fetchCustomCars()
+      // Reuse the already-loaded catalogs if the garage/season has warmed
+      // them -- these are the heavy base64-image payloads, and re-fetching
+      // them on every single Friends visit was a big chunk of this screen's
+      // load time. Only actually fetch if they haven't been loaded yet.
+      garageCachesLoaded ? Promise.resolve(avatarCatalogCache) : fetchAvatarCatalog(),
+      garageCachesLoaded ? Promise.resolve(customCarsCache) : fetchCustomCars()
     ]).then(function(results){
       if(document.getElementById("friendsBody") !== body) return; // navigated away while loading
 
       var accountResults = results[0];
       avatarCatalogCache = results[1];
       customCarsCache = results[2];
+      garageCachesLoaded = true;
 
       var accountsByUsername = {};
       uniqueUsernames.forEach(function(u, i){
@@ -13738,13 +13794,10 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
         : '') +
 
         (state.isSuperAdmin ?
-          '<div style="display:flex;align-items:center;gap:14px;background:var(--panel-2);border:1px solid var(--line);border-radius:10px;padding:14px;margin-bottom:10px;">' +
-            '<div style="flex:1;">' +
-              '<div style="font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--muted);">Secret Sauce</div>' +
-              '<div style="font-size:13px;color:var(--muted);margin-top:2px;">When enabled, this player sees a one-time consent screen before being logged in.</div>' +
-              '<div style="font-family:\'Arial Black\',Impact,sans-serif;font-style:italic;font-size:18px;color:' + (acc.secretSauceEnabled ? "var(--amber)" : "var(--muted)") + ';margin-top:4px;">' + (acc.secretSauceEnabled ? "Enabled" : "Disabled") + '</div>' +
-            '</div>' +
-            '<button class="btn ' + (acc.secretSauceEnabled ? 'btn-ghost' : 'btn-primary') + '" id="toggleSecretSauceBtn" style="padding:10px 16px;">' + (acc.secretSauceEnabled ? 'Disable' : 'Enable') + '</button>' +
+          '<div style="background:var(--panel-2);border:1px solid var(--line);border-radius:10px;padding:14px;margin-bottom:10px;">' +
+            '<div style="font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--muted);margin-bottom:4px;">Login Info</div>' +
+            '<div style="font-size:13px;color:var(--text);">Last IP: <span style="font-family:monospace;color:var(--muted);">' + (acc.lastKnownIp ? escapeHtml(acc.lastKnownIp) : "\u2014 (none on record yet)") + '</span></div>' +
+            '<div style="font-size:13px;color:var(--text);margin-top:4px;">Last login: <span style="color:var(--muted);">' + (acc.lastLoginAt ? new Date(acc.lastLoginAt).toLocaleString() : "\u2014 (none on record yet)") + '</span></div>' +
           '</div>'
         : '') +
 
@@ -14517,13 +14570,6 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
       var toggleWhitelistBtn = document.getElementById("toggleAnticheatWhitelistBtn");
       if(toggleWhitelistBtn) toggleWhitelistBtn.addEventListener("click", async function(){
         acc.anticheatWhitelisted = !acc.anticheatWhitelisted;
-        var ok = await persist(acc);
-        if(ok) renderPlayerDetail(acc, allCustomCars);
-      });
-
-      var toggleSecretSauceBtn = document.getElementById("toggleSecretSauceBtn");
-      if(toggleSecretSauceBtn) toggleSecretSauceBtn.addEventListener("click", async function(){
-        acc.secretSauceEnabled = !acc.secretSauceEnabled;
         var ok = await persist(acc);
         if(ok) renderPlayerDetail(acc, allCustomCars);
       });
@@ -16612,10 +16658,15 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
 
     attachNavListeners();
 
-    Promise.all([fetchSeasonConfig(), fetchCustomCars(), fetchAvatarCatalog()]).then(function(results){
+    Promise.all([
+      fetchSeasonConfig(),
+      garageCachesLoaded ? Promise.resolve(customCarsCache) : fetchCustomCars(),
+      garageCachesLoaded ? Promise.resolve(avatarCatalogCache) : fetchAvatarCatalog()
+    ]).then(function(results){
       var cfg = results[0];
       customCarsCache = results[1];
       avatarCatalogCache = results[2];
+      garageCachesLoaded = true;
 
       // Show ended banner if season has finished
       var seasonIsOver = cfg.seasonEndsAt && Date.now() > cfg.seasonEndsAt;
@@ -17816,6 +17867,66 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
   }
 
   /* ============ ABOUT PAGE ============ */
+  // Super Admin-only Terms of Service editor. The saved text is what
+  // players see on the login consent screen. Gated to super admins both
+  // here (screen guard) and server-side (tos_content is an admin-only key).
+  async function renderTosEditor(){
+    if(!state.isSuperAdmin){
+      // Not a super admin -- bounce back to the dashboard rather than
+      // exposing the editor. (The dropdown item is already hidden for
+      // non-super-admins, but this guards direct URL access too.)
+      navigate("/");
+      return;
+    }
+
+    app.innerHTML =
+      brandHeader() +
+      renderNavBar("") +
+      '<div class="panel" style="max-width:720px;margin:24px auto;">' +
+        '<div class="garage-title" style="color:var(--text);font-size:22px;margin-bottom:6px;">\uD83D\uDCDC Terms of Service</div>' +
+        '<div class="hint-text" style="margin-top:0;margin-bottom:16px;">This is the text players see and must agree to on the login screen. Edits take effect immediately for all future logins. One bullet or paragraph per line.</div>' +
+        '<div class="center-note" id="tosEditorLoading">Loading\u2026</div>' +
+        '<div id="tosEditorBody" style="display:none;">' +
+          '<textarea id="tosEditorText" style="width:100%;min-height:320px;background:var(--panel-2);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:14px;font-size:14px;line-height:1.6;font-family:inherit;resize:vertical;"></textarea>' +
+          '<div style="display:flex;gap:10px;align-items:center;margin-top:14px;">' +
+            '<button class="btn btn-primary" id="tosSaveBtn" style="padding:10px 20px;">Save</button>' +
+            '<button class="small-btn" id="tosResetBtn">Reset to default</button>' +
+            '<span id="tosSaveMsg" style="font-size:13px;"></span>' +
+          '</div>' +
+        '</div>' +
+      '</div>';
+
+    attachNavListeners();
+
+    var text = await fetchTosContent();
+    var loading = document.getElementById("tosEditorLoading");
+    var bodyEl = document.getElementById("tosEditorBody");
+    var textarea = document.getElementById("tosEditorText");
+    if(!textarea) return; // navigated away
+    if(loading) loading.style.display = "none";
+    if(bodyEl) bodyEl.style.display = "";
+    textarea.value = text;
+
+    document.getElementById("tosSaveBtn").addEventListener("click", async function(){
+      var btn = this;
+      var msg = document.getElementById("tosSaveMsg");
+      var val = textarea.value.trim();
+      if(!val){ msg.style.color = "var(--red)"; msg.textContent = "The Terms of Service can\u2019t be empty."; return; }
+      btn.disabled = true; btn.textContent = "Saving...";
+      var res = await saveTosContent(val);
+      btn.disabled = false; btn.textContent = "Save";
+      if(res.ok){ msg.style.color = "var(--green)"; msg.textContent = "Saved \u2014 players will see this on their next login."; }
+      else { msg.style.color = "var(--red)"; msg.textContent = "Couldn\u2019t save: " + (res.error || "unknown error"); }
+    });
+
+    document.getElementById("tosResetBtn").addEventListener("click", function(){
+      textarea.value = DEFAULT_TOS_CONTENT;
+      var msg = document.getElementById("tosSaveMsg");
+      msg.style.color = "var(--muted)";
+      msg.textContent = "Reset to default text \u2014 click Save to apply.";
+    });
+  }
+
   async function renderAbout(){
     var loggedIn = !!state.user;
     app.innerHTML =
