@@ -6773,7 +6773,11 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
       // without a full app.innerHTML replace.
       if(el.dataset.profileLinkBound) return;
       el.dataset.profileLinkBound = "1";
-      el.addEventListener("click", function(){
+      el.addEventListener("click", function(e){
+        // preventDefault so that when this is an <a href> (e.g. guild roster
+        // links), the click does SPA navigation instead of a full page load.
+        // Harmless no-op on non-anchor elements like spans.
+        if(e && e.preventDefault) e.preventDefault();
         var username = el.getAttribute("data-view-profile");
         if(!username) return;
         state.profileReturnScreen = state.screen;
@@ -16924,7 +16928,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
           '<div style="flex:1;">' +
             '<div style="display:flex;align-items:center;gap:6px;">' +
               (role ? '<span style="font-size:14px;">' + role + '</span>' : '') +
-              '<a href="/racer/' + encodeURIComponent(u) + '" style="font-weight:700;color:var(--text);text-decoration:none;" onclick="event.preventDefault();navigate(\'/racer/' + encodeURIComponent(u) + '\');">' + escapeHtml(displayName) + '</a>' +
+              '<a href="/racer/' + encodeURIComponent(u) + '" data-view-profile="' + escapeHtml(u) + '" style="font-weight:700;color:var(--text);text-decoration:none;cursor:pointer;">' + escapeHtml(displayName) + '</a>' +
             '</div>' +
             titleHtml +
           '</div>' +
@@ -16998,6 +17002,13 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
           joinBtn.textContent = "Requested";
         }
       });
+
+      // Wire up the roster's member-name links (data-view-profile) so they
+      // navigate to each player's profile via SPA routing. This replaces an
+      // older inline onclick="navigate(...)" that threw "navigate is not
+      // defined" because inline handlers run in global scope where the
+      // module-scoped navigate() isn't visible.
+      attachProfileLinkListeners(body);
 
     }catch(e){
       var errDetail = (e && e.message) ? e.message : String(e);
