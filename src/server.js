@@ -9,12 +9,18 @@ const stripeRoutes = require("./stripeRoutes");
 const { handleStripeWebhook } = require("./stripeWebhook");
 const { makeRaceServer, setDb } = require("./race");
 const db = require("./db");
+const security = require("./security");
 
 const app = express();
 // Render sits behind a reverse proxy -- without this, req.ip would always
 // return the proxy's internal address instead of the visitor's real IP,
 // which would make IP-based banning completely non-functional.
 app.set("trust proxy", true);
+
+// Conservative security headers on every response (clickjacking, MIME
+// sniffing, referrer policy). No strict CSP -- the game relies on inline
+// scripts and a wrong CSP would break it.
+app.use(security.securityHeaders);
 
 app.use(cors({
   origin: ["https://pandatype.org", "https://www.pandatype.org", "http://localhost:3000"],
@@ -30,13 +36,21 @@ app.post("/api/stripe-webhook", express.raw({ type: "application/json" }), handl
 
 app.use(express.json({ limit: "10mb" }));
 
+// Broad API rate limit -- a ceiling against a single IP flooding the API,
+// tuned GENEROUSLY so normal gameplay (and shared school/dorm IPs with many
+// legit players) never hits it. This is a backstop, not a fine-grained
+// control; the strict limits live on login/register inside storageRoutes.
+// 600 requests / minute / IP ~= 10 req/sec sustained, far above what a real
+// player generates but well below what a flood would.
+app.use("/api", security.rateLimit({
+  max: 600,
+  windowMs: 60 * 1000,
+  keyPrefix: "api",
+  message: "You're sending requests too quickly. Please slow down for a moment.",
+}));
+
 app.use("/api", storageRoutes);
 app.use("/api", stripeRoutes);
-
-// ONE-TIME database migration endpoint. Gated behind MIGRATION_SECRET.
-// Remove this (and migrate.js) once the migration is done and verified.
-const { handleMigrate } = require("./migrate");
-app.get("/api/migrate-database", handleMigrate);
 
 app.get("/health", (req, res) => {
   res.json({ ok: true, time: Date.now() });
