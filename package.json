@@ -5,7 +5,8 @@
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",
-    "dev": "node --watch src/server.js"
+    "dev": "node --watch src/server.js",
+    "build": "node build.js"
   },
   "license": "ISC",
   "dependencies": {
@@ -14,6 +15,7 @@
     "express": "^5.2.1",
     "mongoose": "^8.5.0",
     "stripe": "^17.5.0",
+    "terser": "^5.36.0",
     "ws": "^8.21.0"
   }
 }
