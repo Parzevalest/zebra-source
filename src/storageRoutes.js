@@ -769,6 +769,60 @@ router.delete("/kv/:key", async (req, res) => {
   res.json(await store.del(session ? session.username : "anonymous", key, shared));
 });
 
+// ── Bulk account read ───────────────────────────────────────────────────────
+//
+// One request, one query, every account.
+//
+// The leaderboard used to do shimList("account:") and then a separate
+// GET /kv/account:<name> for EVERY player -- 501 HTTP requests and 501
+// database queries for 500 players, every time anyone opened the page. Worse,
+// the API rate limit is 600 requests/minute/IP, so a single leaderboard load
+// consumed most of one player's allowance; two people on the same home or
+// school connection could rate-limit each other just by looking at it.
+//
+// Redaction is deliberately identical to GET /kv/:key. Bulk access must not be
+// a way around the per-key rules -- same fields stripped, same conditions.
+router.get("/accounts-bulk", async (req, res) => {
+  const session = await getSession(req);
+  if (!session) return res.status(401).json({ error: "authentication required" });
+
+  try {
+    // Resolved ONCE rather than per account. The per-key route re-checks this
+    // on every request, which is fine for one key and would be 500 lookups here.
+    const privileged = await isRequesterAdminOrModerator(session);
+    const me = (session.username || "").toLowerCase();
+
+    const rows = await store.listEntries("account:");
+    const accounts = [];
+
+    for (const row of rows) {
+      const owner = row.key.slice("account:".length).toLowerCase();
+      if (privileged || owner === me) {
+        accounts.push({ key: row.key, value: row.value });
+        continue;
+      }
+      try {
+        const acc = JSON.parse(row.value);
+        delete acc.passwordHash;
+        delete acc.lastKnownIp;
+        delete acc.deviceFingerprint;
+        delete acc.deviceFingerprintShort;
+        accounts.push({ key: row.key, value: JSON.stringify(acc) });
+      } catch (e) {
+        // Unparseable record. The per-key route falls through and returns it
+        // as-is; here we skip it. A row that isn't JSON can't be redacted, and
+        // one broken account is not worth risking on a bulk endpoint.
+        continue;
+      }
+    }
+
+    res.json({ accounts });
+  } catch (e) {
+    console.error("[accounts-bulk] error:", e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 router.get("/kv-list", async (req, res) => {
   const shared = req.query.shared === "true";
   const prefix = req.query.prefix || "";

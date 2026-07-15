@@ -80,10 +80,16 @@ async function list(owner, prefix, shared) {
   const regexPattern = new RegExp('^' + (prefix || ''));
   let rows;
 
+  // .select("key") is load-bearing, not tidiness. Without it Mongo sends the
+  // ENTIRE document for every match -- every account's full JSON, cars, stats
+  // and all -- and this function then discards all of it and keeps the key.
+  // Listing 500 accounts moved megabytes across the wire to produce a list of
+  // 500 short strings. .lean() skips building a Mongoose document per row on
+  // top of that.
   if (shared) {
-    rows = await SharedKV.find({ key: { $regex: regexPattern } });
+    rows = await SharedKV.find({ key: { $regex: regexPattern } }).select("key").lean();
   } else {
-    rows = await PrivateKV.find({ owner: owner, key: { $regex: regexPattern } });
+    rows = await PrivateKV.find({ owner: owner, key: { $regex: regexPattern } }).select("key").lean();
   }
 
   return { keys: rows.map((r) => r.key), prefix: prefix || "", shared: !!shared };
@@ -152,7 +158,8 @@ async function findAccountsByLastKnownIp(ip) {
 // "ban_"), but escaping costs nothing and closes the trap for future ones.
 async function listEntries(prefix) {
   const escaped = String(prefix || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const rows = await SharedKV.find({ key: { $regex: new RegExp("^" + escaped) } });
+  const rows = await SharedKV.find({ key: { $regex: new RegExp("^" + escaped) } })
+    .select("key value updated_at").lean();
   return rows.map((r) => ({ key: r.key, value: r.value, updated_at: r.updated_at }));
 }
 
