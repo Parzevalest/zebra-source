@@ -74,23 +74,58 @@ function isListableSharedPrefix(prefix) {
 
 async function sessionSet(token, username, isAdmin) {
   try {
-    const data = JSON.stringify({ username, isAdmin: isAdmin ? 1 : 0, created_at: Date.now() });
+    const now = Date.now();
+    const data = JSON.stringify({ username, isAdmin: isAdmin ? 1 : 0, created_at: now, last_seen_at: now });
     await store.set("system", "session_" + token, data, true);
     console.log("[session] saved for:", username, "isAdmin:", isAdmin);
   } catch (e) { console.error("[session] save error:", e.message); }
 }
+
+// How often an active session's clock is pushed forward. Every authenticated
+// request passes through sessionGet, so refreshing on each one would mean a
+// database write per request. Once a day is plenty: it keeps any player who
+// shows up at least weekly permanently logged in, at a cost of one extra
+// write per user per day.
+const SESSION_SLIDE_MS = 24 * 60 * 60 * 1000;
 
 async function sessionGet(token) {
   if (!token) return null;
   try {
     const result = await store.get("system", "session_" + token, true);
     if (!result || !result.value) return null;
-    
+
     const row = JSON.parse(result.value);
-    if (Date.now() - row.created_at > SESSION_TTL_MS) { 
-        await store.del("system", "session_" + token, true); 
-        return null; 
+    const now = Date.now();
+
+    // Expiry now runs from LAST ACTIVITY, not from login.
+    //
+    // This previously measured `now - row.created_at`, and nothing ever
+    // updated created_at -- so every session died exactly 7 days after login
+    // regardless of use. Someone playing daily still got thrown out every
+    // week, mid-session, with no explanation. That's the "randomly logged
+    // out" complaint.
+    //
+    // Falling back to created_at keeps sessions issued before this change
+    // working; they pick up a last_seen_at on their next request.
+    const lastSeen = row.last_seen_at || row.created_at || 0;
+    if (now - lastSeen > SESSION_TTL_MS) {
+      await store.del("system", "session_" + token, true);
+      return null;
     }
+
+    // Push the clock forward, at most once a day. Deliberately not awaited --
+    // this is bookkeeping, and no player should wait on a write to read their
+    // own dashboard. If it fails, the next request tries again.
+    //
+    // The write also refreshes the document's updated_at, which is what
+    // cleanupExpiredAuthKeys() in db.js sweeps on -- so an active session
+    // won't be deleted out from under its owner by the hourly cleanup.
+    if (now - lastSeen > SESSION_SLIDE_MS) {
+      row.last_seen_at = now;
+      store.set("system", "session_" + token, JSON.stringify(row), true)
+        .catch((e) => console.error("[session] slide failed:", e.message));
+    }
+
     return { username: row.username, isAdmin: !!row.isAdmin };
   } catch (e) { console.error("[session] lookup error:", e.message); return null; }
 }
