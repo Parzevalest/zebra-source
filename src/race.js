@@ -216,7 +216,10 @@ function makeRaceServer(httpServer) {
     const list = [];
     room.players.forEach((p, username) => {
       if (username === exceptUsername) return;
-      list.push({ username, carId: p.carId, displayName: p.displayName || "", guildTag: p.guildTag || "", guildColor: p.guildColor || "", titleText: p.titleText || "", titleRarity: p.titleRarity || "" });
+      // nameTag was missing here, which is the whole reason opponents showed a
+      // default tag: the client renders whatever this list gives it, and it
+      // was never given one.
+      list.push({ username, carId: p.carId, displayName: p.displayName || "", guildTag: p.guildTag || "", guildColor: p.guildColor || "", titleText: p.titleText || "", titleRarity: p.titleRarity || "", nameTag: p.nameTag || "" });
     });
     return list;
   }
@@ -333,7 +336,21 @@ function makeRaceServer(httpServer) {
     });
   }
 
-  function joinRoom(ws, username, carId, recentWpm, displayName, guildTag, guildColor, titleText, titleRarity) {
+  // A player's equipped name tag is a data URL (an image inlined as text), not
+  // an id -- see equippedNameTag in zebra_type.html. That means it travels on
+  // the wire in full, and gets re-sent to every player each time someone joins.
+  // A cap keeps one oversized tag from turning a 4-player room into megabytes
+  // of traffic on every join. Over the limit, the player just shows a default
+  // tag to others rather than the room paying for it.
+  const NAME_TAG_MAX_CHARS = 96 * 1024;
+
+  function safeNameTag(tag) {
+    if (typeof tag !== "string" || !tag) return "";
+    if (tag.length > NAME_TAG_MAX_CHARS) return "";
+    return tag;
+  }
+
+  function joinRoom(ws, username, carId, recentWpm, displayName, guildTag, guildColor, titleText, titleRarity, nameTag) {
     let room = openRoom;
     if (!room || room.locked || room.players.size >= ROOM_SIZE) {
       const roomId = crypto.randomBytes(6).toString("hex");
@@ -346,7 +363,7 @@ function makeRaceServer(httpServer) {
       room.botCheckTimer = setTimeout(() => injectBotIfNeeded(room), Math.max(500, JOIN_WINDOW_MS - 1000));
     }
 
-    room.players.set(username, { ws, carId, recentWpm: recentWpm || DEFAULT_WPM, displayName: displayName || "", guildTag: guildTag || "", guildColor: guildColor || "", titleText: titleText || "", titleRarity: titleRarity || "" });
+    room.players.set(username, { ws, carId, recentWpm: recentWpm || DEFAULT_WPM, displayName: displayName || "", guildTag: guildTag || "", guildColor: guildColor || "", titleText: titleText || "", titleRarity: titleRarity || "", nameTag: safeNameTag(nameTag) });
     ws.roomId = room.id;
     ws.username = username;
 
@@ -538,7 +555,7 @@ function makeRaceServer(httpServer) {
           }
         }
         activePlayers.set(uname, ws);
-        joinRoom(ws, uname, msg.carId || "starter_car", msg.recentWpm || DEFAULT_WPM, msg.displayName || "", msg.guildTag || "", msg.guildColor || "", msg.titleText || "", msg.titleRarity || "");
+        joinRoom(ws, uname, msg.carId || "starter_car", msg.recentWpm || DEFAULT_WPM, msg.displayName || "", msg.guildTag || "", msg.guildColor || "", msg.titleText || "", msg.titleRarity || "", msg.nameTag || "");
         return;
       }
 
