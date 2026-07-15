@@ -5713,7 +5713,12 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
         var joinTitle = state.user ? resolveTitle(state.user, titleCatalogCache) : null;
         var joinTitleText = (joinTitle && joinTitle.text) ? joinTitle.text : "";
         var joinTitleRarity = (joinTitle && joinTitle.rarity) ? joinTitle.rarity : "";
-        ws.send(JSON.stringify({ type: "join_race", username: username, carId: carId, recentWpm: recentWpm, displayName: joinDisplayName, guildTag: joinGuildTag, guildColor: joinGuildColor, titleText: joinTitleText, titleRarity: joinTitleRarity }));
+        // The equipped tag is a data URL. Sent as "" when it's the default, so
+        // the common case costs nothing on the wire -- the other players'
+        // clients fall back to DEFAULT_NAME_TAG themselves.
+        var joinNameTag = (state.user && state.user.equippedNameTag && state.user.equippedNameTag !== DEFAULT_NAME_TAG)
+          ? state.user.equippedNameTag : "";
+        ws.send(JSON.stringify({ type: "join_race", username: username, carId: carId, recentWpm: recentWpm, displayName: joinDisplayName, guildTag: joinGuildTag, guildColor: joinGuildColor, titleText: joinTitleText, titleRarity: joinTitleRarity, nameTag: joinNameTag }));
         if(!settled){
           settled = true;
           clearTimeout(connectTimeout);
@@ -8823,7 +8828,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
           incoming.forEach(function(o){
             var exists = raceState.opponents.find(function(x){ return x.username === o.username; });
             if(!exists){
-              raceState.opponents.push({ username: o.username, carId: o.carId, charsTyped: 0, fraction: 0, wpm: 0, finished: false, place: null, displayName: o.displayName || "", guildTag: o.guildTag || "", guildColor: o.guildColor || "", trackStartGlideFired: false, trackFinishGlideFired: false, titleText: o.titleText || "", titleRarity: o.titleRarity || "" });
+              raceState.opponents.push({ username: o.username, carId: o.carId, charsTyped: 0, fraction: 0, wpm: 0, finished: false, place: null, displayName: o.displayName || "", guildTag: o.guildTag || "", guildColor: o.guildColor || "", trackStartGlideFired: false, trackFinishGlideFired: false, titleText: o.titleText || "", titleRarity: o.titleRarity || "", nameTag: o.nameTag || "" });
             }
           });
           // Remove opponents no longer listed
@@ -9025,7 +9030,11 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
         return msg.startsAt;
       })(),
       opponents: (msg.opponents || []).map(function(o){
-        return { username: o.username, carId: o.carId, charsTyped: 0, fraction: 0, wpm: 0, finished: false, place: null, displayName: o.displayName || "", guildTag: o.guildTag || "", guildColor: o.guildColor || "", trackStartGlideFired: false, trackFinishGlideFired: false };
+        // titleText/titleRarity were missing from this map while room_joined
+        // above kept them -- so an opponent's title showed in the waiting room
+        // and then vanished the instant the race began, because this rebuilds
+        // the opponent objects from scratch. nameTag was never here at all.
+        return { username: o.username, carId: o.carId, charsTyped: 0, fraction: 0, wpm: 0, finished: false, place: null, displayName: o.displayName || "", guildTag: o.guildTag || "", guildColor: o.guildColor || "", trackStartGlideFired: false, trackFinishGlideFired: false, titleText: o.titleText || "", titleRarity: o.titleRarity || "", nameTag: o.nameTag || "" };
       }),
       lastProgressSentAt: 0,
       placements: [] // filled in as opponent_finished/race_complete arrive
@@ -9065,7 +9074,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
         '<div class="car" id="opponentCar' + i + '" style="left:' + carStartLeft + 'px;' + (oppCarStartTop !== null ? 'top:' + oppCarStartTop + 'px;' : '') + '">' +
           '<div class="car-wind"><div class="streak"></div><div class="streak"></div><div class="streak"></div></div>' +
           carVisualHtml(oppCar) +
-          nameTagHtml(DEFAULT_NAME_TAG, (opp.displayName && opp.displayName.trim()) ? opp.displayName : opp.username,
+          nameTagHtml(opp.nameTag || DEFAULT_NAME_TAG, (opp.displayName && opp.displayName.trim()) ? opp.displayName : opp.username,
               opp.guildTag || null, opp.guildTag ? (GUILD_COLORS[opp.guildColor] || opp.guildColor || "#FFD54F") : null,
               opp.titleText || null, opp.titleRarity || null) +
         '</div>';
@@ -9212,7 +9221,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
           '<div class="car" id="opponentCar' + i + '" style="left:' + carStartLeft + 'px;' + (oppCarStartTop !== null ? 'top:' + oppCarStartTop + 'px;' : '') + '">' +
             '<div class="car-wind"><div class="streak"></div><div class="streak"></div><div class="streak"></div></div>' +
             carVisualHtml(oppCar) +
-            nameTagHtml(DEFAULT_NAME_TAG, (opp.displayName && opp.displayName.trim()) ? opp.displayName : opp.username,
+            nameTagHtml(opp.nameTag || DEFAULT_NAME_TAG, (opp.displayName && opp.displayName.trim()) ? opp.displayName : opp.username,
               opp.guildTag || null, opp.guildTag ? (GUILD_COLORS[opp.guildColor] || opp.guildColor || "#FFD54F") : null,
               opp.titleText || null, opp.titleRarity || null) +
           '</div>' +
