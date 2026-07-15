@@ -3117,7 +3117,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
   // NOTE: "Ascended" is still blocked here. Cars allow it; items don't. That
   // inconsistency predates this change and wasn't part of the request — drop
   // it from this list too if you want items to match cars exactly.
-  var ITEM_UNLISTABLE_RARITIES = ["Admin", "Exclusive", "Achievement"];
+  var ITEM_UNLISTABLE_RARITIES = ["Ascended", "Admin", "Exclusive", "Achievement"];
 
   /* ============ AVATARS ============ */
   // Avatars are 4 stacked layers, bottom to top: shoes, pants, shirt, head.
@@ -3833,6 +3833,41 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
       return "Display name needs at least one visible character.";
 
     return null;
+  }
+
+  var GUILD_DESC_MAX = 300;
+
+  // Mirrors guildDescriptionError() in src/storageRoutes.js. The server is the
+  // authority -- this is here so the textarea can complain immediately instead
+  // of after a round trip. Emoji, accents and punctuation are all fine; what's
+  // rejected is the invisible/direction-flipping stuff, which on a public
+  // guild page mangles the layout around it.
+  //
+  // Unlike display names, descriptions are NOT script-restricted. Mixing
+  // scripts in an identity is how impersonation works; mixing them in prose is
+  // just bilingualism.
+  function guildDescriptionError(desc){
+    if(!desc) return null;
+    if(Array.from(desc).length > GUILD_DESC_MAX)
+      return "Description must be " + GUILD_DESC_MAX + " characters or fewer.";
+    if(NAME_INVISIBLE.test(desc))
+      return "Description can't contain invisible or text-direction characters.";
+    if(NAME_ZALGO.test(desc))
+      return "Description has too many stacked accent marks.";
+    if(containsProfanity(desc))
+      return "That description isn't allowed.";
+    return null;
+  }
+
+  // Renders a guild description under a guild header. Returns "" when there
+  // isn't one, so headers without a description are unchanged.
+  function guildDescriptionHtml(guild){
+    var d = (guild && typeof guild.description === "string") ? guild.description.trim() : "";
+    if(!d) return "";
+    // white-space:pre-wrap keeps the author's line breaks; word-break stops a
+    // single long unbroken string from widening the panel.
+    return '<div style="margin-top:10px;font-size:13px;line-height:1.5;color:var(--text);white-space:pre-wrap;word-break:break-word;">' +
+      escapeHtml(d) + '</div>';
   }
 
   function displayNameFor(acc){ return (acc && acc.displayName && acc.displayName.trim()) ? acc.displayName.trim() : (acc ? acc.username : ""); }
@@ -17447,6 +17482,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
           '</div>' +
           '<div style="font-size:13px;color:var(--muted);">' + (guild.memberUsernames||[]).length + ' / ' + GUILD_MAX_MEMBERS + ' members \u00b7 ' + totalRaces + ' total team race' + (totalRaces===1?'':'s') + '</div>' +
           (guild.closed ? '<div style="font-size:12px;color:var(--red);margin-top:4px;">\uD83D\uDD12 Closed \u2014 not accepting new members</div>' : '') +
+          guildDescriptionHtml(guild) +
         '</div>' +
         '<div class="panel">' +
           '<div style="font-weight:700;font-size:15px;color:var(--text);margin-bottom:10px;">Members</div>' +
@@ -17566,6 +17602,11 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
           '<input id="guildNameInput" maxlength="20" placeholder="e.g. Midnight Racers" style="width:100%;background:var(--panel-2);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:11px 12px;font-size:15px;" />' +
         '</div>' +
         '<div class="field">' +
+          '<label for="guildDescInput">Description (optional, up to ' + GUILD_DESC_MAX + ')</label>' +
+          '<textarea id="guildDescInput" rows="3" placeholder="What\'s your guild about? Emoji welcome \uD83D\uDC3C" style="width:100%;background:var(--panel-2);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:11px 12px;font-size:14px;font-family:inherit;resize:vertical;box-sizing:border-box;"></textarea>' +
+          '<div id="createGuildDescCount" class="hint-text" style="margin-top:4px;margin-bottom:0;text-align:right;">0 / ' + GUILD_DESC_MAX + '</div>' +
+        '</div>' +
+        '<div class="field">' +
           '<label>Color</label>' +
           '<div id="createGuildColorPicker" style="display:flex;gap:10px;flex-wrap:wrap;margin-top:4px;">' + guildColorSwatchesHtml(selectedColor, "create") + '</div>' +
         '</div>' +
@@ -17587,15 +17628,29 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
       });
     });
 
+    var createDescEl = document.getElementById("guildDescInput");
+    if(createDescEl){
+      createDescEl.addEventListener("input", function(){
+        var c = document.getElementById("createGuildDescCount");
+        if(!c) return;
+        var used = Array.from(createDescEl.value).length;
+        c.textContent = used + " / " + GUILD_DESC_MAX;
+        c.style.color = used > GUILD_DESC_MAX ? "var(--red)" : "";
+      });
+    }
+
     document.getElementById("createGuildBtn").addEventListener("click", async function(){
       var errEl = document.getElementById("createGuildError");
-      errEl.textContent = "";
-      var tag = document.getElementById("guildTagInput").value.trim().toUpperCase();
+      errEl.textContent = "";      var tag = document.getElementById("guildTagInput").value.trim().toUpperCase();
       var name = document.getElementById("guildNameInput").value.trim();
+      var descField = document.getElementById("guildDescInput");
+      var desc = descField ? descField.value.trim() : "";
 
       if(!isValidGuildTag(tag)){ errEl.textContent = "Tag must be 2\u20136 letters or numbers only."; return; }
       if(!isValidGuildName(name)){ errEl.textContent = "Name must be 4\u201320 characters."; return; }
       if(containsProfanity(tag) || containsProfanity(name)){ errEl.textContent = "That guild name or tag isn\u2019t allowed."; return; }
+      var createDescErr = guildDescriptionError(desc);
+      if(createDescErr){ errEl.textContent = createDescErr; return; }
 
       var btn = document.getElementById("createGuildBtn");
       btn.disabled = true; btn.textContent = "Checking...";
@@ -17617,6 +17672,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
         var guildId = "g_" + Date.now() + "_" + Math.floor(Math.random()*10000);
         var guild = {
           id: guildId, tag: tag, name: name, color: selectedColor,
+          description: desc,
           leaderUsername: freshAcc.username,
           coLeaderUsernames: [],
           memberUsernames: [freshAcc.username],
@@ -17752,6 +17808,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
           '<button class="small-btn" id="leaveGuildBtn" data-stage="confirm">Leave Guild</button>' +
         '</div>' +
         '<div class="hint-text" style="margin-top:4px;margin-bottom:0;">' + (guild.memberUsernames||[]).length + ' / ' + GUILD_MAX_MEMBERS + ' members</div>' +
+        guildDescriptionHtml(guild) +
         '<div class="guild-progress-wrap">' +
           '<div class="guild-progress-fill" style="width:' + Math.round(100 * (guild.memberUsernames||[]).length / GUILD_MAX_MEMBERS) + '%;background:' + GUILD_COLORS[guild.color] + ';"></div>' +
         '</div>' +
@@ -17795,9 +17852,25 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
             '</div>' +
           '</div>' +
           '<div class="error-text" id="guildEditMsg" style="margin-bottom:10px;"></div>' +
+          '<div style="margin-bottom:14px;">' +
+            '<div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:4px;">' +
+              '<div style="font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--muted);">Description</div>' +
+              '<div id="guildDescCount" style="font-size:11px;color:var(--muted);">' + Array.from(guild.description || "").length + ' / ' + GUILD_DESC_MAX + '</div>' +
+            '</div>' +
+            '<textarea id="editGuildDesc" rows="3" placeholder="What\'s your guild about? Emoji welcome \uD83D\uDC3C" style="width:100%;background:var(--panel-2);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:9px 12px;font-size:13px;font-family:inherit;resize:vertical;box-sizing:border-box;">' + escapeHtml(guild.description || "") + '</textarea>' +
+            '<div class="hint-text" style="margin-top:4px;margin-bottom:0;">Shown on your guild page. Saved with the Save button above.</div>' +
+          '</div>' +
           '<div class="garage-title" style="color:var(--text);font-size:15px;margin-bottom:8px;">Guild Color</div>' +
           '<div id="guildColorPicker" style="display:flex;gap:10px;flex-wrap:wrap;">' + guildColorSwatchesHtml(guild.color, "edit") + '</div>' +
           '<div class="error-text" id="guildColorMsg" style="margin-top:8px;"></div>' +
+          // Deleting is the LEADER's call alone -- co-leaders don't get this,
+          // and the server enforces that independently of this panel.
+          '<div style="border-top:1px solid var(--line);margin-top:18px;padding-top:14px;">' +
+            '<div class="garage-title" style="color:var(--red);font-size:15px;margin-bottom:4px;">Delete Guild</div>' +
+            '<div class="hint-text" style="margin-top:0;margin-bottom:10px;">Permanently deletes [' + escapeHtml(guild.tag) + '] and removes all ' + (guild.memberUsernames||[]).length + ' member' + ((guild.memberUsernames||[]).length === 1 ? '' : 's') + ' from it. Members keep their own stats and coins. This can\'t be undone.</div>' +
+            '<button class="small-btn" id="deleteGuildBtn" data-stage="confirm" style="color:var(--red);border-color:var(--red);">Delete Guild</button>' +
+            '<div class="error-text" id="guildDeleteMsg" style="margin-top:8px;"></div>' +
+          '</div>' +
         '</div>'
       : '') +
 
@@ -17903,15 +17976,114 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
         else { btn.disabled = false; }
       });
 
-      // Save name + tag edit
+      // Live character counter for the description. Counts code points, so a
+      // multi-byte emoji costs the author one character, not two.
+      var descEl = document.getElementById("editGuildDesc");
+      if(descEl){
+        descEl.addEventListener("input", function(){
+          var countEl = document.getElementById("guildDescCount");
+          if(!countEl) return;
+          var used = Array.from(descEl.value).length;
+          countEl.textContent = used + " / " + GUILD_DESC_MAX;
+          countEl.style.color = used > GUILD_DESC_MAX ? "var(--red)" : "var(--muted)";
+        });
+      }
+
+      // Delete guild -- leader only. The server independently verifies the
+      // caller is the leader, so this button can't be the only thing standing
+      // between a co-leader (or anyone else) and deleting the guild.
+      var delBtn = document.getElementById("deleteGuildBtn");
+      if(delBtn){
+        delBtn.addEventListener("click", async function(){
+          var dmsg = document.getElementById("guildDeleteMsg");
+          if(delBtn.getAttribute("data-stage") === "confirm"){
+            delBtn.setAttribute("data-stage", "armed");
+            delBtn.textContent = "Click again to permanently delete";
+            setTimeout(function(){
+              if(delBtn && delBtn.getAttribute("data-stage") === "armed"){
+                delBtn.setAttribute("data-stage", "confirm");
+                delBtn.textContent = "Delete Guild";
+              }
+            }, 4000);
+            return;
+          }
+          delBtn.disabled = true;
+          delBtn.textContent = "Deleting\u2026";
+          dmsg.style.color = "var(--red)";
+          dmsg.textContent = "";
+          try{
+            var freshGuild = await fetchGuild(guild.id);
+            if(!freshGuild){ dmsg.textContent = "Guild not found \u2014 it may already be gone."; delBtn.disabled = false; delBtn.textContent = "Delete Guild"; return; }
+
+            // Clear each member's guild fields BEFORE removing the guild
+            // record. If this ran after, a failure partway would leave players
+            // pointing at a guild that no longer exists -- their tag would
+            // show on the leaderboard and race screens with nothing behind it,
+            // and they couldn't join another guild because they'd still look
+            // like they were in one.
+            var memberNames = (freshGuild.memberUsernames || []).slice();
+            var stranded = [];
+            for(var mi = 0; mi < memberNames.length; mi++){
+              try{
+                var mres = await getAccount(memberNames[mi]);
+                if(mres.ok && mres.account && mres.account.guildId === freshGuild.id){
+                  mres.account.guildId = null;
+                  mres.account.guildTag = "";
+                  mres.account.guildColor = "";
+                  mres.account.guildStats = null;
+                  var saved = await saveAccount(mres.account);
+                  if(!saved.ok) stranded.push(memberNames[mi]);
+                  if(state.user && mres.account.username.toLowerCase() === state.user.username.toLowerCase()) state.user = mres.account;
+                }
+              }catch(e2){ stranded.push(memberNames[mi]); }
+            }
+
+            if(stranded.length){
+              // Stop rather than delete. A guild that still exists with a few
+              // members detached is recoverable; a deleted guild with members
+              // still pointing at it is not.
+              dmsg.textContent = "Couldn\u2019t update " + stranded.length + " member" + (stranded.length===1?"":"s") + " (" + escapeHtml(stranded.slice(0,3).join(", ")) + "). Nothing was deleted \u2014 try again.";
+              delBtn.disabled = false;
+              delBtn.setAttribute("data-stage", "confirm");
+              delBtn.textContent = "Delete Guild";
+              return;
+            }
+
+            var delRes = await deleteGuildRecord(freshGuild.id);
+            if(!delRes.ok){
+              dmsg.textContent = "Couldn\u2019t delete: " + (delRes.error || "unknown error");
+              delBtn.disabled = false;
+              delBtn.setAttribute("data-stage", "confirm");
+              delBtn.textContent = "Delete Guild";
+              return;
+            }
+
+            state.userGuild = null;
+            await refreshUserGuildCache();
+            renderGuilds();
+          }catch(e){
+            dmsg.textContent = "Unexpected error: " + ((e&&e.message)?e.message:String(e));
+            delBtn.disabled = false;
+            delBtn.setAttribute("data-stage", "confirm");
+            delBtn.textContent = "Delete Guild";
+          }
+        });
+      }
+
+      // Save name + tag + description
       document.getElementById("saveGuildEditBtn").addEventListener("click", async function(){
         var msgEl = document.getElementById("guildEditMsg");
         msgEl.style.color = "var(--red)";
         var newName = document.getElementById("editGuildName").value.trim();
         var newTag = document.getElementById("editGuildTag").value.trim().toUpperCase();
+        var newDesc = document.getElementById("editGuildDesc").value.trim();
         if(!newName){ msgEl.textContent = "Enter a guild name."; return; }
         if(!isValidGuildTag(newTag)){ msgEl.textContent = "Tag must be 2-6 letters/numbers."; return; }
         if(containsProfanity(newTag) || containsProfanity(newName)){ msgEl.textContent = "That guild name or tag isn\u2019t allowed."; return; }
+        // Covers length, invisible/direction characters and automod. The
+        // server re-checks all of it; this is just for a quick, clear error.
+        var descErr = guildDescriptionError(newDesc);
+        if(descErr){ msgEl.textContent = descErr; return; }
         // Check for duplicate tag/name (allow current guild to keep its own)
         var allGuildsForRename = await fetchAllGuilds();
         var renameTagTaken = allGuildsForRename.some(function(g){ return g.id !== guild.id && g.tag && g.tag.toUpperCase() === newTag.toUpperCase(); });
@@ -17922,6 +18094,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
         if(!freshGuild){ msgEl.textContent = "Guild not found."; return; }
         freshGuild.name = newName;
         freshGuild.tag = newTag;
+        freshGuild.description = newDesc;
         var res = await saveGuild(freshGuild);
         if(res.ok){
           state.userGuild = freshGuild;
