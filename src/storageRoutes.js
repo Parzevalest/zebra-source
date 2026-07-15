@@ -89,6 +89,12 @@ async function cascadeBanAccountsForIp(ip) {
       try {
         const acc = JSON.parse(row.value);
         if (acc.isBanned) continue;
+        // An admin has explicitly cleared this player before. Don't sweep
+        // them back up just because someone else on their network (a
+        // housemate, dorm, shared carrier IP) gets caught later -- that's
+        // the exact false positive the exemption exists to prevent. Their
+        // own device tripping the anticheat still bans them normally.
+        if (acc.ipBanExempt) continue;
         acc.isBanned = true;
         acc.bannedViaIp = true;
         await store.set("system", row.key, JSON.stringify(acc), true);
@@ -226,7 +232,12 @@ router.post("/login", security.rateLimit({
     // is logging in from an IP that's already banned, mark it banned too
     // -- this is what makes the IP ban actually stick to every account
     // that uses it, not just the one it was originally issued for.
-    if (!acc.isBanned && await isIpBanned(clientIp)) {
+    //
+    // ipBanExempt is set when an admin explicitly unbans someone. Without
+    // this check, that unban silently undid itself on their very next
+    // login: the IP record still existed, so they were immediately
+    // re-banned and it looked like the anticheat had done it.
+    if (!acc.isBanned && !acc.ipBanExempt && await isIpBanned(clientIp)) {
       acc.isBanned = true;
       acc.bannedViaIp = true;
     }
@@ -290,7 +301,10 @@ router.get("/session", async (req, res) => {
   try {
     const acc = JSON.parse(result.value);
 
-    if (!acc.isBanned && await isIpBanned(req.ip)) {
+    // Same exemption as /login -- an admin-unbanned player must not get
+    // silently re-banned just by refreshing the page from an IP whose ban
+    // record still exists.
+    if (!acc.isBanned && !acc.ipBanExempt && await isIpBanned(req.ip)) {
       acc.isBanned = true;
       acc.bannedViaIp = true;
       await store.set("system", "account:" + session.username, JSON.stringify(acc), true);
@@ -634,6 +648,12 @@ const SERVER_OWNED_ACCOUNT_FIELDS = [
   "incomingFriendRequests",
   "outgoingFriendRequests",
   "pendingCoinNotifications",
+  // Set when an admin unbans someone. It must survive a stale client save --
+  // if a background save could quietly drop it, the unban would come undone
+  // again the next time the player's IP was checked.
+  "ipBanExempt",
+  "unbannedAt",
+  "unbannedBy",
 ];
 
 // Contested fields are ones BOTH sides legitimately change: the player
@@ -1078,6 +1098,63 @@ router.post("/ban", async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// Completely unbans one player, and makes it STICK.
+//
+// The old flow only deleted one ban record and cleared the account flag,
+// which meant an unban routinely undid itself:
+//   * the ipban_<ip> record survived, so the very next login re-banned the
+//     account (see the IP check in /login) -- "the anticheat banned them again"
+//   * the ban_<fingerprint> record survived, so login was refused outright
+//   * the old client sent lastKnownIp, which is the player's MOST RECENT ip,
+//     not necessarily the one they were actually banned from
+//
+// This does all of it in one server-side action, and sets ipBanExempt so a
+// still-banned IP (e.g. a housemate running a bot) can't sweep them back up.
+// Deliberately scoped: exemption only stops IP-CASCADE re-bans. If this
+// player's own device trips the anticheat's hard signals later (synthetic
+// keystrokes etc.), they get banned again on their own behaviour, as they
+// should -- an unban is a second chance, not immunity.
+router.post("/unban-player", async (req, res) => {
+  const session = await getSession(req);
+  if (!session || !session.isAdmin) return res.status(403).json({ error: "forbidden" });
+  const username = String((req.body && req.body.username) || "").trim();
+  if (!username) return res.status(400).json({ error: "missing_username" });
+
+  try {
+    const acc = await loadAccount(username);
+    if (!acc) return res.status(404).json({ error: "account_not_found" });
+
+    const cleared = { ipBans: [], deviceBans: [] };
+
+    // Drop this account's device ban, if it has one.
+    if (acc.deviceFingerprint) {
+      try {
+        await store.del("system", "ban_" + acc.deviceFingerprint, true);
+        cleared.deviceBans.push(acc.deviceFingerprintShort || acc.deviceFingerprint);
+      } catch (e) {}
+    }
+
+    // Optionally lift the IP ban too. Off by default: the IP may still be
+    // hosting the bot that triggered it, and lifting it would let that bot
+    // straight back in. The exemption below is what protects THIS player.
+    if (req.body && req.body.alsoLiftIpBan === true && acc.lastKnownIp) {
+      try {
+        await store.del("system", "ipban_" + acc.lastKnownIp, true);
+        cleared.ipBans.push(acc.lastKnownIp);
+      } catch (e) {}
+    }
+
+    acc.isBanned = false;
+    acc.bannedViaIp = false;
+    acc.ipBanExempt = true;
+    acc.unbannedAt = Date.now();
+    acc.unbannedBy = session.username || "admin";
+    await storeAccount(acc);
+
+    res.json({ ok: true, cleared });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 router.post("/unban", async (req, res) => {
   const session = await getSession(req);
   if (!session || !session.isAdmin) return res.status(403).json({ error: "forbidden" });
@@ -1114,6 +1191,25 @@ router.post("/ip-ban", async (req, res) => {
   try {
     const data = JSON.stringify({ ip, username: username || null, banned_at: Date.now() });
     await store.set("system", "ipban_" + ip, data, true);
+
+    // A deliberate admin IP-ban is the most recent decision an admin has
+    // made about this address, so it overrides any earlier unban exemption
+    // on accounts using it -- otherwise someone unbanned once could never
+    // be IP-banned again. (The anticheat's automatic cascade does NOT do
+    // this: an auto-ban triggered by someone else on a shared IP shouldn't
+    // silently undo an admin's considered decision.)
+    try {
+      const matches = await store.findAccountsByLastKnownIp(ip);
+      for (const row of matches) {
+        try {
+          const acc = JSON.parse(row.value);
+          if (!acc.ipBanExempt) continue;
+          delete acc.ipBanExempt;
+          await store.set("system", row.key, JSON.stringify(acc), true);
+        } catch (e) {}
+      }
+    } catch (e) {}
+
     const cascadedUsernames = await cascadeBanAccountsForIp(ip);
     res.json({ banned: true, cascadedUsernames });
   } catch (e) { res.status(500).json({ error: e.message }); }
