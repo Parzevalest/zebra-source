@@ -782,23 +782,37 @@ router.delete("/kv/:key", async (req, res) => {
 //
 // Redaction is deliberately identical to GET /kv/:key. Bulk access must not be
 // a way around the per-key rules -- same fields stripped, same conditions.
-router.get("/accounts-bulk", async (req, res) => {
+//
+// The prefix is restricted to LISTABLE_SHARED_PREFIXES (the same allowlist
+// kv-list uses), so this can't be turned into a way to dump session tokens or
+// ban records by asking for a different prefix.
+async function bulkRead(req, res, prefix) {
   const session = await getSession(req);
   if (!session) return res.status(401).json({ error: "authentication required" });
 
+  if (!isListableSharedPrefix(prefix)) {
+    return res.status(403).json({ error: "forbidden" });
+  }
+
   try {
-    // Resolved ONCE rather than per account. The per-key route re-checks this
-    // on every request, which is fine for one key and would be 500 lookups here.
+    // Resolved ONCE rather than per record. The per-key route re-checks this on
+    // every request, which is fine for one key and would be 500 lookups here.
     const privileged = await isRequesterAdminOrModerator(session);
     const me = (session.username || "").toLowerCase();
 
-    const rows = await store.listEntries("account:");
-    const accounts = [];
+    const rows = await store.listEntries(prefix);
+    const out = [];
 
     for (const row of rows) {
+      // Only account records carry anything private. Guilds are public data --
+      // name, tag, colour, member list -- and are returned as stored.
+      if (!isAccountKey(row.key)) {
+        out.push({ key: row.key, value: row.value });
+        continue;
+      }
       const owner = row.key.slice("account:".length).toLowerCase();
       if (privileged || owner === me) {
-        accounts.push({ key: row.key, value: row.value });
+        out.push({ key: row.key, value: row.value });
         continue;
       }
       try {
@@ -807,7 +821,7 @@ router.get("/accounts-bulk", async (req, res) => {
         delete acc.lastKnownIp;
         delete acc.deviceFingerprint;
         delete acc.deviceFingerprintShort;
-        accounts.push({ key: row.key, value: JSON.stringify(acc) });
+        out.push({ key: row.key, value: JSON.stringify(acc) });
       } catch (e) {
         // Unparseable record. The per-key route falls through and returns it
         // as-is; here we skip it. A row that isn't JSON can't be redacted, and
@@ -816,11 +830,21 @@ router.get("/accounts-bulk", async (req, res) => {
       }
     }
 
-    res.json({ accounts });
+    res.json({ accounts: out, records: out });
   } catch (e) {
-    console.error("[accounts-bulk] error:", e.message);
+    console.error("[bulk] error:", e.message);
     res.status(500).json({ error: e.message });
   }
+}
+
+// Generic: /api/bulk?prefix=guild:
+router.get("/bulk", async (req, res) => {
+  await bulkRead(req, res, String(req.query.prefix || "account:"));
+});
+
+// Kept so a client cached from the previous deploy keeps working.
+router.get("/accounts-bulk", async (req, res) => {
+  await bulkRead(req, res, "account:");
 });
 
 router.get("/kv-list", async (req, res) => {
