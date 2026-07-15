@@ -56,11 +56,42 @@ app.get("/health", (req, res) => {
   res.json({ ok: true, time: Date.now() });
 });
 
-// Serve static files from public/
-app.use(express.static(path.join(__dirname, "..", "public")));
+// Serve static files from public/.
+//
+// Cache policy matters here, and getting it wrong is what made a deploy look
+// broken: Cloudflare (and the browser) held an old copy of /garage from before
+// a deploy while / served the new one, so the same site showed two different
+// versions depending on the URL.
+//
+// build.js emits content-hashed filenames (game.<hash>.js, style.<hash>.css).
+// The hash changes whenever the contents change, so those files can be cached
+// essentially forever -- a new deploy produces a new filename, which no cache
+// has ever seen. "immutable" also tells browsers not to bother revalidating.
+app.use(express.static(path.join(__dirname, "..", "public"), {
+  setHeaders: (res, filePath) => {
+    // Only fingerprinted assets get the aggressive policy -- matching the
+    // 10-hex-char hash build.js inserts. Anything else falls through to the
+    // conservative default below.
+    if (/\.[0-9a-f]{10}\.(js|css)$/.test(filePath)) {
+      res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+    } else {
+      // Un-hashed files (favicon, logo, background...) can change under a
+      // fixed name, so they must revalidate rather than be trusted blindly.
+      res.setHeader("Cache-Control", "public, max-age=0, must-revalidate");
+    }
+  }
+}));
 
-// Catch-all: serve the SPA for all non-API routes
+// Catch-all: serve the SPA for all non-API routes.
+//
+// "no-cache" is the important part, and it does NOT mean "don't store it" --
+// it means "always revalidate before using". Caches may still keep a copy and
+// the ETag still produces cheap 304s when nothing changed, so this costs
+// almost nothing. What it prevents is a cache serving a stale page after a
+// deploy, which is exactly what happened. This one line is why HTML no longer
+// needs a manual purge on every commit.
 app.use((req, res) => {
+  res.setHeader("Cache-Control", "no-cache");
   res.sendFile(path.join(__dirname, "..", "public", "zebra_type.html"));
 });
 
