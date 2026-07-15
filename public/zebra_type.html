@@ -13939,6 +13939,9 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
             (acc.chargebackFlag ?
               '<div style="font-size:13px;color:var(--red);margin-top:8px;padding-top:8px;border-top:1px solid var(--line);">\u26A0\uFE0F Chargeback on record (' + escapeHtml(acc.chargebackReason || "dispute") + ')' + (acc.chargebackAt ? ' \u2014 ' + new Date(acc.chargebackAt).toLocaleString() : '') + '. Premium was auto-revoked.</div>'
             : '') +
+            (acc.ipBanExempt ?
+              '<div style="font-size:13px;color:var(--green);margin-top:8px;padding-top:8px;border-top:1px solid var(--line);">\u2705 Unban protected' + (acc.unbannedAt ? ' \u2014 ' + new Date(acc.unbannedAt).toLocaleString() : '') + (acc.unbannedBy ? ' by ' + escapeHtml(acc.unbannedBy) : '') + '.<br><span style="color:var(--muted);">Won\u2019t be re-banned by an IP cascade. Their own anticheat detections still apply.</span></div>'
+            : '') +
           '</div>'
         : '') +
 
@@ -14888,20 +14891,34 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
       });
       var unbanBtn = document.getElementById("unbanBtn");
       if(unbanBtn) unbanBtn.addEventListener("click", async function(){
-        var wasBannedViaIp = acc.bannedViaIp;
-        if(wasBannedViaIp && acc.lastKnownIp){
-          try{
-            await fetch(SERVER_URL + "/api/ip-unban", {
-              method: "POST",
-              headers: { "Content-Type": "application/json", "x-session-token": currentToken||"" },
-              body: JSON.stringify({ ip: acc.lastKnownIp })
-            });
-          }catch(e){}
+        unbanBtn.disabled = true;
+        unbanBtn.textContent = "Unbanning...";
+        try{
+          // One server-side action clears every path that used to quietly
+          // re-ban them: the account flag, their device ban record, and the
+          // IP-cascade (via an exemption). The old version only removed the
+          // ip ban for lastKnownIp -- which often wasn't even the IP they
+          // were banned from -- so the unban regularly undid itself.
+          var r = await fetch(SERVER_URL + "/api/unban-player", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "x-session-token": currentToken||"" },
+            body: JSON.stringify({ username: acc.username })
+          });
+          if(!r.ok){
+            unbanBtn.disabled = false;
+            unbanBtn.textContent = "Unban";
+            alert("Couldn't unban (status " + r.status + ").");
+            return;
+          }
+          acc.isBanned = false;
+          acc.bannedViaIp = false;
+          acc.ipBanExempt = true;
+          renderPlayerDetail(acc, allCustomCars);
+        }catch(e){
+          unbanBtn.disabled = false;
+          unbanBtn.textContent = "Unban";
+          alert("Couldn't unban: " + ((e&&e.message)?e.message:String(e)));
         }
-        acc.isBanned = false;
-        acc.bannedViaIp = false;
-        var ok = await persist(acc);
-        if(ok) renderPlayerDetail(acc, allCustomCars);
       });
     }
 
