@@ -8,6 +8,67 @@ const router = express.Router();
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 const CHALLENGE_TTL_MS = 2 * 60 * 1000;         // 2 minutes
 
+// ── Reserved internal namespace ─────────────────────────────────────────────
+//
+// SharedKV holds two completely different kinds of thing in one collection:
+// real game data (accounts, guilds, catalogs) AND the server's own security
+// machinery (session tokens, login challenges, ban records, Stripe mappings,
+// the admin credential). The generic /kv routes below were built for the
+// first kind and had no idea the second kind was sitting in the same place.
+//
+// That was exploitable in every direction, with no account needed for some:
+//   READ   GET /api/kv/admin_account?shared=true   -> the super-admin
+//          passwordHash, which is all /admin-login actually verifies.
+//   LIST   GET /api/kv-list?prefix=session_&shared=true -> every live session
+//          token (the key IS the token) -> log in as anyone, including admin.
+//   WRITE  POST /api/kv/session_<mytoken> {shared:true} -> forge yourself an
+//          admin session out of thin air.
+//   DELETE DELETE /api/kv/ipban_<myip>?shared=true -> unban yourself.
+//
+// The fix is to treat this namespace as server-only: these keys are reachable
+// through the server's own helpers (sessionGet, isIpBanned, /admin-login...)
+// but never through the generic key-value API, no matter who is asking.
+// Deliberately NOT a Set of exact keys -- the whole problem with
+// ADMIN_ONLY_SHARED_KEYS was that it listed catalog names and knew nothing
+// about session_<token>, where the key is unpredictable by design.
+const RESERVED_KEY_PREFIXES = [
+  "session_",          // key is the auth token itself
+  "challenge_",        // login challenge nonces
+  "ipban_",            // IP ban records
+  "ban_",              // device-fingerprint ban records
+  "stripe_customer_",  // stripe customer -> username mapping
+  "gift_pi_",          // gift payment-intent -> recipient mapping
+];
+
+// Verified against the live client: the only literal keys it reads or writes
+// are catalogs (custom_cars, race_passages, site_maintenance, ...), plus the
+// "account:" and "guild:" prefixes. Nothing legitimate begins with any of the
+// above, so this guard is invisible to normal play.
+function isReservedKey(key) {
+  if (typeof key !== "string") return false;
+  return RESERVED_KEY_PREFIXES.some((p) => key.startsWith(p));
+}
+
+// admin_account is handled separately rather than via isReservedKey: the
+// client genuinely needs to read it to answer "has an admin been claimed
+// yet?" and to show the right screen. What it must NOT receive is the
+// passwordHash -- see the redaction in GET /kv/:key.
+const ADMIN_ACCOUNT_KEY = "admin_account";
+
+// Shared LISTING is far more dangerous than a shared read, because the caller
+// doesn't need to know a key to get it back -- and db.js's list() ignores the
+// owner entirely when shared:true, so it returns everything that matches.
+// The old guard only blocked the literal prefix "account:", which meant
+// prefix="acc" walked straight past it, and prefix="" compiled to /^/ and
+// matched every key in the collection. An allowlist can't be sidestepped that
+// way: these are the only two prefixes the client ever lists.
+const LISTABLE_SHARED_PREFIXES = ["account:", "guild:"];
+
+function isListableSharedPrefix(prefix) {
+  if (typeof prefix !== "string" || prefix === "") return false;
+  return LISTABLE_SHARED_PREFIXES.some((p) => prefix.startsWith(p));
+}
+
 // ── MongoDB Session + Challenge Helpers ──────────────────────────
 
 async function sessionSet(token, username, isAdmin) {
@@ -323,12 +384,34 @@ router.get("/kv/:key", async (req, res) => {
   const { key } = req.params;
   const shared = req.query.shared === "true";
   const session = await getSession(req);
-  
+
+  // Server-only machinery -- never readable through this route by anyone,
+  // admins included. Nothing legitimate asks for these (see
+  // RESERVED_KEY_PREFIXES); the server reaches them via its own helpers.
+  if (isReservedKey(key)) return res.status(403).json({ error: "forbidden" });
+
   if (isAccountKey(key) && !session) return res.status(403).json({ error: "forbidden" });
   const owner = session ? session.username : "anonymous";
   
   const result = await store.get(owner, key, shared);
   if (!result) return res.status(404).json({ error: "not found" });
+
+  // The admin credential. The client legitimately reads this key to find out
+  // whether an admin account exists yet, so blocking it outright would break
+  // the admin screen -- but it must never hand out the hash. /admin-login
+  // verifies sha256(passwordHash + nonce), so anyone holding the hash IS the
+  // admin; publishing it to unauthenticated callers made the password
+  // irrelevant. Everything else on the record stays visible.
+  if (key === ADMIN_ACCOUNT_KEY) {
+    const requesterIsAdmin = !!(session && session.isAdmin);
+    if (!requesterIsAdmin) {
+      try {
+        const adminAcc = JSON.parse(result.value);
+        delete adminAcc.passwordHash;
+        return res.json({ key: result.key, value: JSON.stringify(adminAcc), shared: result.shared });
+      } catch (e) { return res.status(403).json({ error: "forbidden" }); }
+    }
+  }
 
   // Reading another player's account is legitimate (public profiles,
   // leaderboards, guild pages all do this) -- but the raw record also
@@ -367,6 +450,17 @@ router.post("/kv/:key", async (req, res) => {
   const session = await getSession(req);
   
   if (typeof req.body.value !== "string") return res.status(400).json({ error: "value must be a string" });
+
+  // Writing here was a straight path from "ordinary player" to "super admin":
+  // POST /api/kv/session_<any token I choose> with {"username":"...",
+  // "isAdmin":1} and the very next request carrying that token was an admin
+  // session, because sessionGet() reads exactly this key. The same applied to
+  // ban_/ipban_ records (unban yourself) and gift_pi_ (grant yourself
+  // premium). ADMIN_ONLY_SHARED_KEYS could never have caught this: it's an
+  // exact-match list of catalog names, and session_<token> is unpredictable
+  // by design. Sessions are created by /login and /admin-login; nothing may
+  // mint one through the generic store.
+  if (isReservedKey(key)) return res.status(403).json({ error: "forbidden" });
   
   if (isAccountKey(key)) {
     if (!session) return res.status(403).json({ error: "forbidden" });
@@ -471,7 +565,19 @@ router.delete("/kv/:key", async (req, res) => {
   const { key } = req.params;
   const shared = req.query.shared === "true";
   const session = await getSession(req);
-  
+
+  // Any logged-in player could DELETE /api/kv/ipban_<their ip>?shared=true to
+  // lift their own IP ban, or ban_<their device hash> to clear an anticheat
+  // ban, or session_<an admin's token> to kick you out. Bans are lifted by
+  // the admin endpoints further down, never through the generic store.
+  if (isReservedKey(key)) return res.status(403).json({ error: "forbidden" });
+
+  // The admin credential must not be deletable by a player either -- dropping
+  // it would reset the site to "unclaimed" and let anyone claim admin.
+  if (key === ADMIN_ACCOUNT_KEY && !(session && session.isAdmin)) {
+    return res.status(403).json({ error: "forbidden" });
+  }
+
   if (isAccountKey(key)) {
     const accountOwner = key.slice("account:".length).toLowerCase();
     if (!session) return res.status(403).json({ error: "forbidden" });
@@ -489,8 +595,23 @@ router.get("/kv-list", async (req, res) => {
   const shared = req.query.shared === "true";
   const prefix = req.query.prefix || "";
   const session = await getSession(req);
-  
-  if (prefix.startsWith("account:") && !session) return res.status(401).json({ error: "authentication required" });
+
+  // Shared listing is allowlisted, not denylisted. The old check --
+  //   if (prefix.startsWith("account:") && !session) -> 401
+  // -- was bypassable by simply asking for less: prefix="acc" skipped it and
+  // still matched every account, and prefix="" became the regex /^/ and
+  // returned the entire collection, session tokens and all.
+  if (shared) {
+    if (!isListableSharedPrefix(prefix)) {
+      return res.status(403).json({ error: "forbidden" });
+    }
+    // Listing players/guilds is a logged-in action. It was already meant to
+    // be (the old guard tried to enforce exactly this and failed).
+    if (!session) return res.status(401).json({ error: "authentication required" });
+  }
+
+  // Private listing needs no allowlist: db.js scopes it to the owner, so a
+  // caller can only ever enumerate their own keys.
   const owner = session ? session.username : "anonymous";
   res.json(await store.list(owner, prefix, shared));
 });
