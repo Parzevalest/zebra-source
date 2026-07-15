@@ -3912,6 +3912,23 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     return await res.json();
   }
 
+  // Every account in ONE request, instead of a kv-list followed by a kv-get
+  // per player. For 500 players that was 501 requests and 501 database
+  // queries each time anyone opened the leaderboard -- and the API allows 600
+  // requests per minute per IP, so opening it twice could rate-limit you.
+  //
+  // Returns the same { key, value } shape shimGet gives, so callers can parse
+  // it identically. The server applies exactly the same redaction as the
+  // per-key route.
+  async function shimAllAccounts(){
+    var headers = {};
+    if(currentToken) headers["x-session-token"] = currentToken;
+    var res = await fetch(SERVER_URL + "/api/accounts-bulk", { headers: headers });
+    if(!res.ok) throw new Error("bulk account load failed: " + res.status);
+    var data = await res.json();
+    return (data && data.accounts) ? data.accounts : [];
+  }
+
   async function shimDelete(key, shared){
     var url = SERVER_URL + "/api/kv/" + encodeURIComponent(key) + "?shared=" + (shared ? "true" : "false");
     var headers = {};
@@ -4051,26 +4068,20 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     try{
       var tcRes = await fetchTitleCatalog().catch(function(){ return []; });
       titleCatalogCache = tcRes || [];
-      var listRes = await shimList("account:", true);
-      if(!listRes || !listRes.keys || !listRes.keys.length) return [];
-      var keys = listRes.keys;
       var seasonCfg = await fetchSeasonConfig();
       var dayCutoff = Date.now() - 24*60*60*1000;
       var rows = [];
 
-      // Fetch all accounts in parallel batches of 20 for speed
-      var BATCH = 20;
-      var allAccounts = [];
-      for(var b = 0; b < keys.length; b += BATCH){
-        var batch = keys.slice(b, b + BATCH);
-        var results = await Promise.all(batch.map(function(key){
-          return shimGet(key, true).catch(function(e){
-            console.warn("[lb] failed to load", key, e && e.message);
-            return null;
-          });
-        }));
-        allAccounts = allAccounts.concat(results);
-      }
+      // One request for every account.
+      //
+      // This was a kv-list followed by a kv-get per player, batched 20 at a
+      // time -- 501 requests and 501 database queries for 500 players, every
+      // time this page opened. The list call had already made the server read
+      // every one of those accounts out of the database just to return their
+      // names; the batches then went back and read them all a second time,
+      // one at a time.
+      var allAccounts = await shimAllAccounts();
+      if(!allAccounts || !allAccounts.length) return [];
 
       for(var i = 0; i < allAccounts.length; i++){
         try{
