@@ -3921,12 +3921,19 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
   // it identically. The server applies exactly the same redaction as the
   // per-key route.
   async function shimAllAccounts(){
+    return await shimBulk("account:");
+  }
+
+  // Every record under an allowlisted prefix in ONE request. The server
+  // restricts the prefix to the same allowlist kv-list uses, so this can only
+  // ever fetch accounts or guilds.
+  async function shimBulk(prefix){
     var headers = {};
     if(currentToken) headers["x-session-token"] = currentToken;
-    var res = await fetch(SERVER_URL + "/api/accounts-bulk", { headers: headers });
-    if(!res.ok) throw new Error("bulk account load failed: " + res.status);
+    var res = await fetch(SERVER_URL + "/api/bulk?prefix=" + encodeURIComponent(prefix), { headers: headers });
+    if(!res.ok) throw new Error("bulk load failed: " + res.status);
     var data = await res.json();
-    return (data && data.accounts) ? data.accounts : [];
+    return (data && (data.records || data.accounts)) || [];
   }
 
   async function shimDelete(key, shared){
@@ -4203,16 +4210,38 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     var guilds = await fetchAllGuilds();
     if(!guilds.length) return [];
 
-    var rows = await Promise.all(guilds.map(async function(g){
+    // Every account, once, as a map -- instead of getAccount(u) per member of
+    // every guild. That was nested N+1: 20 guilds averaging 15 members meant
+    // ~300 separate account requests, and players in two guilds were fetched
+    // twice. Now it's one request total, and member lookups are just map hits.
+    var accountsByName = {};
+    try{
+      var allAccounts = await shimAllAccounts();
+      for(var a = 0; a < allAccounts.length; a++){
+        var rec = allAccounts[a];
+        if(!rec || !rec.value) continue;
+        try{
+          var parsed = JSON.parse(rec.value);
+          var uname = (parsed.username || rec.key.replace(/^account:/, "")).toLowerCase();
+          accountsByName[uname] = parsed;
+        }catch(e){ /* skip unreadable account */ }
+      }
+    }catch(e){
+      // If the bulk read fails there's nothing to total up. Returning the
+      // guilds with zeroed stats would look like real data; better to show
+      // nothing than wrong numbers on a leaderboard.
+      return [];
+    }
+
+    var rows = guilds.map(function(g){
       var usernames = g.memberUsernames || [];
-      var memberResults = await Promise.all(usernames.map(function(u){ return getAccount(u); }));
-      // Exclude banned and suspended members from guild totals — their
-      // races/points shouldn't count toward the guild leaderboard while
-      // they're banned, same as they're excluded from the individual
-      // racing leaderboard.
-      var members = memberResults
-        .filter(function(r){ return r.ok && r.account; })
-        .map(function(r){ return r.account; })
+      var members = usernames
+        .map(function(u){ return accountsByName[String(u).toLowerCase()]; })
+        .filter(function(m){ return !!m; })
+        // Exclude banned and suspended members from guild totals — their
+        // races/points shouldn't count toward the guild leaderboard while
+        // they're banned, same as they're excluded from the individual
+        // racing leaderboard.
         .filter(function(m){ return !m.isBanned && !m.isSuspended; });
 
       var totalTeamRaces = members.reduce(function(sum, m){
@@ -4242,7 +4271,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
         avgWpm: members.length ? Math.round(avgWpmSum / members.length) : 0,
         avgAcc: members.length ? Math.round(avgAccSum / members.length) : 0
       };
-    }));
+    });
 
     rows.sort(function(a,b){ return b.teamPoints - a.teamPoints; });
     return rows;
@@ -5301,14 +5330,17 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
 
   async function fetchAllGuilds(){
     try{
-      var listRes = await shimList(GUILD_KEY_PREFIX, true);
-      if(!listRes || !listRes.keys || !listRes.keys.length) return [];
-      var keys = listRes.keys;
+      // One request for every guild.
+      //
+      // This used to shimList("guild:") and then shimGet each key inside a
+      // `for` loop with an `await` in it -- so 20 guilds meant 21 round trips
+      // taken strictly one after another, each waiting for the last. Not even
+      // parallel. That was most of the wait on the guilds page.
+      var records = await shimBulk(GUILD_KEY_PREFIX);
       var guilds = [];
-      for(var i=0;i<keys.length;i++){
+      for(var i = 0; i < records.length; i++){
         try{
-          var r = await shimGet(keys[i], true);
-          if(r && r.value) guilds.push(JSON.parse(r.value));
+          if(records[i] && records[i].value) guilds.push(JSON.parse(records[i].value));
         }catch(e){ /* skip unreadable */ }
       }
       return guilds;
