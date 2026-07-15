@@ -1291,8 +1291,33 @@ router.get("/device-bans", async (req, res) => {
   const session = await getSession(req);
   if (!session || !session.isAdmin) return res.status(403).json({ error: "forbidden" });
   try {
-    const rawList = await store.list("system", "ban_", true);
-    const bans = rawList.map(item => JSON.parse(item.value));
+    // This route was written against the old SQLite db.js, whose list()
+    // returned full rows. The MongoDB rewrite changed list() to return
+    // { keys, prefix, shared } -- keys only, and an object rather than an
+    // array. The old code did `rawList.map(item => JSON.parse(item.value))`,
+    // which threw "rawList.map is not a function" on every single request.
+    // The catch below turned that into a 500, and the admin client treats a
+    // non-ok response as { bans: [] } -- so the ban log has been quietly
+    // reporting "No bans on record" ever since the database switch,
+    // regardless of how many bans actually existed.
+    const rows = await store.listEntries("ban_");
+    const bans = [];
+    for (const row of rows) {
+      const hash = row.key.slice("ban_".length);
+      try {
+        const b = JSON.parse(row.value);
+        // Older records may predate short_hash being stored. Derive a stand-in
+        // from the key so the entry still identifies itself in the UI.
+        if (!b.short_hash) b.short_hash = hash.slice(0, 12);
+        if (!b.banned_at && row.updated_at) b.banned_at = row.updated_at;
+        bans.push(b);
+      } catch (e) {
+        // A record we can't parse is still a live ban blocking a real device.
+        // Surfacing it half-known beats hiding it -- hiding bans is the exact
+        // failure this route is being fixed for.
+        bans.push({ short_hash: hash.slice(0, 12), username: null, banned_at: row.updated_at || 0, confidence: null, score: null, signals: ["(ban record could not be read)"] });
+      }
+    }
     res.json({ bans });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -1351,8 +1376,27 @@ router.get("/ip-bans", async (req, res) => {
   const session = await getSession(req);
   if (!session || !session.isAdmin) return res.status(403).json({ error: "forbidden" });
   try {
-    const rawList = await store.list("system", "ipban_", true);
-    const bans = rawList.map(item => JSON.parse(item.value));
+    // Same breakage as /device-bans above -- see the note there. This is the
+    // one that mattered most: every IP ban on the site has been invisible.
+    const rows = await store.listEntries("ipban_");
+    const bans = [];
+    for (const row of rows) {
+      // The address is in the key itself, so even a corrupt value can't hide
+      // which address is blocked. IPv6 addresses contain colons and survive
+      // this slice intact -- the key is "ipban_" + the address verbatim.
+      const ip = row.key.slice("ipban_".length);
+      try {
+        const b = JSON.parse(row.value);
+        if (!b.ip) b.ip = ip;
+        if (!b.banned_at && row.updated_at) b.banned_at = row.updated_at;
+        bans.push(b);
+      } catch (e) {
+        // The client reads a missing `reason` as "manual ban", so an
+        // unreadable record must NOT come back with reason: null -- that
+        // would mislabel it as a decision you made. Say what it is instead.
+        bans.push({ ip, username: null, banned_at: row.updated_at || 0, reason: "unreadable_record" });
+      }
+    }
     res.json({ bans });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });

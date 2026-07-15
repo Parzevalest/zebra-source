@@ -137,5 +137,24 @@ async function findAccountsByLastKnownIp(ip) {
   return rows.map((r) => ({ key: r.key, value: r.value }));
 }
 
+// Returns full records -- key AND value -- for every SharedKV key starting
+// with `prefix`, in a single query.
+//
+// list() above deliberately returns keys only, which is all its callers need.
+// The admin ban screens need the stored JSON as well (who, when, why), and
+// calling get() once per key after a list() would be one database round trip
+// per ban. This is the same one-query shape as findAccountsByLastKnownIp.
+//
+// The prefix is regex-escaped before it goes anywhere near a RegExp. Note
+// that list() does NOT do this -- it interpolates the caller's prefix
+// straight in -- so a prefix containing regex metacharacters silently matches
+// the wrong keys there. Both current callers pass fixed literals ("ipban_",
+// "ban_"), but escaping costs nothing and closes the trap for future ones.
+async function listEntries(prefix) {
+  const escaped = String(prefix || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const rows = await SharedKV.find({ key: { $regex: new RegExp("^" + escaped) } });
+  return rows.map((r) => ({ key: r.key, value: r.value, updated_at: r.updated_at }));
+}
+
 // Export the functions for the router to use
-module.exports = { get, set, del, list, cleanupExpiredAuthKeys, findAccountsByLastKnownIp };
+module.exports = { get, set, del, list, listEntries, cleanupExpiredAuthKeys, findAccountsByLastKnownIp };
