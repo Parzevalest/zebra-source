@@ -3729,6 +3729,89 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
   var memoryStore = {};
 
   function accountKey(username){ return "account:" + username.toLowerCase(); }
+  // Extra coins a premium player earns per race, on top of the normal
+  // base + WPM + placement reward.
+  var PREMIUM_RACE_COIN_BONUS = 10;
+
+  // True only if the pass is BOTH held and unexpired. The expiry test
+  // (hasPremiumPass && premiumExpiresAt && Date.now() > premiumExpiresAt)
+  // was copy-pasted at each call site, so anything that forgot it handed
+  // perks to lapsed subscribers. Everything premium should route through
+  // here. Note this reads the flag the SERVER set via the Stripe webhook --
+  // the client never decides who is premium, it only reflects it.
+  function isPremium(acc){
+    if(!acc || !acc.hasPremiumPass) return false;
+    if(acc.premiumExpiresAt && Date.now() > acc.premiumExpiresAt) return false;
+    return true;
+  }
+
+  // ── Display name rules ──────────────────────────────────────────────
+  // Free:    letters and numbers only (unchanged).
+  // Premium: letters from any ONE script, plus digits, punctuation,
+  //          symbols and emoji.
+  //
+  // What premium does NOT unlock, because these are griefing tools rather
+  // than self-expression:
+  var NAME_MIN = 4, NAME_MAX = 20;
+
+  // Invisible and text-direction characters. A name of zero-width spaces
+  // renders as literally nothing; a bidi override reverses the leaderboard
+  // row it sits in and mangles everything around it.
+  //
+  // NOTE: U+200D (zero-width joiner) is blocked here, which also rejects
+  // compound emoji -- 👨‍💻 and 🏳️‍🌈 are separate emoji glued together with
+  // it. Single emoji (🐼 ⭐ 🔥) are unaffected. Worth knowing if someone
+  // asks why one specific emoji won't take.
+  var NAME_INVISIBLE = /[\u0000-\u001F\u007F-\u009F\u00AD\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2066-\u2069\uFEFF\u180E]/u;
+
+  // "Zalgo" -- stacking combining marks so the text vomits over the rows
+  // above and below. Real accented text never needs 3 in a row.
+  var NAME_ZALGO = /\p{M}{3,}/u;
+
+  // The homoglyph problem. Cyrillic "а" and Latin "a" are the same pixels.
+  // Allowing one name to mix scripts lets anyone build a display name
+  // indistinguishable from yours. A name may use letters from at most one
+  // of these. An all-Cyrillic or all-Greek name is fine -- it's the MIXING
+  // that's the attack.
+  var CONFUSABLE_SCRIPTS = [
+    ["Latin", /\p{Script=Latin}/u],
+    ["Cyrillic", /\p{Script=Cyrillic}/u],
+    ["Greek", /\p{Script=Greek}/u]
+  ];
+
+  // Returns an error string, or null if the name is acceptable.
+  function displayNameError(name, premium){
+    // Count code points, not UTF-16 units -- otherwise one emoji eats two
+    // of the player's 20 characters.
+    var chars = Array.from(name);
+    if(chars.length < NAME_MIN || chars.length > NAME_MAX)
+      return "Display name must be " + NAME_MIN + "\u2013" + NAME_MAX + " characters.";
+
+    if(!premium){
+      return /^[a-zA-Z0-9]+$/.test(name) ? null
+        : "Display name must be letters and numbers only. Premium unlocks accents, symbols and emoji.";
+    }
+
+    if(NAME_INVISIBLE.test(name))
+      return "Display name can't contain invisible or text-direction characters.";
+    if(NAME_ZALGO.test(name))
+      return "Display name has too many stacked accent marks.";
+
+    var found = [];
+    for(var i = 0; i < CONFUSABLE_SCRIPTS.length; i++){
+      if(CONFUSABLE_SCRIPTS[i][1].test(name)) found.push(CONFUSABLE_SCRIPTS[i][0]);
+    }
+    if(found.length > 1)
+      return "Display name can't mix " + found.join(" and ") + " letters \u2014 they look identical and get used to impersonate people.";
+
+    // Emoji and symbols are \p{S}, so this allows a pure-emoji name while
+    // still rejecting one made entirely of marks or spaces.
+    if(!/[\p{L}\p{N}\p{S}]/u.test(name))
+      return "Display name needs at least one visible character.";
+
+    return null;
+  }
+
   function displayNameFor(acc){ return (acc && acc.displayName && acc.displayName.trim()) ? acc.displayName.trim() : (acc ? acc.username : ""); }
 
   function withTimeout(promise, ms, label){
@@ -5840,8 +5923,9 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
       var msgEl = document.getElementById("accountDisplayNameMsg");
       msgEl.style.color = "var(--red)";
       var val = document.getElementById("accountDisplayNameInput").value.trim();
-      if(val && !/^[a-zA-Z0-9]{4,20}$/.test(val)){
-        msgEl.textContent = "Must be 4\u201320 characters, letters and numbers only.";
+      var dnErr = val ? displayNameError(val, isPremium(state.user)) : null;
+      if(dnErr){
+        msgEl.textContent = dnErr;
         return;
       }
       if(containsProfanity(val)){
@@ -7923,8 +8007,13 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
           errEl.textContent = "";
           errEl.style.color = "var(--red)";
           var val = document.getElementById("displayNameInput").value.trim();
-          if(val && !/^[a-zA-Z0-9]{4,20}$/.test(val)){
-            errEl.textContent = "Display name must be 4-20 characters, letters and numbers only.";
+          // res.account, not targetAcc -- targetAcc is a parameter of
+          // renderProfileContent() and doesn't exist in this scope. This
+          // button only renders on your own profile, so res.account is the
+          // saver's own freshly-loaded account.
+          var dnErr2 = val ? displayNameError(val, isPremium(res.account)) : null;
+          if(dnErr2){
+            errEl.textContent = dnErr2;
             return;
           }
           var fresh = await getAccount(targetUsername);
@@ -9796,8 +9885,11 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     acc.racesWithRarity[racedRarity] = (acc.racesWithRarity[racedRarity] || 0) + 1;
 
     // Coins: base 10 per race + 1 per WPM, bonus for placement.
+    // Premium adds a flat +10 on top (isPremium checks expiry, so a lapsed
+    // subscriber stops earning it the moment the pass runs out).
     var placebonus = [50, 25, 10, 0][Math.min(place-1, 3)];
-    var coinsEarned = 10 + Math.floor(wpm) + placebonus;
+    var premiumBonus = isPremium(acc) ? PREMIUM_RACE_COIN_BONUS : 0;
+    var coinsEarned = 10 + Math.floor(wpm) + placebonus + premiumBonus;
     acc.coins = (acc.coins || 0) + coinsEarned;
 
     // Show results immediately — don't wait for achievements/save
