@@ -2,6 +2,7 @@ const express = require("express");
 const crypto = require("crypto");
 const store = require("./db");
 const security = require("./security");
+const moderation = require("./moderation");
 
 const router = express.Router();
 
@@ -168,6 +169,32 @@ async function cascadeBanAccountsForIp(ip) {
 
 function isAccountKey(key) { return key.startsWith("account:"); }
 
+// ── Automod config, cached ──────────────────────────────────────────────────
+// Every signup checks the name, so this must not be a database round trip each
+// time. Cached for a minute, and invalidated immediately when an admin saves
+// the tab (see POST /kv/:key) so edits take effect at once rather than up to a
+// minute later -- the same pattern site_maintenance uses.
+const AUTOMOD_CACHE_MS = 60 * 1000;
+let automodConfigCache = { value: null, cachedAt: 0 };
+
+async function getAutomodConfig() {
+  const now = Date.now();
+  if (automodConfigCache.value && now - automodConfigCache.cachedAt < AUTOMOD_CACHE_MS) {
+    return automodConfigCache.value;
+  }
+  let cfg;
+  try {
+    const row = await store.get("system", "automod_config", true);
+    cfg = row && row.value ? moderation.sanitizeConfig(JSON.parse(row.value)) : moderation.defaultConfig();
+  } catch (e) {
+    // A database hiccup must not become "let every name through". Falling back
+    // to the built-in list keeps moderation on while the problem is elsewhere.
+    cfg = moderation.defaultConfig();
+  }
+  automodConfigCache = { value: cfg, cachedAt: now };
+  return cfg;
+}
+
 // ── Display name rules (server-side authority) ──────────────────────────────
 //
 // The client checks these too, for a decent error message. But the client is
@@ -255,7 +282,17 @@ const ADMIN_ONLY_SHARED_KEYS = new Set([
   "race_tracks", "about_sections", "guild_lb_config",
   "news_posts", "streak_config", "streak_standard_pool", "streak_premium_pool",
   "race_passages", "site_maintenance", "tos_content", "anticheat_timing_flags",
+  "automod_config",
 ]);
+
+// Shared keys only an admin may READ. Almost every shared key is public by
+// design (catalogs, guilds, leaderboard data), so this set is tiny.
+//
+// automod_config is here because publishing your blocklist tells anyone who
+// asks exactly which spellings to avoid -- and, worse, hands them the allow
+// list, which is a map of the words that get a free pass. The client keeps its
+// own rough copy for instant feedback; the real list stays server-side.
+const ADMIN_ONLY_READABLE_KEYS = new Set(["automod_config"]);
 
 // ── Challenge endpoint ────────────────────────────────────────────────────────
 
@@ -277,6 +314,22 @@ router.post("/register", security.rateLimit({
   const clientIp = req.ip;
   if (await isIpBanned(clientIp)) return res.status(403).json({ error: "ip_banned" });
   if (await isFingerprintBanned(fingerprintHash)) return res.status(403).json({ error: "device_banned" });
+
+  // Username shape. This was checked in the browser only, which meant a
+  // request sent straight to this endpoint could claim any username at all --
+  // including one with characters that end up in the account key.
+  if (!/^[a-zA-Z0-9_]{4,20}$/.test(username)) {
+    return res.status(400).json({ error: "invalid_username", message: "Username must be 4-20 characters: letters, numbers, underscore." });
+  }
+
+  // Automod. Same story: the browser check was advisory, so anyone posting
+  // here directly picked whatever name they liked.
+  const automodCfg = await getAutomodConfig();
+  const hit = moderation.check(username, automodCfg);
+  if (hit) {
+    console.log("[automod] blocked registration:", JSON.stringify(username), "-- matched:", hit);
+    return res.status(400).json({ error: "name_not_allowed", message: "That username isn't allowed." });
+  }
 
   const key = "account:" + username.toLowerCase();
   const existing = await store.get("system", key, true);
@@ -446,6 +499,14 @@ router.get("/kv/:key", async (req, res) => {
   // RESERVED_KEY_PREFIXES); the server reaches them via its own helpers.
   if (isReservedKey(key)) return res.status(403).json({ error: "forbidden" });
 
+  // A few shared keys are admin-read-only. Publishing automod_config would
+  // hand out both the blocklist and the allow list -- a ready-made guide to
+  // which spellings slip through.
+  if (ADMIN_ONLY_READABLE_KEYS.has(key)) {
+    const authorized = await isRequesterAdminOrModerator(session);
+    if (!authorized) return res.status(403).json({ error: "forbidden" });
+  }
+
   if (isAccountKey(key) && !session) return res.status(403).json({ error: "forbidden" });
   const owner = session ? session.username : "anonymous";
   
@@ -565,6 +626,11 @@ router.post("/kv/:key", async (req, res) => {
         if (String(incomingName || "") !== String(currentName || "")) {
           const dnErr = displayNameError(incomingName, isPremiumAccount(current));
           if (dnErr) return res.status(400).json({ error: "invalid_display_name", message: dnErr });
+          const dnHit = moderation.check(incomingName, await getAutomodConfig());
+          if (dnHit) {
+            console.log("[automod] blocked display name:", JSON.stringify(incomingName), "-- matched:", dnHit);
+            return res.status(400).json({ error: "name_not_allowed", message: "That display name isn't allowed." });
+          }
         }
 
         if (typeof incoming.bestWpm === "number" && incoming.bestWpm > 350) return res.status(400).json({ error: "invalid_stat", field: "bestWpm" });
@@ -634,6 +700,7 @@ router.post("/kv/:key", async (req, res) => {
   // toggle, rather than letting up to MAINTENANCE_CACHE_MS pass before an
   // admin's own change to their own site actually takes effect.
   if (key === "site_maintenance") maintenanceStatusCache = { value: null, cachedAt: 0 };
+  if (key === "automod_config") automodConfigCache = { value: null, cachedAt: 0 };
   return res.json(genericResult);
 });
 
