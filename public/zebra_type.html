@@ -10299,11 +10299,21 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
         return;
       }
       var hash = await hashPassword(password);
-      if(hash !== res.account.passwordHash){
-        errEl.textContent = "Wrong admin username or password.";
-        return;
-      }
-      // Get a session token so admin API calls work (shimGet/shimList etc.)
+      // The SERVER decides whether this password is right -- /api/admin-login
+      // compares sha256(passwordHash + nonce) against its own stored copy.
+      //
+      // This used to compare `hash !== res.account.passwordHash` right here,
+      // in the browser. That only worked because the server handed the admin
+      // passwordHash to whoever asked for it -- which meant anyone could read
+      // it straight out of GET /api/kv/admin_account?shared=true and log in
+      // as admin without knowing the password at all. The server now redacts
+      // it, so there is nothing to compare against here, and nothing to leak.
+      //
+      // The token request below is also no longer best-effort: if the server
+      // says no, we stop. Previously a failed/unreachable /admin-login still
+      // fell through to state.isAdmin = true and opened the admin screen with
+      // no valid token -- the client granted itself the admin UI purely on
+      // the strength of its own local check.
       try{
         var adminNonce = await getLoginChallenge();
         var adminResponse = await challengeHash(hash, adminNonce);
@@ -10312,12 +10322,17 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ challengeResponse: adminResponse, nonce: adminNonce })
         });
-        if(adminTokenRes.ok){
-          var adminTokenData = await adminTokenRes.json();
-          currentToken = adminTokenData.token;
-          try{ localStorage.setItem("zt_session", currentToken); }catch(e){}
+        if(!adminTokenRes.ok){
+          errEl.textContent = "Wrong admin username or password.";
+          return;
         }
-      }catch(e){}
+        var adminTokenData = await adminTokenRes.json();
+        currentToken = adminTokenData.token;
+        try{ localStorage.setItem("zt_session", currentToken); }catch(e){}
+      }catch(e){
+        errEl.textContent = "Couldn't reach the server. Please try again.";
+        return;
+      }
       state.isAdmin = true;
       state.isSuperAdmin = true;
       state.adminUsername = res.account.username;
