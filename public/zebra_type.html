@@ -3800,14 +3800,21 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     return await res.json();
   }
 
-  async function shimSet(key, value, shared){
+  // `extra` lets callers add fields to the request body -- saveAccount uses it
+  // to send the baseline snapshot the server needs to merge instead of
+  // overwrite. Ignored for every other key.
+  async function shimSet(key, value, shared, extra){
     var url = SERVER_URL + "/api/kv/" + encodeURIComponent(key);
     var headers = { "Content-Type": "application/json" };
     if(currentToken) headers["x-session-token"] = currentToken;
+    var payload = { value: value, shared: !!shared };
+    if(extra && typeof extra === "object"){
+      Object.keys(extra).forEach(function(k){ payload[k] = extra[k]; });
+    }
     var res = await fetch(url, {
       method: "POST",
       headers: headers,
-      body: JSON.stringify({ value: value, shared: !!shared })
+      body: JSON.stringify(payload)
     });
     if(!res.ok) throw new Error("storage set failed: " + res.status);
     return await res.json();
@@ -3855,6 +3862,50 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     return bytes.map(function(b){ return b.toString(16).padStart(2,"0"); }).join("");
   }
 
+  // ── Own-account baseline ──────────────────────────────────────────────────
+  // The whole account object lives in memory here and gets saved in one go.
+  // That copy goes stale the moment ANOTHER player changes something on this
+  // account (accepts a friend request, sends coins, buys a black-market
+  // listing) -- and saving the stale copy used to silently wipe their change.
+  //
+  // So: every time we load our own account we snapshot the fields that both
+  // sides can legitimately change. On save we send that snapshot along, and
+  // the server applies only what WE actually changed relative to it, on top
+  // of whatever the database holds now. See reconcileAccountSelfWrite.
+  var ownAccountBaseline = null;
+
+  function snapshotOwnAccount(acc){
+    if(!acc) return null;
+    function copyMap(m){
+      var out = {};
+      if(m && typeof m === "object") Object.keys(m).forEach(function(k){ out[k] = m[k]; });
+      return out;
+    }
+    function copySlots(o, isMap){
+      var out = {};
+      ["shoes","pants","shirt","head"].forEach(function(s){
+        var v = (o || {})[s];
+        out[s] = isMap ? copyMap(v) : ((v || []).slice());
+      });
+      return out;
+    }
+    return {
+      username: acc.username,
+      coins: acc.coins || 0,
+      ownedCarIds: (acc.ownedCarIds || []).slice(),
+      carQuantities: copyMap(acc.carQuantities),
+      ownedNameTags: (acc.ownedNameTags || []).slice(),
+      ownedTitles: (acc.ownedTitles || []).slice(),
+      ownedAvatarPieces: copySlots(acc.ownedAvatarPieces, false),
+      avatarPieceQuantities: copySlots(acc.avatarPieceQuantities, true)
+    };
+  }
+
+  function isOwnAccount(username){
+    return !!(username && state.user && state.user.username &&
+              String(username).toLowerCase() === String(state.user.username).toLowerCase());
+  }
+
   // Returns {ok:true, account} | {ok:true, account:null} | {ok:false, error}
   async function getAccount(username){
     try{
@@ -3870,6 +3921,12 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
           parsedAcc.guildColor = "";
           shimSet(accountKey(username), JSON.stringify(parsedAcc), true).catch(function(){});
         }
+        // Any fresh read of our own account re-bases the baseline -- this is
+        // what makes the delta the server computes correct, including for the
+        // call sites that deliberately re-fetch before saving.
+        if(!state.user || isOwnAccount(username)){
+          ownAccountBaseline = snapshotOwnAccount(parsedAcc);
+        }
       }
       return { ok:true, account: parsedAcc };
     }catch(e){
@@ -3884,7 +3941,23 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
 
   async function saveAccount(acc){
     try{
-      await shimSet(accountKey(acc.username), JSON.stringify(acc), true);
+      var extra = null;
+      var savingSelf = isOwnAccount(acc && acc.username);
+      if(savingSelf && ownAccountBaseline &&
+         String(ownAccountBaseline.username).toLowerCase() === String(acc.username).toLowerCase()){
+        extra = { baseline: ownAccountBaseline };
+      }
+      var res = await shimSet(accountKey(acc.username), JSON.stringify(acc), true, extra);
+      if(savingSelf){
+        // Re-base from what the server actually stored (our changes merged
+        // with anyone else's), so the next save's delta is measured from the
+        // real database state rather than from our own optimistic copy.
+        var merged = null;
+        if(res && typeof res.merged === "string"){
+          try{ merged = JSON.parse(res.merged); }catch(e){ merged = null; }
+        }
+        ownAccountBaseline = snapshotOwnAccount(merged || acc);
+      }
       return { ok:true };
     }catch(e){
       return { ok:false, error: (e && e.message) ? e.message : String(e) };
@@ -6604,6 +6677,62 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
   // before saving, same caution as the rest of the game's last-write-wins
   // storage — minimizes (but doesn't eliminate) clobbering a concurrent
   // change, since there's no real transaction support here.
+  // ── Cross-account actions go through the server ───────────────────────
+  // Friend requests, coin transfers, and black-market buys all have to
+  // modify a SECOND player's account. A player isn't allowed to write to
+  // anyone's account but their own (the server rejects it with 403 — which
+  // is correct and deliberate: otherwise anyone could rewrite anyone's
+  // coins, items, or ban status). So these actions are performed on the
+  // server, which validates the request and updates both sides itself.
+
+  async function socialPost(path, body){
+    try{
+      var res = await fetch(SERVER_URL + "/api" + path, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-session-token": currentToken || "" },
+        body: JSON.stringify(body || {})
+      });
+      var data = null;
+      try{ data = await res.json(); }catch(e){ data = null; }
+      if(!res.ok) return { ok:false, error: socialErrorText((data && data.error) || ("http_" + res.status), data) };
+      return { ok:true, data: data || {} };
+    }catch(e){
+      return { ok:false, error: "Network error \u2014 please try again." };
+    }
+  }
+
+  // Turns the server's error codes into something a player can actually read.
+  function socialErrorText(code, data){
+    switch(code){
+      case "cannot_friend_self":   return "You can't friend yourself.";
+      case "cannot_send_self":     return "You can't send coins to yourself.";
+      case "recipient_not_found":  return "No player found with that username.";
+      case "already_friends":      return "Already friends.";
+      case "already_sent":         return "Request already sent.";
+      case "no_pending_request":   return "That request is no longer pending.";
+      case "insufficient_coins":   return "You don't have enough coins.";
+      case "below_minimum":        return "Minimum is " + ((data && data.min) || MIN_COINS_TO_SEND) + " coins.";
+      case "listing_gone":         return "That listing is no longer available.";
+      case "listing_stale":        return "The seller no longer has that item.";
+      case "own_listing":          return "That listing is yours.";
+      case "seller_not_found":     return "Seller not found.";
+      case "banned":               return "Your account is banned.";
+      case "rate_limited":         return "You're doing that too quickly \u2014 wait a moment.";
+      case "authentication required": return "Please log in again.";
+      default:                     return "Something went wrong \u2014 please try again.";
+    }
+  }
+
+  // The server just changed our account out from under us, so pull a fresh
+  // copy rather than trusting the now-stale in-memory one.
+  async function refreshOwnAccount(){
+    try{
+      if(!state.user || !state.user.username) return;
+      var r = await getAccount(state.user.username);
+      if(r.ok && r.account) state.user = r.account;
+    }catch(e){ /* non-fatal — next screen load will re-read it anyway */ }
+  }
+
   async function sendFriendRequest(fromAcc, toUsername){
     if(toUsername.toLowerCase() === fromAcc.username.toLowerCase()){
       return { ok:false, error: "You can't friend yourself." };
@@ -6611,99 +6740,42 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     if(isFriendWith(fromAcc, toUsername)) return { ok:false, error: "Already friends." };
     if(hasOutgoingRequestTo(fromAcc, toUsername)) return { ok:false, error: "Request already sent." };
 
-    var targetRes = await getAccount(toUsername);
-    if(!targetRes.ok) return { ok:false, error: targetRes.error };
-    if(!targetRes.account) return { ok:false, error: "No player found with that username." };
-    var targetAcc = targetRes.account;
-
-    // They already sent *you* a request — accept it instead of creating a
-    // duplicate, mirrored pending request in both directions.
-    if(hasIncomingRequestFrom(fromAcc, toUsername)){
-      return await acceptFriendRequest(fromAcc, toUsername);
-    }
-
-    fromAcc.outgoingFriendRequests = fromAcc.outgoingFriendRequests || [];
-    fromAcc.outgoingFriendRequests.push(toUsername);
-    targetAcc.incomingFriendRequests = targetAcc.incomingFriendRequests || [];
-    targetAcc.incomingFriendRequests.push(fromAcc.username);
-
-    var saveFrom = await saveAccount(fromAcc);
-    if(!saveFrom.ok) return { ok:false, error: saveFrom.error };
-    var saveTarget = await saveAccount(targetAcc);
-    if(!saveTarget.ok) return { ok:false, error: saveTarget.error };
+    var r = await socialPost("/friend-request", { toUsername: toUsername });
+    if(!r.ok) return { ok:false, error: r.error };
+    await refreshOwnAccount();
     return { ok:true };
   }
 
-  // Accepts a pending request from `otherUsername` into `acc`'s friend
-  // list. `acc` is whichever account is doing the accepting — this is
-  // called both from the Friends page (accepting someone else's request to
-  // you) and internally by sendFriendRequest (when you request someone who
-  // already requested you, i.e. an instant mutual match).
+  // Accepts a pending request from `otherUsername`. The server verifies the
+  // request actually exists before creating the friendship.
   async function acceptFriendRequest(acc, otherUsername){
-    var otherRes = await getAccount(otherUsername);
-    if(!otherRes.ok) return { ok:false, error: otherRes.error };
-    if(!otherRes.account) return { ok:false, error: "That player no longer exists." };
-    var otherAcc = otherRes.account;
-
-    acc.incomingFriendRequests = (acc.incomingFriendRequests || []).filter(function(u){ return u.toLowerCase() !== otherUsername.toLowerCase(); });
-    acc.outgoingFriendRequests = (acc.outgoingFriendRequests || []).filter(function(u){ return u.toLowerCase() !== otherUsername.toLowerCase(); });
-    acc.friendUsernames = acc.friendUsernames || [];
-    if(!isFriendWith(acc, otherUsername)) acc.friendUsernames.push(otherUsername);
-
-    otherAcc.incomingFriendRequests = (otherAcc.incomingFriendRequests || []).filter(function(u){ return u.toLowerCase() !== acc.username.toLowerCase(); });
-    otherAcc.outgoingFriendRequests = (otherAcc.outgoingFriendRequests || []).filter(function(u){ return u.toLowerCase() !== acc.username.toLowerCase(); });
-    otherAcc.friendUsernames = otherAcc.friendUsernames || [];
-    if(!isFriendWith(otherAcc, acc.username)) otherAcc.friendUsernames.push(acc.username);
-
-    var saveAcc = await saveAccount(acc);
-    if(!saveAcc.ok) return { ok:false, error: saveAcc.error };
-    var saveOther = await saveAccount(otherAcc);
-    if(!saveOther.ok) return { ok:false, error: saveOther.error };
+    var r = await socialPost("/friend-accept", { otherUsername: otherUsername });
+    if(!r.ok) return { ok:false, error: r.error };
+    await refreshOwnAccount();
     return { ok:true };
   }
 
   // Declines an incoming request, or cancels one you sent — same removal
   // on both sides either way, just framed differently to the caller.
   async function removeFriendRequest(acc, otherUsername){
-    var otherRes = await getAccount(otherUsername);
-    if(!otherRes.ok) return { ok:false, error: otherRes.error };
-    var otherAcc = otherRes.account; // may be null if they deleted their account — still clean up our own side below
-
-    acc.incomingFriendRequests = (acc.incomingFriendRequests || []).filter(function(u){ return u.toLowerCase() !== otherUsername.toLowerCase(); });
-    acc.outgoingFriendRequests = (acc.outgoingFriendRequests || []).filter(function(u){ return u.toLowerCase() !== otherUsername.toLowerCase(); });
-    var saveAcc = await saveAccount(acc);
-    if(!saveAcc.ok) return { ok:false, error: saveAcc.error };
-
-    if(otherAcc){
-      otherAcc.incomingFriendRequests = (otherAcc.incomingFriendRequests || []).filter(function(u){ return u.toLowerCase() !== acc.username.toLowerCase(); });
-      otherAcc.outgoingFriendRequests = (otherAcc.outgoingFriendRequests || []).filter(function(u){ return u.toLowerCase() !== acc.username.toLowerCase(); });
-      await saveAccount(otherAcc); // best-effort — our own side is already clean either way
-    }
+    var r = await socialPost("/friend-remove-request", { otherUsername: otherUsername });
+    if(!r.ok) return { ok:false, error: r.error };
+    await refreshOwnAccount();
     return { ok:true };
   }
 
   // Removes an accepted friendship from both sides.
   async function removeFriend(acc, otherUsername){
-    var otherRes = await getAccount(otherUsername);
-    if(!otherRes.ok) return { ok:false, error: otherRes.error };
-    var otherAcc = otherRes.account;
-
-    acc.friendUsernames = (acc.friendUsernames || []).filter(function(u){ return u.toLowerCase() !== otherUsername.toLowerCase(); });
-    var saveAcc = await saveAccount(acc);
-    if(!saveAcc.ok) return { ok:false, error: saveAcc.error };
-
-    if(otherAcc){
-      otherAcc.friendUsernames = (otherAcc.friendUsernames || []).filter(function(u){ return u.toLowerCase() !== acc.username.toLowerCase(); });
-      await saveAccount(otherAcc);
-    }
+    var r = await socialPost("/friend-remove", { otherUsername: otherUsername });
+    if(!r.ok) return { ok:false, error: r.error };
+    await refreshOwnAccount();
     return { ok:true };
   }
 
-  // Transfers coins from `fromAcc` to `toUsername`. Re-fetches the
-  // recipient fresh right before crediting (same last-write-wins caution
-  // as everywhere else). The sender's own balance is checked against
-  // fromAcc as passed in — the caller is expected to have a reasonably
-  // fresh copy (it's the logged-in player's own session state).
+  // Transfers coins from `fromAcc` to `toUsername`. The transfer itself is
+  // performed server-side, which re-reads BOTH balances from the database
+  // and never trusts the amounts the client reports — the checks below are
+  // just fast local feedback so obvious mistakes don't need a round trip.
   async function sendCoinsToPlayer(fromAcc, toUsername, amount){
     if(toUsername.toLowerCase() === fromAcc.username.toLowerCase()){
       return { ok:false, error: "You can't send coins to yourself." };
@@ -6716,32 +6788,9 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
       return { ok:false, error: "You don't have enough coins." };
     }
 
-    var targetRes = await getAccount(toUsername);
-    if(!targetRes.ok) return { ok:false, error: targetRes.error };
-    if(!targetRes.account) return { ok:false, error: "No player found with that username." };
-    var targetAcc = targetRes.account;
-
-    fromAcc.coins = (fromAcc.coins || 0) - amount;
-    targetAcc.coins = (targetAcc.coins || 0) + amount;
-    targetAcc.pendingCoinNotifications = targetAcc.pendingCoinNotifications || [];
-    targetAcc.pendingCoinNotifications.push({
-      id: "coinnotif_" + Date.now() + "_" + Math.floor(Math.random()*100000),
-      fromUsername: fromAcc.username,
-      amount: amount,
-      ts: Date.now()
-    });
-
-    var saveFrom = await saveAccount(fromAcc);
-    if(!saveFrom.ok) return { ok:false, error: saveFrom.error };
-    var saveTarget = await saveAccount(targetAcc);
-    if(!saveTarget.ok){
-      // Best-effort rollback so the sender isn't left short if the credit
-      // side failed to save — not bulletproof against concurrent writes,
-      // but better than silently losing coins.
-      fromAcc.coins = (fromAcc.coins || 0) + amount;
-      await saveAccount(fromAcc);
-      return { ok:false, error: "Couldn't reach the recipient's account: " + saveTarget.error };
-    }
+    var r = await socialPost("/send-coins", { toUsername: toUsername, amount: amount });
+    if(!r.ok) return { ok:false, error: r.error };
+    await refreshOwnAccount();
     return { ok:true };
   }
 
@@ -7068,11 +7117,18 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
       }
       var notif = queue.shift();
       showCoinNotificationModal(notif, function(){
-        // Remove this one notification from the account's persisted list
-        // (re-reading state.user.pendingCoinNotifications fresh in case
-        // something else touched it) and save, then move to the next.
-        state.user.pendingCoinNotifications = (state.user.pendingCoinNotifications || []).filter(function(n){ return n.id !== notif.id; });
-        saveAccount(state.user).then(function(){ showNext(); });
+        // Dismissed server-side. pendingCoinNotifications is server-owned now
+        // (a whole-account save can't touch it), so clearing it locally and
+        // saving would no longer stick -- and that pattern is what was losing
+        // incoming gifts to stale overwrites in the first place.
+        socialPost("/coin-notification-dismiss", { id: notif.id }).then(function(r){
+          if(state.user){
+            state.user.pendingCoinNotifications = (r && r.ok && r.data && r.data.pendingCoinNotifications)
+              ? r.data.pendingCoinNotifications
+              : (state.user.pendingCoinNotifications || []).filter(function(n){ return n.id !== notif.id; });
+          }
+          showNext();
+        });
       });
     }
     showNext();
@@ -16461,6 +16517,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
           '</select>' +
         '</div>' +
         '<div id="browseListingsBox"><div class="center-note">Loading...</div></div>' +
+        '<div class="error-text" id="bmBuyError" style="margin-top:10px;"></div>' +
       '</div>';
 
     attachNavListeners();
@@ -16601,92 +16658,25 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
             var id = btn.getAttribute("data-bm-buy");
             var type = btn.getAttribute("data-bm-type");
             btn.disabled = true; btn.textContent = "Buying...";
-            try{
-              if(type === "car"){
-                // Fetch listings and verify the listing still exists
-                var allCarL = await fetchBlackMarketListings();
-                var listing = allCarL.find(function(l){ return l.id === id; });
-                if(!listing){ btn.textContent = "No longer available"; return; }
-                if(listing.sellerUsername.toLowerCase() === acc.username.toLowerCase()){ btn.textContent = "That\u2019s yours"; return; }
-
-                // Check buyer can afford it
-                var buyerRes = await getAccount(acc.username);
-                if(!buyerRes.ok || !buyerRes.account){ btn.textContent = "Error loading your account"; return; }
-                var buyerAcc = buyerRes.account;
-                if((buyerAcc.coins||0) < listing.price){ btn.textContent = "Not enough coins"; return; }
-
-                // Fetch seller account
-                var sellerRes = await getAccount(listing.sellerUsername);
-                if(!sellerRes.ok || !sellerRes.account){ btn.textContent = "Seller not found"; return; }
-                var sellerAcc = sellerRes.account;
-
-                // Verify seller still has the car (accounting for their other listings of the same car)
-                var otherListingsBySeller = allCarL.filter(function(l){
-                  return l.id !== id &&
-                    l.sellerUsername.toLowerCase() === sellerAcc.username.toLowerCase() &&
-                    l.carId === listing.carId;
-                }).length;
-                if(getCarQuantity(sellerAcc, listing.carId) <= otherListingsBySeller){
-                  btn.textContent = "No longer available";
-                  await saveBlackMarketListings(allCarL.filter(function(l){ return l.id !== id; }));
-                  renderBlackMarket(); return;
-                }
-
-                // Remove listing first (atomic lock), then transfer
-                await saveBlackMarketListings(allCarL.filter(function(l){ return l.id !== id; }));
-                addCarToInventory(buyerAcc, listing.carId, 1);
-                removeCarFromInventory(sellerAcc, listing.carId, 1);
-                buyerAcc.coins = (buyerAcc.coins||0) - listing.price;
-                sellerAcc.coins = (sellerAcc.coins||0) + listing.price;
-                await saveAccount(buyerAcc);
-                await saveAccount(sellerAcc);
-                state.user = buyerAcc;
-
-              } else {
-                // Item buy
-                var allItemL = await fetchBMItemListings();
-                var listing = allItemL.find(function(l){ return l.id === id; });
-                if(!listing){ btn.textContent = "No longer available"; return; }
-                if(listing.sellerUsername.toLowerCase() === acc.username.toLowerCase()){ btn.textContent = "That\u2019s yours"; return; }
-
-                var buyerRes = await getAccount(acc.username);
-                if(!buyerRes.ok || !buyerRes.account){ btn.textContent = "Error loading your account"; return; }
-                var buyerAcc = buyerRes.account;
-                if((buyerAcc.coins||0) < listing.price){ btn.textContent = "Not enough coins"; return; }
-
-                var sellerRes = await getAccount(listing.sellerUsername);
-                if(!sellerRes.ok || !sellerRes.account){ btn.textContent = "Seller not found"; return; }
-                var sellerAcc = sellerRes.account;
-
-                // Remove listing first, then transfer item
-                await saveBMItemListings(allItemL.filter(function(l){ return l.id !== id; }));
-
-                if(listing.itemType === "nameTag"){
-                  buyerAcc.ownedNameTags = buyerAcc.ownedNameTags || [];
-                  if(buyerAcc.ownedNameTags.indexOf(listing.itemImage) === -1) buyerAcc.ownedNameTags.push(listing.itemImage);
-                  sellerAcc.ownedNameTags = (sellerAcc.ownedNameTags||[]).filter(function(t){ return t !== listing.itemImage; });
-                  if(sellerAcc.equippedNameTag === listing.itemImage) sellerAcc.equippedNameTag = null;
-                } else if(listing.itemType === "avatar"){
-                  addAvatarPieceToInventory(buyerAcc, listing.slot, listing.itemId);
-                  removeAvatarPieceFromInventory(sellerAcc, listing.slot, listing.itemId, 1);
-                  if(sellerAcc.equippedAvatar && sellerAcc.equippedAvatar[listing.slot] === listing.itemId) sellerAcc.equippedAvatar[listing.slot] = null;
-                }
-                buyerAcc.coins = (buyerAcc.coins||0) - listing.price;
-                sellerAcc.coins = (sellerAcc.coins||0) + listing.price;
-                await saveAccount(buyerAcc);
-                await saveAccount(sellerAcc);
-                state.user = buyerAcc;
-              }
-              renderBlackMarket();
-            }catch(e){
+            // The whole purchase happens server-side in one call: it re-reads
+            // the listing, both accounts, the price and the seller's stock
+            // from the database, then moves the coins and the item together.
+            // This used to be done here in the browser, which meant the write
+            // to the SELLER's account was rejected (a player can't write to
+            // another player's account) -- the buyer paid, the seller was
+            // never credited, and the item was duplicated rather than moved.
+            var r = await socialPost("/bm-buy", { listingId: id, listingType: type });
+            if(!r.ok){
               btn.disabled = false;
-              btn.textContent = "Error \u2014 try again";
-              // Show more detail so player knows what happened
-              var errMsg = e && e.message ? e.message : String(e);
-              if(errMsg.indexOf("404") !== -1 || errMsg.indexOf("not found") !== -1){
-                btn.textContent = "Server error \u2014 contact admin";
-              }
+              btn.textContent = "Buy";
+              var errBox = document.getElementById("bmBuyError");
+              if(errBox){ errBox.style.color = "var(--red)"; errBox.textContent = r.error; }
+              // Stale/gone listings mean our view is out of date -- reload it.
+              if(r.error.indexOf("no longer") !== -1) renderBlackMarket();
+              return;
             }
+            await refreshOwnAccount();
+            renderBlackMarket();
           });
         });
       }
