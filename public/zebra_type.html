@@ -6351,8 +6351,20 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
           : "You are not able to create an account.";
         return;
       }
+      if(regRes.status === 429){
+        var regRl = await regRes.json().catch(function(){ return {}; });
+        var regRetry = parseInt(regRes.headers.get("Retry-After") || "0", 10);
+        errEl.textContent = (regRl.message || "Too many accounts created from this network recently.") +
+          (regRetry > 0 ? " Try again in about " + Math.max(1, Math.ceil(regRetry / 60)) + " minutes." : "");
+        return;
+      }
       if(!regRes.ok){
-        errEl.textContent = "Couldn\u2019t save account. Try again.";
+        // The server has real reasons and real wording -- an unusable
+        // username, a name the automod rejected, maintenance. Showing
+        // "couldn't save account" instead just leaves people guessing at
+        // what to change.
+        var regErr = await regRes.json().catch(function(){ return {}; });
+        errEl.textContent = regErr.message || regErr.error || ("Couldn\u2019t save account (error " + regRes.status + "). Try again.");
         return;
       }
       var regData = await regRes.json();
@@ -6410,8 +6422,35 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
           : "This account has been banned.";
         return;
       }
+      if(loginRes.status === 429){
+        // Rate limited, or this account is locked after repeated failures.
+        // This used to fall into the catch-all below and report "Couldn't
+        // reach the server" -- which is not just wrong but actively harmful:
+        // it reads as a network glitch, so people hammer retry, and every
+        // retry feeds the same limiter that's blocking them. They dig
+        // themselves deeper while being told to try again.
+        //
+        // The limits are per IP (20 logins / 5 min), so a household, dorm or
+        // school can hit this collectively without anyone doing a thing wrong.
+        var rlData = await loginRes.json().catch(function(){ return {}; });
+        var retryAfter = parseInt(loginRes.headers.get("Retry-After") || "0", 10);
+        var waitMsg = retryAfter > 0
+          ? " Try again in about " + Math.max(1, Math.ceil(retryAfter / 60)) + " minute" + (Math.ceil(retryAfter / 60) === 1 ? "" : "s") + "."
+          : "";
+        errEl.textContent = (rlData.message || "Too many login attempts.") + waitMsg;
+        return;
+      }
+      if(loginRes.status === 503){
+        var maintData = await loginRes.json().catch(function(){ return {}; });
+        errEl.textContent = maintData.message || "The game is down for maintenance right now. Please try again shortly.";
+        return;
+      }
       if(!loginRes.ok){
-        errEl.textContent = "Couldn\u2019t reach the server. Try again.";
+        // Anything else: show what the server actually said rather than
+        // inventing a diagnosis. Only a genuine fetch failure (the catch
+        // block below) means the server couldn't be reached.
+        var errData = await loginRes.json().catch(function(){ return {}; });
+        errEl.textContent = errData.message || errData.error || ("Login failed (error " + loginRes.status + "). Please try again.");
         return;
       }
       var loginData = await loginRes.json();
