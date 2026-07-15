@@ -3094,7 +3094,30 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
   // that's already implicit since none of the wheels' tiers lists include
   // them — nothing extra needed for that part.)
   var UNSELLABLE_RARITIES = ["Exclusive", "Achievement", "Admin"];
+
+  // Quick-selling an ITEM (name tag / avatar piece) to the shop for coins.
+  // Ascended and Unobtainable are here because there's no sensible fixed
+  // price for them — QUICK_SELL_VALUES only goes up to Mythic, so they'd
+  // have no value to pay out anyway.
   var ITEM_UNSELLABLE_RARITIES = ["Ascended", "Unobtainable", "Admin", "Exclusive", "Achievement"];
+
+  // Listing an ITEM on the Black Market. Deliberately SHORTER than the list
+  // above: quick-selling and player-to-player trading are different things.
+  //
+  // Quick sell needs a fixed price the shop can pay, which is why anything
+  // above Mythic can't do it. The Black Market has no such problem — the
+  // seller names their own price, so rarity is irrelevant to whether a trade
+  // can happen. Unobtainable items were blocked here only because this reused
+  // the quick-sell list.
+  //
+  // This now matches how CARS already behave: an Unobtainable car has always
+  // been listable (see canList in the car modal, which uses
+  // UNSELLABLE_RARITIES). Name tags and avatar pieces were the odd ones out.
+  //
+  // NOTE: "Ascended" is still blocked here. Cars allow it; items don't. That
+  // inconsistency predates this change and wasn't part of the request — drop
+  // it from this list too if you want items to match cars exactly.
+  var ITEM_UNLISTABLE_RARITIES = ["Ascended", "Admin", "Exclusive", "Achievement"];
 
   /* ============ AVATARS ============ */
   // Avatars are 4 stacked layers, bottom to top: shoes, pants, shirt, head.
@@ -7839,7 +7862,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     var rarity = entry ? (entry.rarity || "Common") : "Common";
     var sellValue = QUICK_SELL_VALUES[rarity];
     var canQuickSell = ITEM_UNSELLABLE_RARITIES.indexOf(rarity) === -1 && typeof sellValue === "number" && !entry.isSeasonal;
-    var canList = ITEM_UNSELLABLE_RARITIES.indexOf(rarity) === -1 && !entry.isSeasonal;
+    var canList = ITEM_UNLISTABLE_RARITIES.indexOf(rarity) === -1 && !entry.isSeasonal;
 
     var quickSellHtml = canQuickSell
       ? '<button class="btn btn-ghost btn-block" id="ntQuickSellBtn" data-stage="confirm" style="margin-top:14px;color:var(--red);border-color:var(--red);">Quick Sell for ' + COIN_ICON + sellValue + '</button>'
@@ -7915,7 +7938,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     var rarity = p.rarity || "Common";
     var sellValue = QUICK_SELL_VALUES[rarity];
     var canQuickSell = ITEM_UNSELLABLE_RARITIES.indexOf(rarity) === -1 && typeof sellValue === "number" && !p.isSeasonal;
-    var canList = ITEM_UNSELLABLE_RARITIES.indexOf(rarity) === -1 && !p.isSeasonal;
+    var canList = ITEM_UNLISTABLE_RARITIES.indexOf(rarity) === -1 && !p.isSeasonal;
 
     var quickSellHtml = canQuickSell
       ? '<button class="btn btn-ghost btn-block" id="avQuickSellBtn" data-stage="confirm" style="margin-top:14px;color:var(--red);border-color:var(--red);">Quick Sell for ' + COIN_ICON + sellValue + '</button>'
