@@ -203,6 +203,31 @@ async function cascadeBanAccountsForIp(ip) {
 }
 
 function isAccountKey(key) { return key.startsWith("account:"); }
+function isGuildKey(key) { return key.startsWith("guild:"); }
+
+// ── Guild descriptions ──────────────────────────────────────────────────────
+// Free text, so it needs the same treatment as a display name: emoji and
+// accents are welcome, but invisible characters and text-direction overrides
+// are not -- a description sits on a public page and a bidi override mangles
+// the layout around it.
+//
+// Deliberately NOT script-restricted the way display names are. A display name
+// is an identity and mixing Latin with Cyrillic is how you impersonate someone;
+// a description is prose, and a guild that writes in two languages is just a
+// guild that writes in two languages.
+const GUILD_DESC_MAX = 300;
+
+function guildDescriptionError(desc) {
+  if (desc === undefined || desc === null || desc === "") return null;
+  if (typeof desc !== "string") return "Description must be text.";
+  if (Array.from(desc).length > GUILD_DESC_MAX)
+    return "Description must be " + GUILD_DESC_MAX + " characters or fewer.";
+  if (DISPLAY_NAME_INVISIBLE.test(desc))
+    return "Description can't contain invisible or text-direction characters.";
+  if (DISPLAY_NAME_ZALGO.test(desc))
+    return "Description has too many stacked accent marks.";
+  return null;
+}
 
 // ── Automod config, cached ──────────────────────────────────────────────────
 // Every signup checks the name, so this must not be a database round trip each
@@ -613,6 +638,43 @@ router.post("/kv/:key", async (req, res) => {
   // by design. Sessions are created by /login and /admin-login; nothing may
   // mint one through the generic store.
   if (isReservedKey(key)) return res.status(403).json({ error: "forbidden" });
+
+  // Guild descriptions are public prose, so they get checked like any other
+  // player-supplied name: length, invisible/bidi characters, and automod.
+  //
+  // Note this validates the CONTENT of a guild write, not the AUTHORITY to
+  // make it -- see the note on guild permissions below.
+  if (isGuildKey(key)) {
+    if (!session) return res.status(401).json({ error: "authentication required" });
+    try {
+      const g = JSON.parse(req.body.value);
+      const desc = typeof g.description === "string" ? g.description.trim() : g.description;
+      const descErr = guildDescriptionError(desc);
+      if (descErr) return res.status(400).json({ error: "invalid_description", message: descErr });
+      if (desc) {
+        const descHit = moderation.check(desc, await getAutomodConfig());
+        if (descHit) {
+          console.log("[automod] blocked guild description:", JSON.stringify(desc).slice(0, 80), "-- matched:", descHit);
+          return res.status(400).json({ error: "name_not_allowed", message: "That description isn't allowed." });
+        }
+      }
+      // The guild NAME and TAG go through automod too. They were browser-only
+      // checks before, which meant a crafted request could name a guild
+      // anything at all.
+      for (const field of ["name", "tag"]) {
+        if (typeof g[field] === "string" && g[field].trim()) {
+          const hit = moderation.check(g[field], await getAutomodConfig());
+          if (hit) {
+            console.log("[automod] blocked guild " + field + ":", JSON.stringify(g[field]), "-- matched:", hit);
+            return res.status(400).json({ error: "name_not_allowed", message: "That guild " + field + " isn't allowed." });
+          }
+        }
+      }
+    } catch (e) {
+      if (e instanceof SyntaxError) return res.status(400).json({ error: "invalid_guild", message: "Guild data must be valid JSON." });
+      throw e;
+    }
+  }
   
   if (isAccountKey(key)) {
     if (!session) return res.status(403).json({ error: "forbidden" });
@@ -754,6 +816,34 @@ router.delete("/kv/:key", async (req, res) => {
   // it would reset the site to "unclaimed" and let anyone claim admin.
   if (key === ADMIN_ACCOUNT_KEY && !(session && session.isAdmin)) {
     return res.status(403).json({ error: "forbidden" });
+  }
+
+  // Deleting a guild is the LEADER's decision alone -- not a co-leader's.
+  //
+  // Until now nothing checked this at all: any logged-in player could send
+  // DELETE /api/kv/guild:<any tag> and destroy any guild on the site, whether
+  // or not they were even a member of it. A leader-only button in the client
+  // would have been decoration; this is what actually enforces it.
+  //
+  // Admins can still delete a guild for moderation.
+  if (isGuildKey(key)) {
+    if (!session) return res.status(401).json({ error: "authentication required" });
+    const authorized = await isRequesterAdminOrModerator(session);
+    if (!authorized) {
+      let guild = null;
+      try {
+        const raw = await store.get("system", key, true);
+        guild = raw && raw.value ? JSON.parse(raw.value) : null;
+      } catch (e) { guild = null; }
+
+      // A missing or unreadable record is not a licence to delete it.
+      if (!guild) return res.status(404).json({ error: "guild_not_found" });
+
+      const leader = String(guild.leaderUsername || "").toLowerCase();
+      if (!leader || leader !== String(session.username || "").toLowerCase()) {
+        return res.status(403).json({ error: "not_guild_leader", message: "Only the guild leader can delete a guild." });
+      }
+    }
   }
 
   if (isAccountKey(key)) {
