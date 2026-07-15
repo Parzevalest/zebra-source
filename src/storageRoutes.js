@@ -168,6 +168,62 @@ async function cascadeBanAccountsForIp(ip) {
 
 function isAccountKey(key) { return key.startsWith("account:"); }
 
+// ── Display name rules (server-side authority) ──────────────────────────────
+//
+// The client checks these too, for a decent error message. But the client is
+// not an authority: a crafted request can set any displayName it likes, and
+// the relaxed rules are something people PAY for. The server knows who is
+// premium for real -- the Stripe webhook writes hasPremiumPass /
+// premiumExpiresAt -- so it decides here.
+//
+// Kept deliberately in step with displayNameError() in zebra_type.html. If
+// you change one, change the other.
+const DISPLAY_NAME_MIN = 4, DISPLAY_NAME_MAX = 20;
+const DISPLAY_NAME_INVISIBLE = /[\u0000-\u001F\u007F-\u009F\u00AD\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2066-\u2069\uFEFF\u180E]/u;
+const DISPLAY_NAME_ZALGO = /\p{M}{3,}/u;
+const DISPLAY_NAME_SCRIPTS = [
+  ["Latin", /\p{Script=Latin}/u],
+  ["Cyrillic", /\p{Script=Cyrillic}/u],
+  ["Greek", /\p{Script=Greek}/u],
+];
+
+function isPremiumAccount(acc) {
+  if (!acc || !acc.hasPremiumPass) return false;
+  if (acc.premiumExpiresAt && Date.now() > acc.premiumExpiresAt) return false;
+  return true;
+}
+
+// Returns an error string, or null if acceptable. A blank name is fine --
+// it means "fall back to my username".
+function displayNameError(name, premium) {
+  if (name === undefined || name === null || name === "") return null;
+  if (typeof name !== "string") return "Display name must be text.";
+
+  const chars = Array.from(name);
+  if (chars.length < DISPLAY_NAME_MIN || chars.length > DISPLAY_NAME_MAX)
+    return "Display name must be " + DISPLAY_NAME_MIN + "-" + DISPLAY_NAME_MAX + " characters.";
+
+  if (!premium) {
+    return /^[a-zA-Z0-9]+$/.test(name) ? null
+      : "Display name must be letters and numbers only.";
+  }
+
+  // These apply to premium too -- they're griefing tools, not perks.
+  if (DISPLAY_NAME_INVISIBLE.test(name))
+    return "Display name can't contain invisible or text-direction characters.";
+  if (DISPLAY_NAME_ZALGO.test(name))
+    return "Display name has too many stacked accent marks.";
+
+  const found = DISPLAY_NAME_SCRIPTS.filter((s) => s[1].test(name)).map((s) => s[0]);
+  if (found.length > 1)
+    return "Display name can't mix " + found.join(" and ") + " letters.";
+
+  if (!/[\p{L}\p{N}\p{S}]/u.test(name))
+    return "Display name needs at least one visible character.";
+
+  return null;
+}
+
 // A session counts as admin-or-moderator if it's the true super-admin
 // session, OR the requesting player's OWN account has isModerator set.
 // Moderator status lives on the account record, not the session token,
@@ -490,6 +546,26 @@ router.post("/kv/:key", async (req, res) => {
         const incoming = JSON.parse(req.body.value);
         const currentRaw = await store.get("system", key, true);
         const current = currentRaw && currentRaw.value ? JSON.parse(currentRaw.value) : null;
+
+        // Display name rules -- checked ONLY when the name actually changes.
+        //
+        // That condition is load-bearing. Every finished race saves the whole
+        // account through this route. If a premium player picks an emoji name
+        // and their pass later lapses, validating unconditionally would start
+        // rejecting their ordinary race saves forever -- they'd be locked out
+        // of their own account by a name they were entitled to when they set
+        // it. Instead: keep the name you have, but you can't pick a new fancy
+        // one once the pass is gone.
+        //
+        // Premium status is read from `current` (the database copy the Stripe
+        // webhook writes), never from the incoming payload -- otherwise the
+        // client could simply claim hasPremiumPass and grant itself the perk.
+        const incomingName = typeof incoming.displayName === "string" ? incoming.displayName.trim() : incoming.displayName;
+        const currentName = current && typeof current.displayName === "string" ? current.displayName.trim() : "";
+        if (String(incomingName || "") !== String(currentName || "")) {
+          const dnErr = displayNameError(incomingName, isPremiumAccount(current));
+          if (dnErr) return res.status(400).json({ error: "invalid_display_name", message: dnErr });
+        }
 
         if (typeof incoming.bestWpm === "number" && incoming.bestWpm > 350) return res.status(400).json({ error: "invalid_stat", field: "bestWpm" });
         if (current && typeof incoming.sumWpm === "number") {
