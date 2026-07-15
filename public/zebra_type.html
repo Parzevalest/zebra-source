@@ -5142,29 +5142,115 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     white:  "#F2F2F2"
   };
 
-  // Basic profanity filter — covers common slurs and obscenities plus simple
-  // leetspeak/spacing evasions. Not exhaustive, but catches the common cases.
-  var PROFANITY_LIST = [
-    "fuck","shit","bitch","cunt","nigger","nigga","faggot","fag","retard",
-    "whore","slut","dyke","chink","spic","kike","tranny","rape","pedo",
-    "molest","asshole","piss","cock","dick","pussy","twat"
-  ];
+  // ── Automod (client-side copy) ────────────────────────────────────────
+  //
+  // The SERVER is the authority. It holds the real, admin-edited lists
+  // (automod_config) and rejects bad names on /register and on any account
+  // save. This copy exists only so the signup form can say "that name isn't
+  // allowed" instantly instead of after a round trip.
+  //
+  // It deliberately does NOT fetch automod_config -- that key is admin-read-
+  // only, because publishing the blocklist AND the allow list would hand
+  // anyone a guide to exactly which spellings slip through. So this copy can
+  // drift from the real lists. That's fine: when it does, the server still
+  // refuses and the player sees the server's message. This is a courtesy,
+  // not a gate.
+  //
+  // Kept in step with src/moderation.js. If you change one, change the other.
+  var AUTOMOD_FALLBACK = {
+    blockContains: [
+      "fuck","shit","bitch","cunt","nigger","nigga","faggot","retard",
+      "whore","slut","chink","kike","tranny","pedo","molest","asshole",
+      "piss","pussy","twat","rapist","killyourself","kys"
+    ],
+    blockExact: ["fag","dyke","spic","rape","cock","dick"],
+    allow: [
+      "scunthorpe","nigeria","shitake","shiitake","therapist","therapists",
+      "peacock","cockpit","cocktail","cockburn","hancock","woodcock",
+      "dickens","dickinson","dickson","grape","grapes","drapery",
+      "scrape","scraper","spicy","vandyke"
+    ]
+  };
 
+  var AUTOMOD_HOMOGLYPHS = {
+    "а":"a","в":"b","е":"e","к":"k","м":"m","н":"h","о":"o","р":"p","с":"c",
+    "т":"t","у":"y","х":"x","і":"i","ѕ":"s","ј":"j","ԁ":"d","ɡ":"g","ь":"b",
+    "α":"a","ο":"o","ε":"e","ι":"i","κ":"k","ν":"v","ρ":"p","τ":"t","υ":"u",
+    "χ":"x","ω":"w","β":"b","γ":"y","η":"n","μ":"m","σ":"o","ϲ":"c"
+  };
+  var AUTOMOD_LEET = { "0":"o","1":"i","3":"e","4":"a","5":"s","7":"t","8":"b","9":"g","@":"a","$":"s","!":"i","+":"t","(":"c" };
+
+  // Folds a name to a bare a-z skeleton. Each step defeats one evasion:
+  // NFKD ("ｆｕｃｋ", "fúck"), homoglyphs (Cyrillic), leet ("sh1t"), strip
+  // non-letters ("f.u.c.k"), collapse runs ("fuuuck").
+  function automodNormalize(input){
+    var t = String(input == null ? "" : input).toLowerCase();
+    try{ t = t.normalize("NFKD").replace(/\p{M}/gu, ""); }catch(e){}
+    var out = "";
+    for(var i = 0; i < t.length; i++){
+      var ch = t[i];
+      if(AUTOMOD_HOMOGLYPHS[ch]){ out += AUTOMOD_HOMOGLYPHS[ch]; continue; }
+      if(AUTOMOD_LEET[ch]){ out += AUTOMOD_LEET[ch]; continue; }
+      out += ch;
+    }
+    out = out.replace(/[^a-z]/g, "");
+    out = out.replace(/(.)\1+/g, "$1");
+    return out;
+  }
+
+  // An allowed word only excuses the letters it actually covers, so
+  // "peacock" clears the "cock" inside it but not "peacockfuck".
+  function automodCoveredByAllow(text, start, end, allowNorms){
+    for(var i = 0; i < allowNorms.length; i++){
+      var a = allowNorms[i];
+      var at = text.indexOf(a);
+      while(at !== -1){
+        if(at <= start && (at + a.length) >= end) return true;
+        at = text.indexOf(a, at + 1);
+      }
+    }
+    return false;
+  }
+
+  // Returns the matched term, or null. Mirrors moderation.check() on the server.
+  function automodCheck(name, cfg){
+    cfg = cfg || AUTOMOD_FALLBACK;
+    if(cfg.enabled === false) return null;
+    var blockContains = cfg.blockContains || [];
+    var blockExact = cfg.blockExact || [];
+    var allow = cfg.allow || [];
+
+    var n = automodNormalize(name);
+    if(!n) return null;
+
+    for(var i = 0; i < blockExact.length; i++){
+      var e = automodNormalize(blockExact[i]);
+      if(e && n === e) return blockExact[i];
+    }
+
+    var allowNorms = [];
+    for(var j = 0; j < allow.length; j++){
+      var na = automodNormalize(allow[j]);
+      if(na) allowNorms.push(na);
+    }
+
+    for(var k = 0; k < blockContains.length; k++){
+      var t = automodNormalize(blockContains[k]);
+      if(!t) continue;
+      var at = n.indexOf(t);
+      while(at !== -1){
+        if(!automodCoveredByAllow(n, at, at + t.length, allowNorms)) return blockContains[k];
+        at = n.indexOf(t, at + 1);
+      }
+    }
+    return null;
+  }
+
+  // Kept so the existing call sites (signup, display name, guild create and
+  // guild rename) keep working unchanged.
   function containsProfanity(text){
     if(!text) return false;
-    var normalized = text.toLowerCase()
-      .replace(/[\s\-_.]/g, "")          // remove spaces/separators used to evade
-      .replace(/0/g, "o")
-      .replace(/1/g, "i")
-      .replace(/3/g, "e")
-      .replace(/4/g, "a")
-      .replace(/5/g, "s")
-      .replace(/7/g, "t")
-      .replace(/\$/g, "s")
-      .replace(/@/g, "a");
-    return PROFANITY_LIST.some(function(word){
-      return normalized.indexOf(word) !== -1;
-    });
+    return automodCheck(text, null) !== null;
   }
 
   function isValidGuildTag(tag){
@@ -5749,6 +5835,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     else if(state.screen === "adminTestRace") renderAdminTestRace();
     else if(state.screen === "adminAbout") renderAdminAbout();
     else if(state.screen === "adminAnticheat") renderAdminAnticheat();
+    else if(state.screen === "adminAutomod") renderAdminAutomod();
     else if(state.screen === "account") renderAccount();
     else if(state.screen === "shop") renderShop();
     else if(state.screen === "leaderboard") renderLeaderboard();
@@ -10462,6 +10549,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
         '<button class="admin-navbar-tab' + (activeTab==="players" ? " active" : "") + '" data-admin-tab="players">\uD83D\uDC64 Players</button>' +
         (state.isSuperAdmin ? '<button class="admin-navbar-tab' + (activeTab==="about" ? " active" : "") + '" data-admin-tab="about">\uD83D\uDCD6 About</button>' : '') +
         (state.isSuperAdmin ? '<button class="admin-navbar-tab' + (activeTab==="anticheat" ? " active" : "") + '" data-admin-tab="anticheat">\uD83D\uDEE1\uFE0F Anti-Cheat</button>' : '') +
+      (state.isSuperAdmin ? '<button class="admin-navbar-tab' + (activeTab==="automod" ? " active" : "") + '" data-admin-tab="automod">\uD83E\uDDF9 Automod</button>' : '') +
       '</div>' +
       '<div class="admin-navbar-right">' +
         '<div class="userpill">Admin: <b>' + escapeHtml(state.adminUsername || "") + '</b></div>' +
@@ -10511,6 +10599,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
           : tab === "testrace" ? "adminTestRace"
           : tab === "about" ? "adminAbout"
           : tab === "anticheat" ? "adminAnticheat"
+          : tab === "automod" ? "adminAutomod"
           : "adminAchievements";
         renderApp();
       });
@@ -10530,8 +10619,194 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
       : state.adminTab === "season" ? "adminSeason"
       : state.adminTab === "track" ? "adminTrack"
       : state.adminTab === "passages" ? "adminPassages"
+      : state.adminTab === "automod" ? "adminAutomod"
       : "adminCars";
     renderApp();
+  }
+
+  /* ── Admin: Automod tab ──────────────────────────────────────────────── */
+  //
+  // Edits the automod_config key. Only a super admin can read or write it --
+  // the server refuses both for anyone else, because the allow list is a map
+  // of exactly which words get a free pass.
+  //
+  // The three lists are separate on purpose:
+  //   Blocked anywhere  -- caught wherever it appears ("xXfuckXx")
+  //   Blocked as a name -- only when the WHOLE name is that word
+  //   Always allowed    -- excuses only the letters it covers
+  //
+  // That middle list exists because the old filter matched everything as a
+  // substring, and so rejected Peacock, Hancock, Dickens, Dickinson, Cockpit
+  // and Cocktail -- real surnames and ordinary words.
+  var automodDraft = null;
+
+  function renderAdminAutomod(){
+    if(!state.isAdmin){ state.screen = "auth"; renderApp(); return; }
+    state.adminTab = "automod";
+
+    app.innerHTML =
+      brandHeader() +
+      adminNavBar("automod") +
+      '<div class="panel">' +
+        '<div class="garage-title" style="color:var(--text);font-size:18px;margin-bottom:4px;">Name Auto-Moderation</div>' +
+        '<div class="hint-text" style="margin-top:0;margin-bottom:16px;">Checked on the server when someone signs up, renames a guild, or sets a display name. Before matching, a name is folded to plain letters &mdash; accents, fullwidth text, Cyrillic lookalikes, leetspeak, spacing and repeated letters are all stripped, so <code>f.u.c.k</code>, <code>fuuuck</code>, <code>ｆｕｃｋ</code> and <code>Sh1t</code> all match their plain spelling.</div>' +
+        '<div id="automodBody"><div class="center-note">Loading\u2026</div></div>' +
+      '</div>';
+
+    attachAdminNavListeners();
+
+    shimGet("automod_config", true).then(function(res){
+      var cfg = null;
+      try{ if(res && res.value) cfg = JSON.parse(res.value); }catch(e){}
+      automodDraft = normalizeAutomodDraft(cfg);
+      paintAutomod();
+    }).catch(function(){
+      // No config saved yet -- start from the built-in defaults.
+      automodDraft = normalizeAutomodDraft(null);
+      paintAutomod();
+    });
+  }
+
+  function normalizeAutomodDraft(cfg){
+    cfg = (cfg && typeof cfg === "object") ? cfg : {};
+    var arr = function(v){ return Array.isArray(v) ? v.filter(function(x){ return typeof x === "string" && x.trim(); }).map(function(x){ return x.trim(); }) : null; };
+    return {
+      enabled: cfg.enabled !== false,
+      blockContains: arr(cfg.blockContains) || AUTOMOD_FALLBACK.blockContains.slice(),
+      blockExact: arr(cfg.blockExact) || AUTOMOD_FALLBACK.blockExact.slice(),
+      allow: arr(cfg.allow) || AUTOMOD_FALLBACK.allow.slice()
+    };
+  }
+
+  function automodListHtml(field, title, help, placeholder){
+    var items = automodDraft[field];
+    return '<div style="margin-bottom:22px;">' +
+      '<div class="garage-title" style="color:var(--text);font-size:15px;margin-bottom:2px;">' + escapeHtml(title) + '</div>' +
+      '<div class="hint-text" style="margin-top:0;margin-bottom:8px;">' + help + '</div>' +
+      '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px;" id="automodChips_' + field + '">' +
+        (items.length ? items.map(function(w, i){
+          return '<span style="display:inline-flex;align-items:center;gap:6px;background:var(--panel-2);border:1px solid var(--line);border-radius:20px;padding:5px 10px;font-size:13px;color:var(--text);">' +
+            escapeHtml(w) +
+            '<button data-automod-del="' + field + ':' + i + '" title="Remove" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:15px;line-height:1;padding:0;">\u00D7</button>' +
+          '</span>';
+        }).join("") : '<span class="hint-text" style="margin:0;">Nothing in this list.</span>') +
+      '</div>' +
+      '<div style="display:flex;gap:8px;">' +
+        '<input type="text" data-automod-input="' + field + '" placeholder="' + escapeHtml(placeholder) + '" style="flex:1;background:var(--panel-2);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:9px 12px;font-size:13px;box-sizing:border-box;">' +
+        '<button class="btn btn-ghost" data-automod-add="' + field + '" style="padding:8px 14px;font-size:13px;">Add</button>' +
+      '</div>' +
+    '</div>';
+  }
+
+  function paintAutomod(){
+    var body = document.getElementById("automodBody");
+    if(!body || !automodDraft) return;
+
+    body.innerHTML =
+      '<div style="display:flex;align-items:center;gap:10px;background:var(--panel-2);border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin-bottom:20px;">' +
+        '<input type="checkbox" id="automodEnabled"' + (automodDraft.enabled ? " checked" : "") + ' style="width:16px;height:16px;cursor:pointer;">' +
+        '<label for="automodEnabled" style="font-size:14px;color:var(--text);cursor:pointer;font-weight:700;">Automod is ' + (automodDraft.enabled ? "on" : "OFF") + '</label>' +
+        '<span class="hint-text" style="margin:0 0 0 auto;">Turning this off lets every name through.</span>' +
+      '</div>' +
+
+      automodListHtml("blockContains", "Blocked anywhere",
+        "Caught wherever it appears in a name, so <code>xXfuckXx</code> is rejected. Multi-word phrases work too &mdash; spaces are removed before matching, so <code>kill yourself</code> also catches <code>kill_your_self</code>. Only use this for words no ordinary word contains.",
+        "word or phrase, e.g. kill yourself") +
+
+      automodListHtml("blockExact", "Blocked as a full name only",
+        "Caught only when someone's <b>entire</b> name is this word. For words that live inside innocent ones &mdash; <code>cock</code> is in Peacock and Hancock, <code>dick</code> is in Dickens, <code>rape</code> is in grape.",
+        "word, e.g. cock") +
+
+      automodListHtml("allow", "Always allowed",
+        "Exceptions, checked first. Only excuses the letters it covers &mdash; allowing <code>peacock</code> does not allow <code>peacockfuck</code>. Needed where a real word contains a blocked one: <code>scunthorpe</code>, <code>therapist</code>, <code>shitake</code>.",
+        "word, e.g. scunthorpe") +
+
+      '<div style="border-top:1px solid var(--line);padding-top:16px;margin-top:4px;">' +
+        '<div class="garage-title" style="color:var(--text);font-size:15px;margin-bottom:2px;">Try a name</div>' +
+        '<div class="hint-text" style="margin-top:0;margin-bottom:8px;">Tests against your <b>unsaved</b> edits above. Nothing is stored.</div>' +
+        '<div style="display:flex;gap:8px;">' +
+          '<input type="text" id="automodTestInput" placeholder="type a name to test\u2026" style="flex:1;background:var(--panel-2);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:9px 12px;font-size:13px;box-sizing:border-box;">' +
+        '</div>' +
+        '<div id="automodTestResult" style="margin-top:8px;font-size:13px;min-height:20px;"></div>' +
+      '</div>' +
+
+      '<div style="border-top:1px solid var(--line);padding-top:16px;margin-top:16px;display:flex;align-items:center;gap:10px;">' +
+        '<button class="btn btn-primary" id="automodSaveBtn">Save Automod Settings</button>' +
+        '<button class="btn btn-ghost" id="automodResetBtn" style="font-size:13px;">Reset to defaults</button>' +
+        '<span id="automodSaveMsg" style="font-size:13px;"></span>' +
+      '</div>';
+
+    document.getElementById("automodEnabled").addEventListener("change", function(){
+      automodDraft.enabled = this.checked;
+      paintAutomod();
+    });
+
+    document.querySelectorAll("[data-automod-add]").forEach(function(btn){
+      btn.addEventListener("click", function(){
+        var field = btn.getAttribute("data-automod-add");
+        var input = document.querySelector('[data-automod-input="' + field + '"]');
+        addAutomodTerm(field, input ? input.value : "");
+      });
+    });
+    document.querySelectorAll("[data-automod-input]").forEach(function(input){
+      input.addEventListener("keydown", function(e){
+        if(e.key === "Enter"){ e.preventDefault(); addAutomodTerm(input.getAttribute("data-automod-input"), input.value); }
+      });
+    });
+    document.querySelectorAll("[data-automod-del]").forEach(function(btn){
+      btn.addEventListener("click", function(){
+        var parts = btn.getAttribute("data-automod-del").split(":");
+        automodDraft[parts[0]].splice(parseInt(parts[1], 10), 1);
+        paintAutomod();
+      });
+    });
+
+    var testInput = document.getElementById("automodTestInput");
+    testInput.addEventListener("input", function(){
+      var el = document.getElementById("automodTestResult");
+      var val = testInput.value.trim();
+      if(!val){ el.textContent = ""; return; }
+      var hit = automodCheck(val, automodDraft);
+      if(hit){
+        el.innerHTML = '<span style="color:var(--red);font-weight:700;">Blocked</span> <span style="color:var(--muted);">\u2014 matched <code>' + escapeHtml(hit) + '</code>. Reads as <code>' + escapeHtml(automodNormalize(val)) + '</code>.</span>';
+      } else {
+        el.innerHTML = '<span style="color:#2ecc71;font-weight:700;">Allowed</span> <span style="color:var(--muted);">\u2014 reads as <code>' + escapeHtml(automodNormalize(val)) + '</code>.</span>';
+      }
+    });
+
+    document.getElementById("automodResetBtn").addEventListener("click", function(){
+      if(!confirm("Reset all three lists to the built-in defaults? Your current lists will be replaced (nothing saves until you press Save).")) return;
+      automodDraft = normalizeAutomodDraft(null);
+      paintAutomod();
+    });
+
+    document.getElementById("automodSaveBtn").addEventListener("click", async function(){
+      var msg = document.getElementById("automodSaveMsg");
+      var btn = document.getElementById("automodSaveBtn");
+      btn.disabled = true;
+      msg.style.color = "var(--muted)";
+      msg.textContent = "Saving\u2026";
+      try{
+        await shimSet("automod_config", JSON.stringify(automodDraft), true);
+        msg.style.color = "#2ecc71";
+        msg.textContent = "Saved. Live immediately.";
+      }catch(e){
+        msg.style.color = "var(--red)";
+        msg.textContent = "Couldn't save: " + ((e && e.message) ? e.message : String(e));
+      }finally{
+        btn.disabled = false;
+      }
+    });
+  }
+
+  function addAutomodTerm(field, raw){
+    var val = String(raw || "").trim();
+    if(!val) return;
+    if(automodDraft[field].some(function(x){ return x.toLowerCase() === val.toLowerCase(); })) return;
+    automodDraft[field].push(val);
+    paintAutomod();
+    var input = document.querySelector('[data-automod-input="' + field + '"]');
+    if(input) input.focus();
   }
 
   /* ── Admin: Cars tab ─────────────────────────────────────────────────── */
