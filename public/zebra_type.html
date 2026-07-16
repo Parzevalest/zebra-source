@@ -2557,6 +2557,59 @@ const DeviceFingerprint = (() => {
     return score; // max 100
   }
 
+  // ─── Per-device identifier ────────────────────────────────────────────────
+  //
+  // THE reason this module exists in its current form. Every other signal here
+  // -- canvas, WebGL, cores, screen, fonts, timezone -- describes the device
+  // MODEL and its settings, not the individual unit. Two people with the same
+  // phone, same OS, same timezone and same language produced a byte-identical
+  // hash, so banning one banned the other. A school's fleet of identically
+  // imaged Chromebooks collapsed to a single fingerprint: ban one student,
+  // ban the building.
+  //
+  // A random id minted once per browser is what turns "this model" into "this
+  // device". It's clearable -- someone who wipes storage gets a fresh identity
+  // -- and that's the trade. The alternative is a ban that catches strangers,
+  // which is worse: an evadable ban costs you one cheater, a colliding ban
+  // costs you innocent players who never raced.
+  //
+  // Returns { id, stored }. `stored` is false when we couldn't persist it
+  // (private browsing, storage disabled). In that case the id is random per
+  // page load: still collision-free, but nothing to ban -- see how the server
+  // treats deviceIdStored.
+  function _deviceId() {
+    const fresh = () => {
+      try {
+        // Global crypto, matching how _sha256 above reaches crypto.subtle --
+        // _N doesn't capture crypto, so _N.crypto would be undefined here and
+        // this would quietly always take the fallback path.
+        if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID();
+      } catch (e) {}
+      // Older browsers without randomUUID. Four base36 chunks is ~165 bits --
+      // collisions aren't a practical concern at any player count.
+      let s = '';
+      for (let i = 0; i < 4; i++) s += Math.random().toString(36).slice(2, 10);
+      return s;
+    };
+    try {
+      let id = localStorage.getItem('_zt_did');
+      // Previous versions stored the fingerprint hash itself in this key --
+      // 64 hex characters. That's derived FROM the model signals, so keeping
+      // it would just reintroduce the collision it's meant to fix. Treat it
+      // as absent and mint a real random id over the top.
+      if (id && /^[0-9a-f]{64}$/i.test(id)) id = null;
+      if (!id) {
+        id = fresh();
+        localStorage.setItem('_zt_did', id);
+      }
+      return { id, stored: true };
+    } catch (e) {
+      // Storage unavailable. A random id per load keeps this device from
+      // colliding with anyone else's; it just can't be recognised again.
+      return { id: fresh(), stored: false };
+    }
+  }
+
   // ─── Public API ───────────────────────────────────────────────────────────
   async function get() {
     // Collect all signals in parallel
@@ -2568,9 +2621,14 @@ const DeviceFingerprint = (() => {
     const hw      = _hardwareSignals();
     const browser = _browserSignals();
     const blocked = _detectFingerprintBlocking(canvas, webgl);
+    const device  = _deviceId();
 
-    // Build the raw fingerprint string
-    const raw = [
+    // The model signals, without the per-device id. NOT used for banning --
+    // it's the exact value that caused the collisions. Kept because it's
+    // genuinely useful to see: several distinct devices reporting the same
+    // modelHash is a family, a classroom, or one person's alts, and that's
+    // worth knowing when you're looking at a ban.
+    const modelRaw = [
       canvas.value,
       webgl.renderer,
       webgl.vendor,
@@ -2592,20 +2650,23 @@ const DeviceFingerprint = (() => {
       browser.vendor,
     ].join('|||');
 
-    const hash = await _sha256(raw);
+    // The ban key. The device id goes FIRST so it's obvious at a glance that
+    // this hash is per-device rather than per-model.
+    const raw = device.id + '|||' + modelRaw;
 
-    // Also store in localStorage as a secondary identifier
-    // (weaker than fingerprint — clearable, but adds another signal)
-    try {
-      const stored = localStorage.getItem('_zt_did');
-      if (!stored) localStorage.setItem('_zt_did', hash);
-    } catch(e) {}
+    const hash = await _sha256(raw);
+    const modelHash = await _sha256(modelRaw);
 
     const stability = _stabilityScore(canvas, webgl, audio);
 
     return {
-      hash,                   // SHA-256 of all signals — use this as the ban key
+      hash,                   // SHA-256 of device id + all model signals — the ban key
       shortHash: hash.slice(0, 12),  // human-readable abbreviation for logs
+      modelHash,              // model signals only — DIAGNOSTIC, never a ban key
+      modelShortHash: modelHash.slice(0, 12),
+      deviceIdStored: device.stored, // false = couldn't persist the id, so this
+                                     // hash won't be seen again. The server
+                                     // must not ban on it.
       stability,              // 0-100: how hardware-derived this is
       blocked,                // canvas/WebGL blocking detected
       signals: {              // raw signals for debugging
@@ -2615,7 +2676,6 @@ const DeviceFingerprint = (() => {
         hardware: hw,
         browser: { ...browser, userAgent: browser.userAgent.slice(0, 80) },
       },
-      localStorage: localStorage.getItem('_zt_did') || null,
     };
   }
 
