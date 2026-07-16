@@ -19100,6 +19100,8 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
           at: b.banned_at || 0,
           username: b.username || null,
           shortHash: b.short_hash || null,
+          hash: b.hash || null,        // full hash -- what /api/unban needs
+          modelHash: b.model_hash || null,
           confidence: b.confidence,
           score: b.score,
           signals: b.signals || []
@@ -19133,6 +19135,68 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
         '<div style="display:flex;flex-direction:column;gap:10px;">' +
           entries.map(banLogEntryHtml).join("") +
         '</div>';
+
+      // Lift-ban buttons. Two-stage confirm, matching the delete-guild and
+      // leave-guild pattern elsewhere.
+      listEl.querySelectorAll("[data-unban-id]").forEach(function(btn){
+        btn.addEventListener("click", async function(){
+          var type = btn.getAttribute("data-unban-type");
+          var id = btn.getAttribute("data-unban-id");
+          var msg = btn.parentNode.querySelector(".ban-lift-msg");
+
+          if(btn.getAttribute("data-stage") === "confirm"){
+            btn.setAttribute("data-stage", "armed");
+            btn.textContent = "Click again to lift";
+            setTimeout(function(){
+              if(btn.getAttribute("data-stage") === "armed"){
+                btn.setAttribute("data-stage", "confirm");
+                btn.textContent = "Lift this ban";
+              }
+            }, 4000);
+            return;
+          }
+
+          btn.disabled = true;
+          btn.textContent = "Lifting\u2026";
+          if(msg){ msg.style.color = "var(--muted)"; msg.textContent = ""; }
+          try{
+            // Device bans delete ban_<hash>; IP bans delete ipban_<ip>.
+            var url = type === "device" ? "/api/unban" : "/api/ip-unban";
+            var body = type === "device" ? { hash: id } : { ip: id };
+            var r = await fetch(SERVER_URL + url, {
+              method: "POST",
+              headers: { "Content-Type": "application/json", "x-session-token": currentToken || "" },
+              body: JSON.stringify(body)
+            });
+            var d = await r.json().catch(function(){ return {}; });
+            if(!r.ok || !d.unbanned){
+              if(msg){ msg.style.color = "var(--red)"; msg.textContent = "Couldn\u2019t lift: " + (d.message || d.error || ("error " + r.status)); }
+              btn.disabled = false;
+              btn.setAttribute("data-stage", "confirm");
+              btn.textContent = "Lift this ban";
+              return;
+            }
+            btn.textContent = "Lifted";
+            btn.style.opacity = "0.5";
+            if(msg){
+              msg.style.color = "var(--green)";
+              // Lifting an IP ban stops it branding anyone NEW, but accounts
+              // already marked isBanned by it stay banned -- the brand is
+              // written onto the account, not derived from the ban list. Say
+              // so rather than let it look finished.
+              msg.textContent = type === "device"
+                ? "Device unbanned. They can log in again."
+                : "IP unbanned. Accounts already banned by it stay banned \u2014 unban those individually.";
+            }
+            loadBanLog();
+          }catch(err){
+            if(msg){ msg.style.color = "var(--red)"; msg.textContent = "Error: " + ((err&&err.message)?err.message:String(err)); }
+            btn.disabled = false;
+            btn.setAttribute("data-stage", "confirm");
+            btn.textContent = "Lift this ban";
+          }
+        });
+      });
     }catch(e){
       listEl.innerHTML = '<div class="center-note" style="color:var(--muted);">Error loading ban log: ' + escapeHtml((e&&e.message)?e.message:String(e)) + '</div>';
     }
@@ -19178,6 +19242,29 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
       signalsHtml = '<div style="margin-top:6px;font-size:13px;color:var(--muted);">' + (e.isManual ? 'Manually banned by an admin.' : 'Triggered by the anticheat auto-ban, which also cascades to accounts sharing this IP.') + '</div>';
     }
 
+    // Lift button. Present on every entry, device or IP.
+    //
+    // Until now the only way to lift a device ban was through a player's admin
+    // page, which needed you to already know whose device it was -- and the
+    // ban log is exactly where you DON'T know that ("No account attached").
+    // For a ban with no account, this was the only place it could be undone
+    // from, and there was no button.
+    //
+    // Device entries use the full hash rather than the short one: /api/unban
+    // deletes ban_<hash>, and the 12-char short form would silently delete
+    // nothing at all.
+    var unbanTarget = e.type === "device" ? e.hash : e.ip;
+    var unbanHtml = unbanTarget
+      ? '<button class="small-btn" data-unban-type="' + e.type + '" data-unban-id="' + escapeHtml(unbanTarget) + '" data-stage="confirm" style="color:var(--green);border-color:var(--green);">Lift this ban</button>'
+      : '<span style="font-size:12px;color:var(--muted);">Can\'t lift \u2014 this record is missing its identifier.</span>';
+
+    // Two bans sharing a model hash means same device model AND same settings.
+    // That's a family, a classroom, or one person's alts -- worth seeing
+    // before you decide a ban was fair.
+    var modelLine = (e.type === "device" && e.modelHash)
+      ? '<div style="font-size:12px;color:var(--muted);margin-bottom:3px;">Model: <code style="color:var(--muted);">' + escapeHtml(e.modelHash) + '</code> <span style="opacity:.7;">(shared by identical devices \u2014 not banned on)</span></div>'
+      : "";
+
     return '<div style="background:var(--panel-2);border:1px solid var(--line);border-radius:10px;padding:13px 15px;">' +
         '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:6px;">' +
           '<span style="font-weight:700;font-size:14px;color:var(--text);">' + typeLabel + '</span>' +
@@ -19185,8 +19272,13 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
           '<span style="font-size:12px;color:var(--muted);margin-left:auto;">' + escapeHtml(when) + '</span>' +
         '</div>' +
         (idLine ? '<div style="font-size:13px;color:var(--muted);margin-bottom:3px;">' + idLine + '</div>' : '') +
+        modelLine +
         '<div style="font-size:13px;color:var(--muted);">' + whoLine + '</div>' +
         signalsHtml +
+        '<div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--line);display:flex;align-items:center;gap:8px;flex-wrap:wrap;">' +
+          unbanHtml +
+          '<span class="ban-lift-msg" style="font-size:12px;"></span>' +
+        '</div>' +
       '</div>';
   }
 
