@@ -1879,9 +1879,9 @@ const AntiCheat = (() => {
     // WPM implied by mean inter-key delay: mean ms/char -> CPM = 60000/mean -> WPM = CPM/5
     const impliedWPM = mean > 0 ? Math.round((60000 / mean) / 5) : 0;
     // Human physiological ceiling: ~220 WPM for world-record typists.
-    // 250+ WPM is physically impossible without automation.
-    const physicallyImpossible = impliedWPM >= 250;
-    const extremelyFast        = impliedWPM >= 180 && impliedWPM < 250;
+    // 300+ WPM is physically impossible without automation.
+    const physicallyImpossible = impliedWPM >= 300;
+    const extremelyFast        = impliedWPM >= 180 && impliedWPM < 300;
 
     return {
       mean: Math.round(mean), stdDev: Math.round(std), cv: +cv.toFixed(3),
@@ -2112,10 +2112,10 @@ const AntiCheat = (() => {
     //  Behavioral
     if (!timings.insufficient) {
       // ── Absolute speed check — physiology doesn't lie ──────────────────────
-      // 250+ WPM is beyond human capability. No jitter analysis needed.
+      // 300+ WPM is beyond human capability. No jitter analysis needed.
       // This is the primary signal for the bot you saw at 300 WPM.
       if (timings.physicallyImpossible)
-        { signals.push(`Physically impossible speed: ${timings.impliedWPM} WPM (≥250 WPM threshold)`); score+=80; }
+        { signals.push(`Physically impossible speed: ${timings.impliedWPM} WPM (≥300 WPM threshold)`); score+=80; }
       else if (timings.extremelyFast)
         { signals.push(`Extremely fast: ${timings.impliedWPM} WPM (180-249 range)`); score+=30; }
 
@@ -2191,7 +2191,7 @@ const AntiCheat = (() => {
 
     // Timing hard signal — physically impossible speeds need no DOM evidence
     const timingHardSignal = !timings.insufficient && (
-      timings.physicallyImpossible ||                        // ≥250 WPM — impossible
+      timings.physicallyImpossible ||                        // ≥300 WPM — impossible
       (timings.extremelyFast && timings.tooUniform) ||      // 180-249 WPM + uniform timing
       (timings.badTriplets && timings.badHold)              // near-instant triplets + short hold
     );
@@ -9708,7 +9708,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
   }
 
   function updateGauge(wpm){
-    var maxWpm = 250; // raised from 160 — fast typists can exceed that ceiling
+    var maxWpm = 300; // raised from 160 — fast typists can exceed that ceiling
     var clamped = Math.max(0, Math.min(maxWpm, wpm));
     var deg = (clamped/maxWpm) * 180 - 90; // -90deg .. +90deg
     var needleGroup = document.getElementById("needleGroup");
