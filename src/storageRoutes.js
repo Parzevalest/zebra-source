@@ -1015,8 +1015,25 @@ router.post("/anticheat", async (req, res) => {
   const username = session?.username || null;
   try {
     if (confidence >= 99 && hash) {
-      const data = JSON.stringify({ short_hash: fingerprint?.shortHash, username, score, confidence, signals, banned_at: Date.now() });
-      await store.set("system", "ban_" + hash, data, true);
+      // A fingerprint whose device id couldn't be persisted (private browsing,
+      // storage disabled) is random per page load -- it will never be seen
+      // again. Banning it writes a record nothing can ever match, so skip it.
+      // The IP ban below still applies.
+      if (fingerprint && fingerprint.deviceIdStored === false) {
+        console.log("[anticheat] device ban skipped -- no persistent device id (storage blocked). score:", score);
+      } else {
+        // modelHash is stored for VISIBILITY ONLY -- never matched against.
+        // It's the model-level hash that used to be the ban key, which is why
+        // one banned Chromebook banned a school's entire identical fleet. Two
+        // bans sharing a modelHash means same model + same settings; that's a
+        // classroom or a family, and worth seeing before you trust the ban.
+        const data = JSON.stringify({
+          short_hash: fingerprint?.shortHash,
+          model_hash: fingerprint?.modelShortHash || null,
+          username, score, confidence, signals, banned_at: Date.now(),
+        });
+        await store.set("system", "ban_" + hash, data, true);
+      }
 
       // Also ban the reporting IP itself, and cascade that ban to every
       // other account already known to share it -- a bot operator running
