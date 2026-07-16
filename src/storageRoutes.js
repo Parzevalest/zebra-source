@@ -1673,12 +1673,19 @@ router.get("/device-bans", async (req, res) => {
         // from the key so the entry still identifies itself in the UI.
         if (!b.short_hash) b.short_hash = hash.slice(0, 12);
         if (!b.banned_at && row.updated_at) b.banned_at = row.updated_at;
+        // The FULL hash, always taken from the key rather than the record.
+        // Without this the ban log could show a ban but not lift it: /unban
+        // needs the whole hash and the client only ever received the 12-char
+        // short form. Overwritten unconditionally so a record can't lie about
+        // which key it lives under and get a different device unbanned.
+        b.hash = hash;
         bans.push(b);
       } catch (e) {
         // A record we can't parse is still a live ban blocking a real device.
         // Surfacing it half-known beats hiding it -- hiding bans is the exact
-        // failure this route is being fixed for.
-        bans.push({ short_hash: hash.slice(0, 12), username: null, banned_at: row.updated_at || 0, confidence: null, score: null, signals: ["(ban record could not be read)"] });
+        // failure this route is being fixed for. It's still unbannable,
+        // because the hash comes from the key, not the broken value.
+        bans.push({ hash, short_hash: hash.slice(0, 12), username: null, banned_at: row.updated_at || 0, confidence: null, score: null, signals: ["(ban record could not be read)"] });
       }
     }
     res.json({ bans });
