@@ -3105,18 +3105,13 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
   // above: quick-selling and player-to-player trading are different things.
   //
   // Quick sell needs a fixed price the shop can pay, which is why anything
-  // above Mythic can't do it. The Black Market has no such problem — the
-  // seller names their own price, so rarity is irrelevant to whether a trade
-  // can happen. Unobtainable items were blocked here only because this reused
-  // the quick-sell list.
+  // above Mythic can't do it — QUICK_SELL_VALUES stops at Mythic. The Black
+  // Market has no such problem: the seller names their own price, so rarity is
+  // irrelevant to whether a trade can happen. Ascended and Unobtainable were
+  // blocked here only because this reused the quick-sell list above.
   //
-  // This now matches how CARS already behave: an Unobtainable car has always
-  // been listable (see canList in the car modal, which uses
-  // UNSELLABLE_RARITIES). Name tags and avatar pieces were the odd ones out.
-  //
-  // NOTE: "Ascended" is still blocked here. Cars allow it; items don't. That
-  // inconsistency predates this change and wasn't part of the request — drop
-  // it from this list too if you want items to match cars exactly.
+  // This matches how CARS behave — UNSELLABLE_RARITIES is now the same three
+  // entries. Name tags and avatar pieces were the odd ones out.
   var ITEM_UNLISTABLE_RARITIES = ["Admin", "Exclusive", "Achievement"];
 
   /* ============ AVATARS ============ */
@@ -17438,14 +17433,43 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
       }));
 
       var color = GUILD_COLORS[guild.color] || "#FFD54F";
+      var memberCount = (guild.memberUsernames||[]).length;
       var totalRaces = (guild.memberUsernames||[]).reduce(function(sum, u, i){
         var m = memberData[i];
         if(m && (m.isBanned || m.isSuspended || m.excludedFromLeaderboard)) return sum; // exclude banned/suspended/excluded
         return sum + (m && m.guildStats && m.guildStats.guildId === guild.id ? m.guildStats.races : 0);
       }, 0);
 
-      var membersHtml = (guild.memberUsernames||[]).map(function(u, i){
-        var m = memberData[i];
+      // Header stats, computed exactly as renderGuildDetail does so the same
+      // guild reads the same on both pages. memberData is already loaded above,
+      // so this costs nothing extra.
+      var loadedMembers = memberData.filter(function(m){ return !!m; });
+      var totalAllTimeRaces = loadedMembers.reduce(function(s,m){ return s + (m.races||0); }, 0);
+      var wpmSamples = loadedMembers.filter(function(m){ return (m.races||0) > 0; });
+      var avgGuildWpm = wpmSamples.length
+        ? Math.round(wpmSamples.reduce(function(s,m){ return s + Math.round((m.sumWpm||0)/(m.races||1)); }, 0) / wpmSamples.length)
+        : 0;
+
+      // Pair each username with its loaded account before sorting, so the two
+      // arrays can't drift apart -- membersHtml previously relied on
+      // memberData[i] lining up with memberUsernames[i] by index.
+      //
+      // Sorted by team races descending, same as your own guild page. Rows
+      // whose account failed to load sort last: they have no stats to rank on,
+      // and burying them keeps the roster readable.
+      var roster = (guild.memberUsernames||[]).map(function(u, i){ return { username: u, acc: memberData[i] }; });
+      roster.sort(function(a, b){
+        if(!a.acc && !b.acc) return 0;
+        if(!a.acc) return 1;
+        if(!b.acc) return -1;
+        var ar = (a.acc.guildStats && a.acc.guildStats.guildId === guild.id) ? (a.acc.guildStats.races||0) : 0;
+        var br = (b.acc.guildStats && b.acc.guildStats.guildId === guild.id) ? (b.acc.guildStats.races||0) : 0;
+        return br - ar;
+      });
+
+      var membersHtml = roster.map(function(entry){
+        var u = entry.username;
+        var m = entry.acc;
         if(!m){
           // Account failed to load — show a faded placeholder row instead
           // of silently dropping them from the roster, with a way to clean
@@ -17455,34 +17479,67 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
             (state.isSuperAdmin ? '<button class="small-btn" data-remove-stale-member="' + escapeHtml(u) + '" style="color:var(--red);border-color:var(--red);">Remove</button>' : '') +
           '</div>';
         }
-        var isLeader = guild.leaderUsername && guild.leaderUsername.toLowerCase() === u.toLowerCase();
-        var isCoLeader = (guild.coLeaderUsernames||[]).some(function(x){ return x.toLowerCase() === u.toLowerCase(); });
-        var role = isLeader ? "\uD83D\uDC51" : isCoLeader ? "\u2B50" : "";
-        var displayName = m ? displayNameFor(m) : u;
-        var titleEntry = m ? resolveTitle(m, titleCatalogCache) : null;
-        var titleHtml = (titleEntry && titleEntry.text) ? '<div style="font-size:11px;font-style:italic;font-weight:700;color:' + (RARITY_COLORS[titleEntry.rarity]||"var(--muted)") + ';">' + escapeHtml(titleEntry.text) + '</div>' : "";
-        var races = m && m.guildStats && m.guildStats.guildId === guild.id ? (m.guildStats.races||0) : 0;
-        return '<div style="display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--line);">' +
-          '<div style="flex:1;">' +
-            '<div style="display:flex;align-items:center;gap:6px;">' +
-              (role ? '<span style="font-size:14px;">' + role + '</span>' : '') +
-              '<a href="/racer/' + encodeURIComponent(u) + '" data-view-profile="' + escapeHtml(u) + '" style="font-weight:700;color:var(--text);text-decoration:none;cursor:pointer;">' + escapeHtml(displayName) + '</a>' +
+        var memberIsLeader = guild.leaderUsername && guild.leaderUsername.toLowerCase() === u.toLowerCase();
+        var memberIsCoLeader = (guild.coLeaderUsernames||[]).some(function(x){ return x.toLowerCase() === u.toLowerCase(); });
+        var roleBadge = memberIsLeader
+          ? '<span class="guild-role-badge" style="background:var(--amber);color:#0A0B0D;">\uD83D\uDC51 Leader</span>'
+          : memberIsCoLeader
+            ? '<span class="guild-role-badge" style="background:var(--panel-2);color:var(--text);border:1px solid var(--line);">\u2B50 Co-Leader</span>'
+            : '';
+
+        var races = m.races || 0;
+        var avgWpm = races ? Math.round((m.sumWpm||0) / races) : 0;
+        var avgAcc = races ? Math.round((m.sumAccuracy||0) / races) : 0;
+        var teamRaces = (m.guildStats && m.guildStats.guildId === guild.id) ? (m.guildStats.races || 0) : 0;
+        var equippedCar = resolveCarById(m.equippedCarId);
+
+        // Same row markup as your own guild page -- car thumbnail, role badge,
+        // stat blocks. This view used a bare text line, which is why someone
+        // else's guild looked unfinished next to your own.
+        //
+        // No promote/demote/kick buttons: those are guild management, and you
+        // aren't in this guild. The row is otherwise identical.
+        return '<div class="guild-member-row' + (memberIsLeader ? ' is-leader' : '') + '">' +
+          '<div class="guild-member-thumb">' + carVisualHtml(equippedCar) + '</div>' +
+          '<div class="guild-member-name-col">' +
+            '<div style="font-weight:700;font-size:14px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">' +
+              clickableUsernameHtml(m.username, null, m.displayName) +
+              (function(){ var gt = resolveTitle(m, titleCatalogCache); return gt ? '<span style="font-size:10px;font-style:italic;font-weight:700;color:' + (RARITY_COLORS[gt.rarity]||'var(--muted)') + ';">' + escapeHtml(gt.text) + '</span>' : ''; })() +
+              (m.isBanned ? '<span style="color:var(--red);font-weight:900;font-size:11px;">BANNED</span>' : '') +
+              (m.isSuspended && !m.isBanned ? '<span style="color:var(--amber);font-weight:900;font-size:11px;">SUSPENDED</span>' : '') +
             '</div>' +
-            titleHtml +
+            (roleBadge ? '<div style="margin-top:5px;">' + roleBadge + '</div>' : '') +
           '</div>' +
-          '<div style="font-size:13px;color:var(--muted);">' + races + ' team race' + (races===1?'':'s') + '</div>' +
+          '<div class="guild-member-stats">' +
+            '<div class="guild-member-stat"><div class="num">' + races + '</div><div class="lbl">All-Time</div></div>' +
+            '<div class="guild-member-stat"><div class="num">' + avgWpm + '</div><div class="lbl">Avg WPM</div></div>' +
+            '<div class="guild-member-stat"><div class="num">' + avgAcc + '%</div><div class="lbl">Avg Acc</div></div>' +
+            '<div class="guild-member-stat"><div class="num">' + teamRaces + '</div><div class="lbl">Team Races</div></div>' +
+          '</div>' +
         '</div>';
       }).join("");
 
       body.innerHTML =
-        '<div class="panel" style="margin-bottom:18px;border-top:4px solid ' + color + ';">' +
-          '<div style="display:flex;align-items:baseline;gap:10px;margin-bottom:4px;">' +
+        // Matches the header on your own guild page (renderGuildDetail): the
+        // colour wash, the roster bar, the stat row. This view had a plain
+        // panel with a coloured top border and nothing else, so someone else's
+        // guild looked like a stub next to your own.
+        '<div class="panel" style="margin-bottom:18px;border-top:4px solid ' + color + ';background-color:var(--panel);background-image:linear-gradient(135deg, ' + color + '2E, transparent 60%);">' +
+          '<div style="display:flex;align-items:baseline;gap:10px;margin-bottom:4px;flex-wrap:wrap;">' +
             '<span style="font-family:\'Arial Black\',Impact,sans-serif;font-style:italic;font-size:24px;color:' + color + ';">[' + escapeHtml(guild.tag) + ']</span>' +
             '<span style="font-weight:700;font-size:18px;color:var(--text);">' + escapeHtml(guild.name) + '</span>' +
           '</div>' +
-          '<div style="font-size:13px;color:var(--muted);">' + (guild.memberUsernames||[]).length + ' / ' + GUILD_MAX_MEMBERS + ' members \u00b7 ' + totalRaces + ' total team race' + (totalRaces===1?'':'s') + '</div>' +
+          '<div style="font-size:13px;color:var(--muted);">' + memberCount + ' / ' + GUILD_MAX_MEMBERS + ' members</div>' +
           (guild.closed ? '<div style="font-size:12px;color:var(--red);margin-top:4px;">\uD83D\uDD12 Closed \u2014 not accepting new members</div>' : '') +
           guildDescriptionHtml(guild) +
+          '<div class="guild-progress-wrap">' +
+            '<div class="guild-progress-fill" style="width:' + Math.round(100 * memberCount / GUILD_MAX_MEMBERS) + '%;background:' + color + ';"></div>' +
+          '</div>' +
+          '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:16px;">' +
+            '<div class="guild-member-stat"><div class="num">' + totalAllTimeRaces.toLocaleString() + '</div><div class="lbl">Total Races</div></div>' +
+            '<div class="guild-member-stat"><div class="num">' + avgGuildWpm + '</div><div class="lbl">Avg WPM</div></div>' +
+            '<div class="guild-member-stat"><div class="num">' + totalRaces.toLocaleString() + '</div><div class="lbl">Team Races</div></div>' +
+          '</div>' +
         '</div>' +
         '<div class="panel">' +
           '<div style="font-weight:700;font-size:15px;color:var(--text);margin-bottom:10px;">Members</div>' +
