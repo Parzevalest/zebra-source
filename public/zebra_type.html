@@ -7845,7 +7845,9 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
       group.forEach(function(it){
         var owned;
         if(kind === "car") owned = (acc.ownedCarIds || []).indexOf(it.id) !== -1 || acc.equippedCarId === it.id;
-        else if(kind === "nameTag") owned = (acc.ownedNameTags || []).indexOf(it.image) !== -1;
+        // ownedNameTags holds catalog ids now, so matching on the image finds
+        // nothing -- every tag would read as unowned in the loot index.
+        else if(kind === "nameTag") owned = getNameTagQuantity(acc, it.id) > 0 || (acc.ownedNameTags || []).indexOf(it.image) !== -1;
         else if(kind === "avatar") owned = ((acc.ownedAvatarPieces && acc.ownedAvatarPieces[it.slot]) || []).indexOf(it.id) !== -1;
         else owned = (acc.ownedTitles || []).indexOf(it.id) !== -1;
         html += lootIndexTileHtml(kind, it, owned, acc);
@@ -8598,7 +8600,9 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     var avgAcc = races ? Math.round((targetAcc.sumAccuracy||0) / races) : 0;
 
     var equippedCar = resolveCarById(targetAcc.equippedCarId);
-    var equippedTag = targetAcc.equippedNameTag || DEFAULT_NAME_TAG;
+    // equippedNameTag holds a catalog id now, not the image. Rendering it
+    // straight into an <img src> would produce a broken image.
+    var equippedTag = nameTagImageFor(targetAcc.equippedNameTag);
     var resolvedAvatar = {
       shoes: resolveEquippedAvatarPiece(targetAcc, "shoes", avatarCatalogCache),
       pants: resolveEquippedAvatarPiece(targetAcc, "pants", avatarCatalogCache),
@@ -9511,7 +9515,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
         '<div class="car" id="opponentCar' + i + '" style="left:' + carStartLeft + 'px;' + (oppCarStartTop !== null ? 'top:' + oppCarStartTop + 'px;' : '') + '">' +
           '<div class="car-wind"><div class="streak"></div><div class="streak"></div><div class="streak"></div></div>' +
           carVisualHtml(oppCar) +
-          nameTagHtml(opp.nameTag || DEFAULT_NAME_TAG, (opp.displayName && opp.displayName.trim()) ? opp.displayName : opp.username,
+          nameTagHtml(nameTagImageFor(opp.nameTag), (opp.displayName && opp.displayName.trim()) ? opp.displayName : opp.username,
               opp.guildTag || null, opp.guildTag ? (GUILD_COLORS[opp.guildColor] || opp.guildColor || "#FFD54F") : null,
               opp.titleText || null, opp.titleRarity || null) +
         '</div>';
@@ -9658,7 +9662,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
           '<div class="car" id="opponentCar' + i + '" style="left:' + carStartLeft + 'px;' + (oppCarStartTop !== null ? 'top:' + oppCarStartTop + 'px;' : '') + '">' +
             '<div class="car-wind"><div class="streak"></div><div class="streak"></div><div class="streak"></div></div>' +
             carVisualHtml(oppCar) +
-            nameTagHtml(opp.nameTag || DEFAULT_NAME_TAG, (opp.displayName && opp.displayName.trim()) ? opp.displayName : opp.username,
+            nameTagHtml(nameTagImageFor(opp.nameTag), (opp.displayName && opp.displayName.trim()) ? opp.displayName : opp.username,
               opp.guildTag || null, opp.guildTag ? (GUILD_COLORS[opp.guildColor] || opp.guildColor || "#FFD54F") : null,
               opp.titleText || null, opp.titleRarity || null) +
           '</div>' +
@@ -9686,8 +9690,8 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
                 '<div class="car-wind"><div class="streak"></div><div class="streak"></div><div class="streak"></div></div>' +
                 carVisualHtml(rs.isTestRace ? state.testRaceSession.car : (resolveCarById(rs.carId) || STARTER_CAR)) +
                 (rs.isTestRace
-                  ? nameTagHtml(state.testRaceSession.equippedNameTag || DEFAULT_NAME_TAG, state.testRaceSession.username, null, null)
-                  : nameTagHtml((state.user && state.user.equippedNameTag) || DEFAULT_NAME_TAG, state.user ? displayNameFor(state.user) : "",
+                  ? nameTagHtml(nameTagImageFor(state.testRaceSession.equippedNameTag), state.testRaceSession.username, null, null)
+                  : nameTagHtml(nameTagImageFor(state.user && state.user.equippedNameTag), state.user ? displayNameFor(state.user) : "",
                       (state.userGuild && state.userGuild.tag) || (state.user && state.user.guildTag) || null,
                       (state.userGuild && GUILD_COLORS[state.userGuild.color]) || (state.user && state.user.guildColor && GUILD_COLORS[state.user.guildColor]) || null,
                       (function(){ var ut = resolveTitle(state.user, titleCatalogCache); return ut ? ut.text : null; })(),
@@ -15140,11 +15144,12 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
         if(!carId){ grantErrEl.textContent = "Select a car."; return; }
         reward = { rewardType: "car", rewardCarId: carId, rewardCarName: (carOpt && carOpt.getAttribute("data-name")) || carId };
       } else if(type === "nameTag"){
-        var tagSel = document.getElementById("grantNameTagSelect");
-        var tagOpt = tagSel && tagSel.options[tagSel.selectedIndex];
-        var tagImage = tagOpt && tagOpt.getAttribute("data-image");
-        if(!tagImage){ grantErrEl.textContent = "Select a name tag."; return; }
-        reward = { rewardType: "nameTag", rewardNameTagImage: tagImage };
+        // grantNameTagSelect is a hidden input holding the chosen id -- the
+        // picker above it is a clickable list, not a <select>. Reading
+        // .options off it gave undefined every time, so granting a name tag
+        // always failed with "Select a name tag."
+        if(!grantSelectedNtId || !grantSelectedNtImage){ grantErrEl.textContent = "Select a name tag."; return; }
+        reward = { rewardType: "nameTag", rewardNameTagImage: grantSelectedNtImage };
       } else if(type === "avatar"){
         if(!grantSelectedAvId){ grantErrEl.textContent = "Select an avatar piece."; return; }
         reward = { rewardType: "avatar", rewardAvatarPieceId: grantSelectedAvId, rewardAvatarSlot: grantSelectedAvSlot, rewardAvatarName: grantSelectedAvName };
@@ -15979,11 +15984,20 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
         box.innerHTML = '<div class="center-note">No name tags owned beyond the default.</div>';
         return;
       }
-      box.innerHTML = owned.map(function(img, idx){
-        var isEquipped = acc.equippedNameTag === img;
+      box.innerHTML = owned.map(function(entry, idx){
+        var isEquipped = acc.equippedNameTag === entry;
+        // `entry` is a catalog id now. It has to be resolved before it can be
+        // shown -- putting it straight in an <img src> renders a broken image.
+        var img = nameTagImageFor(entry);
+        var cat = nameTagEntryFor(entry);
+        var qty = getNameTagQuantity(acc, entry);
         return '<div class="admin-car-row">' +
           '<div style="width:160px;height:46px;flex:0 0 160px;"><img src="' + img + '" alt="" style="width:100%;height:100%;object-fit:contain;display:block;image-rendering:pixelated;" /></div>' +
-          '<div style="flex:1;min-width:0;font-size:12px;color:var(--muted);">' + (isEquipped ? "Currently equipped" : "") + '</div>' +
+          '<div style="flex:1;min-width:0;font-size:12px;color:var(--muted);">' +
+            (cat ? escapeHtml(cat.name || "Name Tag") : "(not in catalog)") +
+            (qty > 1 ? ' \u00d7' + qty : '') +
+            (isEquipped ? '<br>Currently equipped' : '') +
+          '</div>' +
           '<button class="small-btn" data-nametag-take-away="' + idx + '" style="color:var(--red);border-color:var(--red);">Take Away</button>' +
         '</div>';
       }).join("");
@@ -15995,6 +16009,11 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
             var owned2 = (acc.ownedNameTags || []).filter(function(t){ return t && t !== DEFAULT_NAME_TAG; });
             var removedImg = owned2[idx];
             if(!removedImg) return;
+            // Removes ALL copies and the count with them -- same reasoning as
+            // the admin title removal: leaving nameTagQuantities behind would
+            // leave a ghost the player still counts as owning.
+            acc.nameTagQuantities = acc.nameTagQuantities || {};
+            delete acc.nameTagQuantities[removedImg];
             acc.ownedNameTags = (acc.ownedNameTags || []).filter(function(t){ return t !== removedImg; });
             // If the tag being taken away is the one they have equipped,
             // fall back to the default — same as a player unequipping.
