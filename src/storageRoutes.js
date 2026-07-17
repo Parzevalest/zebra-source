@@ -1205,6 +1205,19 @@ function reconcileAccountSelfWrite(incoming, current, baseline) {
   incoming.carQuantities = reconcileQtyMap(current.carQuantities, incoming.carQuantities, baseline.carQuantities);
   incoming.ownedNameTags = reconcileStringList(current.ownedNameTags, incoming.ownedNameTags, baseline.ownedNameTags);
   incoming.ownedTitles   = reconcileStringList(current.ownedTitles, incoming.ownedTitles, baseline.ownedTitles);
+  // titleQuantities MUST be reconciled like every other quantity map.
+  //
+  // Without this line the field passed through untouched, which meant the
+  // client's absolute value replaced the database's -- so any tab that had
+  // been open since before a sale (or a wheel win) wrote its stale count back
+  // over the real one. Because it's an overwrite rather than a delta, however
+  // far behind that tab was is exactly how many copies vanished at once, which
+  // is why it showed up as "selling a title removes multiple copies".
+  //
+  // ownedTitles above was already reconciled, so the two could disagree: the
+  // array said you owned it, the map said how many, and only one of them was
+  // being merged.
+  incoming.titleQuantities = reconcileQtyMap(current.titleQuantities, incoming.titleQuantities, baseline.titleQuantities);
 
   incoming.ownedAvatarPieces = incoming.ownedAvatarPieces || {};
   incoming.avatarPieceQuantities = incoming.avatarPieceQuantities || {};
