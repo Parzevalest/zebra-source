@@ -5559,8 +5559,10 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
       addAvatarPieceToInventory(acc, reward.rewardAvatarSlot, reward.rewardAvatarPieceId);
       // Added to collection only — player equips it manually from the garage.
     } else if(reward.rewardType === "title" && reward.rewardTitleId){
-      acc.ownedTitles = acc.ownedTitles || [];
-      if(acc.ownedTitles.indexOf(reward.rewardTitleId) === -1) acc.ownedTitles.push(reward.rewardTitleId);
+      // Was: push only if not already owned -- so spinning a title you had
+      // gave you literally nothing. Now the duplicate lands as a second copy
+      // you can sell on the Black Market.
+      addTitleToInventory(acc, reward.rewardTitleId, 1);
       if(!acc.equippedTitle) acc.equippedTitle = reward.rewardTitleId;
     } else if(reward.rewardType === "freeSpins" && reward.rewardSpinCount){
       acc.freeWheelSpins = (acc.freeWheelSpins||0) + parseInt(reward.rewardSpinCount,10);
@@ -6873,6 +6875,50 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     return copy;
   }
 
+  // ── Title inventory ─────────────────────────────────────────────────
+  //
+  // ownedTitles has always been a plain array guarded by indexOf, so winning
+  // a title you already had on the wheel gave you nothing at all. Quantities
+  // let the duplicate exist so it can be sold.
+  //
+  // Same shape as cars: the array answers "do I own this", the map carries
+  // the count, and an id in the array with no count reads as 1. That fallback
+  // is what makes existing accounts work untouched.
+  function getTitleQuantity(acc, titleId){
+    if(!acc) return 0;
+    if(acc.titleQuantities && typeof acc.titleQuantities[titleId] === "number") return acc.titleQuantities[titleId];
+    // Legacy fallback for accounts saved before title quantities existed.
+    if(acc.ownedTitles && acc.ownedTitles.indexOf(titleId) !== -1) return 1;
+    return 0;
+  }
+
+  function addTitleToInventory(acc, titleId, qty){
+    qty = qty || 1;
+    acc.titleQuantities = acc.titleQuantities || {};
+    acc.titleQuantities[titleId] = getTitleQuantity(acc, titleId) + qty;
+    acc.ownedTitles = acc.ownedTitles || [];
+    if(acc.ownedTitles.indexOf(titleId) === -1) acc.ownedTitles.push(titleId);
+  }
+
+  // Removes qty copies. At zero the title leaves ownedTitles, and if it was
+  // equipped the player falls back to the default rather than wearing a title
+  // they no longer own. Selling your last copy is allowed -- same as cars,
+  // where you can sell the car you're driving.
+  function removeTitleFromInventory(acc, titleId, qty){
+    qty = qty || 1;
+    acc.titleQuantities = acc.titleQuantities || {};
+    var next = Math.max(0, getTitleQuantity(acc, titleId) - qty);
+    acc.titleQuantities[titleId] = next;
+    if(next === 0){
+      if(acc.ownedTitles){
+        var idx = acc.ownedTitles.indexOf(titleId);
+        if(idx !== -1) acc.ownedTitles.splice(idx, 1);
+      }
+      if(acc.equippedTitle === titleId) acc.equippedTitle = DEFAULT_TITLE_ID;
+    }
+    return next;
+  }
+
   function getCarQuantity(acc, carId){
     if(!acc) return 0;
     if(acc.carQuantities && typeof acc.carQuantities[carId] === "number") return acc.carQuantities[carId];
@@ -7866,14 +7912,37 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
         var rarity = title ? (title.rarity || "Common") : "Common";
         var color = RARITY_COLORS[rarity] || "var(--muted)";
         var isEquipped = equipped === tid;
+        var qty = isDefault ? 1 : getTitleQuantity(acc, tid);
+        // The default title is granted to everyone and isn't a real item --
+        // no quantity, no selling.
+        var canList = !isDefault && ITEM_UNLISTABLE_RARITIES.indexOf(rarity) === -1 && !(title && title.isSeasonal) && qty > 0;
         return '<div class="admin-car-row" style="border:1px solid ' + (isEquipped ? 'var(--text)' : 'var(--line)') + ';border-radius:10px;padding:12px;margin-bottom:8px;">' +
           '<div style="flex:1;">' +
-            '<div style="font-size:15px;font-weight:700;color:' + color + ';font-style:italic;">&ldquo;' + escapeHtml(text) + '&rdquo;' + (isDefault ? ' <span style="font-size:10px;font-weight:400;color:var(--muted);font-style:normal;">(Default)</span>' : '') + '</div>' +
+            '<div style="font-size:15px;font-weight:700;color:' + color + ';font-style:italic;">&ldquo;' + escapeHtml(text) + '&rdquo;' + (isDefault ? ' <span style="font-size:10px;font-weight:400;color:var(--muted);font-style:normal;">(Default)</span>' : '') +
+              (qty > 1 ? ' <span style="font-size:11px;font-weight:700;color:var(--text);font-style:normal;background:var(--panel-2);border:1px solid var(--line);border-radius:10px;padding:1px 7px;">\u00d7' + qty + '</span>' : '') +
+            '</div>' +
             '<div style="font-size:11px;margin-top:3px;">' + rarityTextHtml(rarity) + '</div>' +
           '</div>' +
+          (canList ? '<button class="small-btn" data-list-title="' + escapeHtml(tid) + '" style="margin-right:6px;">List</button>' : '') +
           '<button class="equip-btn" data-equip-title="' + escapeHtml(tid) + '">' + (isEquipped ? 'Equipped' : 'Equip') + '</button>' +
         '</div>';
       }).join("");
+
+      // Listing a title. Same modal every other Black Market item uses.
+      // Selling your last copy is allowed -- it unequips on the server (see
+      // removeTitleFromInventory) exactly like selling the car you're driving.
+      floor.querySelectorAll("[data-list-title]").forEach(function(btn){
+        btn.addEventListener("click", function(){
+          var tid = btn.getAttribute("data-list-title");
+          var t = catalog.find(function(x){ return x.id === tid; });
+          if(!t) return;
+          openBMItemListModal(
+            { itemType: "title", itemId: tid, itemName: t.text || tid, itemImage: null, rarity: t.rarity || "Common", slot: null },
+            acc,
+            function(){ renderGarageTitles(); }
+          );
+        });
+      });
 
       floor.querySelectorAll("[data-equip-title]").forEach(function(btn){
         btn.addEventListener("click", async function(){
@@ -7890,11 +7959,41 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
   }
 
   // ---- BM Item Listing Modal ----
+  // Thumbnail for a Black Market listing. Cars render their visual; every
+  // other type has an image -- except titles, which are text. Without this a
+  // title listing renders <img src="null"> and shows a broken-image icon.
+  function bmListingThumbHtml(l){
+    if(l.itemType === "car"){
+      var car = customCarsCache.find(function(c){ return c.id === l.itemId; });
+      return '<div class="admin-car-thumb">' + (car ? carVisualHtml(car) : '') + '</div>';
+    }
+    if(l.itemType === "title" || !l.itemImage){
+      return '<div class="admin-car-thumb" style="width:80px;height:50px;flex:0 0 80px;display:flex;align-items:center;justify-content:center;font-style:italic;font-weight:700;font-size:11px;text-align:center;color:' + (RARITY_COLORS[l.rarity] || "var(--muted)") + ';">&ldquo;' + escapeHtml(l.itemName || "") + '&rdquo;</div>';
+    }
+    return '<div class="admin-car-thumb" style="width:80px;height:50px;flex:0 0 80px;display:flex;align-items:center;justify-content:center;"><img src="' + escapeHtml(l.itemImage) + '" style="max-width:100%;max-height:100%;object-fit:contain;image-rendering:pixelated;" /></div>';
+  }
+
+  // The old inline version was a chain ending in "Name Tag", so anything that
+  // wasn't a car or an avatar was labelled a name tag -- a title listing would
+  // have claimed to be one.
+  function bmListingTypeLabel(l){
+    if(l.itemType === "car") return "Car";
+    if(l.itemType === "avatar") return AVATAR_SLOT_LABELS[l.slot] || "Avatar";
+    if(l.itemType === "title") return "Title";
+    return "Name Tag";
+  }
+
   function openBMItemListModal(item, acc, onSuccess){
+    // Titles have no image -- they're text. Every other item type passes a
+    // data URL here, and `<img src="null">` renders a broken-image icon, so
+    // show the title itself in its rarity colour instead.
+    var previewHtml = item.itemImage
+      ? '<img src="' + item.itemImage + '" style="width:80px;height:50px;object-fit:contain;image-rendering:pixelated;" />'
+      : '<div style="width:80px;height:50px;display:flex;align-items:center;justify-content:center;font-style:italic;font-weight:700;font-size:13px;text-align:center;color:' + (RARITY_COLORS[item.rarity] || "var(--muted)") + ';">&ldquo;' + escapeHtml(item.itemName) + '&rdquo;</div>';
     var html =
       '<button class="small-btn" id="modalCloseBtn" style="position:absolute;top:14px;right:14px;">\u2715</button>' +
       '<div style="display:flex;align-items:center;gap:14px;background:var(--panel-2);border:1px solid var(--line);border-radius:10px;padding:16px;margin-bottom:16px;">' +
-        '<img src="' + item.itemImage + '" style="width:80px;height:50px;object-fit:contain;image-rendering:pixelated;" />' +
+        previewHtml +
         '<div><div style="font-weight:700;font-size:16px;color:var(--text);">' + escapeHtml(item.itemName) + '</div>' +
           '<div style="font-size:13px;">' + rarityTextHtml(item.rarity) + '</div></div>' +
       '</div>' +
@@ -9012,8 +9111,15 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
           var filteredOpps = (msg.opponents || []).filter(function(o){ return o.username.toLowerCase() !== myName; });
           filteredOpps.forEach(function(o){
             var exists = raceState.opponents.find(function(x){ return x.username === o.username; });
-            if(!exists) raceState.opponents.push({ username: o.username, carId: o.carId, charsTyped: 0, fraction: 0, wpm: 0, finished: false, place: null, displayName: o.displayName || "", guildTag: o.guildTag || "", guildColor: o.guildColor || "", trackStartGlideFired: false, trackFinishGlideFired: false, titleText: o.titleText || "", titleRarity: o.titleRarity || "" });
-            else { exists.carId = o.carId; exists.displayName = o.displayName || exists.displayName; exists.guildTag = o.guildTag || exists.guildTag; exists.guildColor = o.guildColor || exists.guildColor; exists.titleText = o.titleText || exists.titleText; exists.titleRarity = o.titleRarity || exists.titleRarity; }
+            // nameTag has to be on BOTH branches.
+            //
+            // An opponent already in the list arrived via room_joined, which
+            // does carry nameTag -- that's the one whose tag showed. An
+            // opponent who joined AFTER us is first seen right here, and this
+            // push never set nameTag, so they fell back to the default. With
+            // two opponents you'd reliably see one real tag and one default.
+            if(!exists) raceState.opponents.push({ username: o.username, carId: o.carId, charsTyped: 0, fraction: 0, wpm: 0, finished: false, place: null, displayName: o.displayName || "", guildTag: o.guildTag || "", guildColor: o.guildColor || "", trackStartGlideFired: false, trackFinishGlideFired: false, titleText: o.titleText || "", titleRarity: o.titleRarity || "", nameTag: o.nameTag || "" });
+            else { exists.carId = o.carId; exists.displayName = o.displayName || exists.displayName; exists.guildTag = o.guildTag || exists.guildTag; exists.guildColor = o.guildColor || exists.guildColor; exists.titleText = o.titleText || exists.titleText; exists.titleRarity = o.titleRarity || exists.titleRarity; exists.nameTag = o.nameTag || exists.nameTag; }
           });
           // Final safety: remove self from opponents
           var selfName = state.user ? state.user.username.toLowerCase() : "";
@@ -17158,10 +17264,8 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
       var mine = allListings.filter(function(l){ return l.sellerUsername.toLowerCase() === acc.username.toLowerCase(); });
       if(myBox){
         myBox.innerHTML = mine.length ? mine.map(function(l){
-          var thumb = l.itemType === "car"
-            ? (function(){ var car = customCarsCache.find(function(c){ return c.id === l.itemId; }); return '<div class="admin-car-thumb">' + (car ? carVisualHtml(car) : '') + '</div>'; })()
-            : '<div class="admin-car-thumb" style="width:80px;height:50px;flex:0 0 80px;display:flex;align-items:center;justify-content:center;"><img src="' + escapeHtml(l.itemImage) + '" style="max-width:100%;max-height:100%;object-fit:contain;image-rendering:pixelated;" /></div>';
-          var typeLabel = l.itemType === "car" ? "Car" : l.itemType === "avatar" ? (AVATAR_SLOT_LABELS[l.slot] || "Avatar") : "Name Tag";
+          var thumb = bmListingThumbHtml(l);
+          var typeLabel = bmListingTypeLabel(l);
           return '<div class="admin-car-row">' +
             thumb +
             '<div style="flex:1;min-width:0;">' +
@@ -17214,10 +17318,8 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
         if(!browseBox) return;
         browseBox.innerHTML = filtered.length ? filtered.map(function(l){
           var canAfford = coins >= l.price;
-          var thumb = l.itemType === "car"
-            ? (function(){ var car = customCarsCache.find(function(c){ return c.id === l.itemId; }); return '<div class="admin-car-thumb">' + (car ? carVisualHtml(car) : '') + '</div>'; })()
-            : '<div class="admin-car-thumb" style="width:80px;height:50px;flex:0 0 80px;display:flex;align-items:center;justify-content:center;"><img src="' + escapeHtml(l.itemImage) + '" style="max-width:100%;max-height:100%;object-fit:contain;image-rendering:pixelated;" /></div>';
-          var typeLabel = l.itemType === "car" ? "Car" : l.itemType === "avatar" ? (AVATAR_SLOT_LABELS[l.slot] || "Avatar") : "Name Tag";
+          var thumb = bmListingThumbHtml(l);
+          var typeLabel = bmListingTypeLabel(l);
           return '<div class="admin-car-row">' +
             thumb +
             '<div style="flex:1;min-width:0;">' +
