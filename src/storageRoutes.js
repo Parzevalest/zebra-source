@@ -1136,6 +1136,11 @@ const SERVER_OWNED_ACCOUNT_FIELDS = [
   // if a background save could quietly drop it, the unban would come undone
   // again the next time the player's IP was checked.
   "ipBanExempt",
+  // Stamped by the one-time title quantity reset. Server-owned for the same
+  // reason as ipBanExempt: it records that an admin action happened, and a
+  // client that loaded before it must not be able to erase the evidence and
+  // make the reset look like it never ran.
+  "titleQtyResetAt",
   "unbannedAt",
   "unbannedBy",
 ];
@@ -1198,7 +1203,27 @@ function reconcileAccountSelfWrite(incoming, current, baseline) {
     else delete incoming[f];
   }
 
-  if (!baseline || typeof baseline !== "object") return incoming;
+  if (!baseline || typeof baseline !== "object") {
+    // No baseline means no delta can be computed, so everything below is
+    // skipped and the account is stored exactly as the client sent it.
+    //
+    // That is how a reset gets undone. The sweep empties titleQuantities in
+    // the database, but any client that loaded BEFORE it still holds the old
+    // inflated map in memory; the moment it saves without a baseline, that map
+    // is written straight back and the reset silently evaporates. It's most
+    // likely to happen to the admin who ran the sweep, because their client
+    // was open at the time.
+    //
+    // Once the reset has run on an account, the server's copy of the map wins
+    // over any baseline-less save. A client with a real change sends a
+    // baseline and takes the normal path below.
+    if (current.titleQtyResetAt) incoming.titleQuantities = current.titleQuantities || {};
+    // Still clamp: the ceiling is a repair, and it shouldn't depend on
+    // whether a baseline happened to be attached.
+    incoming.titleQuantities = clampQtyMap(incoming.titleQuantities);
+    incoming.nameTagQuantities = clampQtyMap(incoming.nameTagQuantities);
+    return incoming;
+  }
 
   incoming.coins        = reconcileNumber(current.coins, incoming.coins, baseline.coins);
   incoming.ownedCarIds  = reconcileStringList(current.ownedCarIds, incoming.ownedCarIds, baseline.ownedCarIds);
@@ -1892,11 +1917,17 @@ router.post("/reset-title-quantities", async (req, res) => {
       scanned++;
       let acc;
       try { acc = JSON.parse(row.value); } catch (e) { failed++; continue; }
-      if (!acc || !acc.titleQuantities || !Object.keys(acc.titleQuantities).length) continue;
+      if (!acc) { failed++; continue; }
+      const hadCounts = acc.titleQuantities && Object.keys(acc.titleQuantities).length;
       acc.titleQuantities = {};
+      // Stamped even on accounts that had nothing to clear. The stamp is what
+      // stops a client that loaded before the reset from writing its old map
+      // back (see reconcileAccountSelfWrite), and an account with no counts
+      // today can still have a stale tab open holding some.
+      acc.titleQtyResetAt = Date.now();
       try {
         await store.set("system", row.key, JSON.stringify(acc), true);
-        reset++;
+        if (hadCounts) reset++;
       } catch (e) { failed++; }
     }
 
