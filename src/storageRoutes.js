@@ -1204,6 +1204,10 @@ function reconcileAccountSelfWrite(incoming, current, baseline) {
   incoming.ownedCarIds  = reconcileStringList(current.ownedCarIds, incoming.ownedCarIds, baseline.ownedCarIds);
   incoming.carQuantities = reconcileQtyMap(current.carQuantities, incoming.carQuantities, baseline.carQuantities);
   incoming.ownedNameTags = reconcileStringList(current.ownedNameTags, incoming.ownedNameTags, baseline.ownedNameTags);
+  // Same delta merge as every other quantity map. Leaving this out is exactly
+  // what made selling a title destroy multiple copies -- an unreconciled map
+  // is an absolute overwrite, so a stale tab wipes however far behind it is.
+  incoming.nameTagQuantities = clampQtyMap(reconcileQtyMap(current.nameTagQuantities, incoming.nameTagQuantities, baseline.nameTagQuantities));
   incoming.ownedTitles   = reconcileStringList(current.ownedTitles, incoming.ownedTitles, baseline.ownedTitles);
   // titleQuantities MUST be reconciled like every other quantity map.
   //
@@ -1217,7 +1221,7 @@ function reconcileAccountSelfWrite(incoming, current, baseline) {
   // ownedTitles above was already reconciled, so the two could disagree: the
   // array said you owned it, the map said how many, and only one of them was
   // being merged.
-  incoming.titleQuantities = reconcileQtyMap(current.titleQuantities, incoming.titleQuantities, baseline.titleQuantities);
+  incoming.titleQuantities = clampQtyMap(reconcileQtyMap(current.titleQuantities, incoming.titleQuantities, baseline.titleQuantities));
 
   incoming.ownedAvatarPieces = incoming.ownedAvatarPieces || {};
   incoming.avatarPieceQuantities = incoming.avatarPieceQuantities || {};
@@ -1283,6 +1287,109 @@ function getCarQuantity(acc, carId) {
 // own this at all", the map carries the count, and an entry present in the
 // array with no count reads as 1. That's what makes this safe on existing
 // accounts -- nobody needs migrating, they just read as owning one of each.
+
+// ── Name tag identity (server side) ─────────────────────────────────────────
+//
+// Owned name tags moved from image data URLs to catalog ids. Both shapes are
+// in the wild: accounts convert on their next read, listings created before
+// the change still carry an image as their itemId, and a tag whose catalog
+// entry was deleted can never resolve to an id at all.
+//
+// Cached because /bm-buy would otherwise read the whole catalog -- every image
+// in it -- on every purchase.
+let nameTagCatalogCache = null;
+let nameTagCatalogCachedAt = 0;
+const NAMETAG_CATALOG_TTL_MS = 60 * 1000;
+
+async function getNameTagCatalog() {
+  const now = Date.now();
+  if (nameTagCatalogCache && now - nameTagCatalogCachedAt < NAMETAG_CATALOG_TTL_MS) return nameTagCatalogCache;
+  try {
+    const res = await store.get("system", "nametag_catalog", true);
+    nameTagCatalogCache = res && res.value ? JSON.parse(res.value) : [];
+  } catch (e) {
+    nameTagCatalogCache = nameTagCatalogCache || [];
+  }
+  nameTagCatalogCachedAt = now;
+  return nameTagCatalogCache;
+}
+
+// An id or a legacy image -> the id if one exists, otherwise the value
+// unchanged (so an orphaned tag still matches itself).
+function nameTagKeyFor(value, catalog) {
+  if (!value) return null;
+  if (!String(value).startsWith("data:")) return value;
+  const hit = (catalog || []).find((t) => t && t.image === value);
+  return hit ? hit.id : value;
+}
+
+function getNameTagQuantity(acc, key) {
+  if (!acc || !key) return 0;
+  if (acc.nameTagQuantities && typeof acc.nameTagQuantities[key] === "number") return acc.nameTagQuantities[key];
+  if (acc.ownedNameTags && acc.ownedNameTags.indexOf(key) !== -1) return 1;
+  return 0;
+}
+
+function addNameTagToInventory(acc, key, qty) {
+  if (!key) return;
+  qty = qty || 1;
+  acc.nameTagQuantities = acc.nameTagQuantities || {};
+  acc.nameTagQuantities[key] = getNameTagQuantity(acc, key) + qty;
+  acc.ownedNameTags = acc.ownedNameTags || [];
+  if (acc.ownedNameTags.indexOf(key) === -1) acc.ownedNameTags.push(key);
+}
+
+function removeNameTagFromInventory(acc, key, qty) {
+  if (!key) return 0;
+  qty = qty || 1;
+  acc.nameTagQuantities = acc.nameTagQuantities || {};
+  const next = Math.max(0, getNameTagQuantity(acc, key) - qty);
+  acc.nameTagQuantities[key] = next;
+  if (next === 0) {
+    if (acc.ownedNameTags) {
+      const idx = acc.ownedNameTags.indexOf(key);
+      if (idx !== -1) acc.ownedNameTags.splice(idx, 1);
+    }
+    if (acc.equippedNameTag === key) acc.equippedNameTag = null;
+  }
+  return next;
+}
+
+// Title catalog, cached like the name tag one. Needed because seasonal was
+// only ever enforced in the browser -- for every item type, not just titles --
+// so the button was hidden but the endpoint would happily complete the sale.
+let titleCatalogCacheSrv = null;
+let titleCatalogCachedAt = 0;
+
+async function getTitleCatalog() {
+  const now = Date.now();
+  if (titleCatalogCacheSrv && now - titleCatalogCachedAt < NAMETAG_CATALOG_TTL_MS) return titleCatalogCacheSrv;
+  try {
+    const res = await store.get("system", "title_catalog", true);
+    titleCatalogCacheSrv = res && res.value ? JSON.parse(res.value) : [];
+  } catch (e) {
+    titleCatalogCacheSrv = titleCatalogCacheSrv || [];
+  }
+  titleCatalogCachedAt = now;
+  return titleCatalogCacheSrv;
+}
+
+// Quantities that came out of the titleQuantities doubling bug are
+// astronomical -- 2^n multiples, into the 1e26 range. Nothing legitimate gets
+// near this, so anything above the ceiling is corruption and resets to a
+// single copy. Runs on every self-write, so accounts repair themselves the
+// next time their owner plays.
+const MAX_SANE_QUANTITY = 999;
+
+function clampQtyMap(map) {
+  const out = {};
+  Object.keys(map || {}).forEach((k) => {
+    const v = _num(map[k]);
+    if (!isFinite(v) || v > MAX_SANE_QUANTITY) out[k] = 1;
+    else if (v > 0) out[k] = v;
+  });
+  return out;
+}
 
 // The client's DEFAULT_TITLE_ID. Duplicated here because the server has no
 // access to zebra_type.html's constants -- if you rename it there, rename it
@@ -1601,14 +1708,44 @@ router.post("/bm-buy", async (req, res) => {
     addCarToInventory(buyer, listing.carId, 1);
     removeCarFromInventory(seller, listing.carId, 1);
   } else if (listing.itemType === "nameTag") {
-    if (!(seller.ownedNameTags || []).some((t) => t === listing.itemImage)) {
+    // Listings created before name tags moved to catalog ids carry the image
+    // as their itemId, and a seller's account may not have migrated yet
+    // either. Resolve both, then check whichever key the seller actually
+    // holds -- otherwise every in-flight listing would go stale the moment
+    // this deployed.
+    const ntCatalog = await getNameTagCatalog();
+    const idKey = nameTagKeyFor(listing.itemId || listing.itemImage, ntCatalog);
+    // Name tags have always carried isSeasonal, but only the browser looked at
+    // it. A stale or crafted listing would sell one regardless.
+    const ntEntry = (ntCatalog || []).find((t) => t && t.id === idKey);
+    if (ntEntry && ntEntry.isSeasonal) {
+      await store.set("system", key, JSON.stringify(remaining), true);
+      return res.status(400).json({ error: "seasonal_item", message: "Seasonal items can't be traded." });
+    }
+    const legacyKey = listing.itemImage;
+    const owned = seller.ownedNameTags || [];
+    const sellerKey = owned.indexOf(idKey) !== -1 ? idKey
+                    : (legacyKey && owned.indexOf(legacyKey) !== -1) ? legacyKey
+                    : null;
+
+    const otherListings = listings.filter((l) =>
+      l.id !== listingId && sameUser(l.sellerUsername, seller.username) &&
+      l.itemType === "nameTag" && nameTagKeyFor(l.itemId || l.itemImage, ntCatalog) === idKey
+    ).length;
+
+    if (!sellerKey || getNameTagQuantity(seller, sellerKey) <= otherListings) {
       await store.set("system", key, JSON.stringify(remaining), true);
       return res.status(409).json({ error: "listing_stale" });
     }
-    buyer.ownedNameTags = buyer.ownedNameTags || [];
-    if (buyer.ownedNameTags.indexOf(listing.itemImage) === -1) buyer.ownedNameTags.push(listing.itemImage);
-    seller.ownedNameTags = (seller.ownedNameTags || []).filter((t) => t !== listing.itemImage);
-    if (seller.equippedNameTag === listing.itemImage) seller.equippedNameTag = null;
+
+    // The buyer always receives the id form -- no reason to hand a new owner
+    // the legacy shape and make them migrate later.
+    addNameTagToInventory(buyer, idKey, 1);
+    removeNameTagFromInventory(seller, sellerKey, 1);
+    // Selling the copy you were wearing drops you back to the default.
+    if (seller.equippedNameTag === sellerKey && getNameTagQuantity(seller, sellerKey) === 0) {
+      seller.equippedNameTag = null;
+    }
   } else if (listing.itemType === "avatar") {
     const otherListings = listings.filter((l) =>
       l.id !== listingId && sameUser(l.sellerUsername, seller.username) &&
@@ -1621,10 +1758,16 @@ router.post("/bm-buy", async (req, res) => {
     addAvatarPieceToInventory(buyer, listing.slot, listing.itemId);
     removeAvatarPieceFromInventory(seller, listing.slot, listing.itemId, 1);
   } else if (listing.itemType === "title") {
-    // Titles were never a Black Market item type -- /bm-buy would have
-    // returned unknown_item_type. Modelled on the avatar branch: count the
-    // seller's OTHER live listings for the same title, so someone with two
-    // copies can't put up three listings and sell a title they don't have.
+    // Seasonal was a browser-only rule until now: the List button was hidden,
+    // but nothing stopped a crafted request, and titles never carried the flag
+    // at all so even the button didn't hide. Checked here because this is the
+    // point of no return -- once this completes, the item has moved.
+    const titleCat = await getTitleCatalog();
+    const titleEntry = (titleCat || []).find((t) => t && t.id === listing.itemId);
+    if (titleEntry && titleEntry.isSeasonal) {
+      await store.set("system", key, JSON.stringify(remaining), true);
+      return res.status(400).json({ error: "seasonal_item", message: "Seasonal items can't be traded." });
+    }
     const otherListings = listings.filter((l) =>
       l.id !== listingId && sameUser(l.sellerUsername, seller.username) &&
       l.itemType === "title" && l.itemId === listing.itemId
@@ -1720,6 +1863,49 @@ router.post("/unban-player", async (req, res) => {
 
     res.json({ ok: true, cleared });
   } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── One-time repair: title quantity reset ───────────────────────────────────
+//
+// The titleQuantities doubling bug (baseline snapshot didn't carry the field,
+// so every self-write added the whole value on top of itself) left accounts
+// holding 2^n copies of titles. The true count isn't recoverable -- a real 8
+// and a doubled 8 are the same number -- so every account resets to a single
+// copy of each title it owns.
+//
+// It resets by EMPTYING titleQuantities rather than writing 1s: with no entry,
+// getTitleQuantity falls back to "in ownedTitles -> 1", which is exactly the
+// desired end state and leaves nothing behind to go stale.
+//
+// Safe against stale tabs. The merge is a delta: a tab still holding {T:512}
+// sends incoming 512 against baseline 512, the delta is 0, and the emptied map
+// stays emptied. It can't be reintroduced.
+router.post("/reset-title-quantities", async (req, res) => {
+  const session = await getSession(req);
+  if (!session || !session.isAdmin) return res.status(403).json({ error: "forbidden" });
+
+  try {
+    const rows = await store.listEntries("account:");
+    let scanned = 0, reset = 0, failed = 0;
+
+    for (const row of rows) {
+      scanned++;
+      let acc;
+      try { acc = JSON.parse(row.value); } catch (e) { failed++; continue; }
+      if (!acc || !acc.titleQuantities || !Object.keys(acc.titleQuantities).length) continue;
+      acc.titleQuantities = {};
+      try {
+        await store.set("system", row.key, JSON.stringify(acc), true);
+        reset++;
+      } catch (e) { failed++; }
+    }
+
+    console.log("[admin] title quantity reset by", session.username, "-- scanned:", scanned, "reset:", reset, "failed:", failed);
+    res.json({ scanned, reset, failed });
+  } catch (e) {
+    console.error("[admin] title quantity reset error:", e.message);
+    res.status(500).json({ error: e.message });
+  }
 });
 
 router.post("/unban", async (req, res) => {
