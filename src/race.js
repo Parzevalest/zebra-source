@@ -368,7 +368,20 @@ function makeRaceServer(httpServer) {
     ws.username = username;
 
     send(ws, { type: "room_joined", roomId: room.id, opponentsSoFar: opponentList(room, username) });
-    broadcastToRoom(room, { type: "room_joined", roomId: room.id, opponentsSoFar: opponentList(room, ws.username) }, username);
+    // The full roster, not opponentList(room, ws.username).
+    //
+    // ws.username was assigned two lines up, so it IS the joiner -- meaning
+    // this broadcast sent everyone else a list with the person who just
+    // joined removed from it. One payload goes to every existing player, so
+    // it can't be personalised anyway; the only correct thing to send is
+    // everyone. The client filters itself out on receipt (see the
+    // room_joined handler), which is exactly what the other broadcast of
+    // this message already relies on by passing null here.
+    //
+    // The visible effect: existing players never learned about a late joiner
+    // until race_starting, so that opponent was first created by the merge
+    // there rather than here.
+    broadcastToRoom(room, { type: "room_joined", roomId: room.id, opponentsSoFar: opponentList(room, null) }, username);
 
     if (room.players.size >= ROOM_SIZE && !room.locked) {
       clearTimeout(room.joinTimer);

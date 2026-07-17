@@ -1259,6 +1259,59 @@ function getCarQuantity(acc, carId) {
   return 0;
 }
 
+// ── Title inventory ─────────────────────────────────────────────────────────
+//
+// Mirrors the car helpers above. ownedTitles has always been a plain array of
+// ids guarded by `indexOf(...) === -1`, which meant a duplicate title from the
+// wheel was silently discarded -- you spun, you won something you already had,
+// and you got nothing. Quantities let the second copy exist so it can be sold.
+//
+// Same shape as carQuantities: the array stays the source of truth for "do I
+// own this at all", the map carries the count, and an entry present in the
+// array with no count reads as 1. That's what makes this safe on existing
+// accounts -- nobody needs migrating, they just read as owning one of each.
+
+// The client's DEFAULT_TITLE_ID. Duplicated here because the server has no
+// access to zebra_type.html's constants -- if you rename it there, rename it
+// here too.
+const DEFAULT_TITLE_ID = "zebra_typist_default";
+
+function getTitleQuantity(acc, titleId) {
+  if (!acc) return 0;
+  if (acc.titleQuantities && typeof acc.titleQuantities[titleId] === "number") return acc.titleQuantities[titleId];
+  if (acc.ownedTitles && acc.ownedTitles.indexOf(titleId) !== -1) return 1;
+  return 0;
+}
+
+function addTitleToInventory(acc, titleId, qty) {
+  qty = qty || 1;
+  acc.titleQuantities = acc.titleQuantities || {};
+  acc.titleQuantities[titleId] = getTitleQuantity(acc, titleId) + qty;
+  acc.ownedTitles = acc.ownedTitles || [];
+  if (acc.ownedTitles.indexOf(titleId) === -1) acc.ownedTitles.push(titleId);
+}
+
+function removeTitleFromInventory(acc, titleId, qty) {
+  qty = qty || 1;
+  acc.titleQuantities = acc.titleQuantities || {};
+  const next = Math.max(0, getTitleQuantity(acc, titleId) - qty);
+  acc.titleQuantities[titleId] = next;
+  if (next === 0) {
+    if (acc.ownedTitles) {
+      const idx = acc.ownedTitles.indexOf(titleId);
+      if (idx !== -1) acc.ownedTitles.splice(idx, 1);
+    }
+    // Selling your last copy is allowed -- same as cars, where you can sell
+    // the car you're driving. Fall back to the default title rather than
+    // leaving them wearing one they no longer own.
+    //
+    // The field is `equippedTitle`, not equippedTitleId -- see resolveTitle()
+    // in zebra_type.html.
+    if (acc.equippedTitle === titleId) acc.equippedTitle = DEFAULT_TITLE_ID;
+  }
+  return next;
+}
+
 function addCarToInventory(acc, carId, qty) {
   qty = qty || 1;
   acc.carQuantities = acc.carQuantities || {};
@@ -1554,6 +1607,23 @@ router.post("/bm-buy", async (req, res) => {
     }
     addAvatarPieceToInventory(buyer, listing.slot, listing.itemId);
     removeAvatarPieceFromInventory(seller, listing.slot, listing.itemId, 1);
+  } else if (listing.itemType === "title") {
+    // Titles were never a Black Market item type -- /bm-buy would have
+    // returned unknown_item_type. Modelled on the avatar branch: count the
+    // seller's OTHER live listings for the same title, so someone with two
+    // copies can't put up three listings and sell a title they don't have.
+    const otherListings = listings.filter((l) =>
+      l.id !== listingId && sameUser(l.sellerUsername, seller.username) &&
+      l.itemType === "title" && l.itemId === listing.itemId
+    ).length;
+    if (getTitleQuantity(seller, listing.itemId) <= otherListings) {
+      await store.set("system", key, JSON.stringify(remaining), true);
+      return res.status(409).json({ error: "listing_stale" });
+    }
+    addTitleToInventory(buyer, listing.itemId, 1);
+    // Selling the last copy is allowed and unequips it -- see
+    // removeTitleFromInventory.
+    removeTitleFromInventory(seller, listing.itemId, 1);
   } else {
     return res.status(400).json({ error: "unknown_item_type" });
   }
