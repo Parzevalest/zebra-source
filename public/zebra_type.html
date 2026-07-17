@@ -15461,6 +15461,16 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
             // Re-fetch the freshest copy so we don't clobber concurrent changes.
             var latest = await getAccount(acc.username);
             var target = (latest.ok && latest.account) ? latest.account : acc;
+            // Removes ALL copies -- an admin taking a title away should take
+            // it away, not leave the player holding duplicates.
+            //
+            // This used to filter ownedTitles and stop there, which left
+            // titleQuantities[tid] behind. getTitleQuantity reads the map
+            // first, so the player would still count as owning several copies
+            // of a title that was no longer in their list -- a ghost the
+            // garage wouldn't show but the Black Market would happily sell.
+            target.titleQuantities = target.titleQuantities || {};
+            delete target.titleQuantities[tid];
             target.ownedTitles = (target.ownedTitles || []).filter(function(x){ return x !== tid; });
             // If they had it equipped, revert them to the default title.
             if((target.equippedTitle || DEFAULT_TITLE_ID) === tid){
