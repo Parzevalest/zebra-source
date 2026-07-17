@@ -1879,9 +1879,9 @@ const AntiCheat = (() => {
     // WPM implied by mean inter-key delay: mean ms/char -> CPM = 60000/mean -> WPM = CPM/5
     const impliedWPM = mean > 0 ? Math.round((60000 / mean) / 5) : 0;
     // Human physiological ceiling: ~220 WPM for world-record typists.
-    // 300+ WPM is physically impossible without automation.
-    const physicallyImpossible = impliedWPM >= 300;
-    const extremelyFast        = impliedWPM >= 180 && impliedWPM < 300;
+    // 250+ WPM is physically impossible without automation.
+    const physicallyImpossible = impliedWPM >= 250;
+    const extremelyFast        = impliedWPM >= 180 && impliedWPM < 250;
 
     return {
       mean: Math.round(mean), stdDev: Math.round(std), cv: +cv.toFixed(3),
@@ -2112,10 +2112,10 @@ const AntiCheat = (() => {
     //  Behavioral
     if (!timings.insufficient) {
       // ── Absolute speed check — physiology doesn't lie ──────────────────────
-      // 300+ WPM is beyond human capability. No jitter analysis needed.
+      // 250+ WPM is beyond human capability. No jitter analysis needed.
       // This is the primary signal for the bot you saw at 300 WPM.
       if (timings.physicallyImpossible)
-        { signals.push(`Physically impossible speed: ${timings.impliedWPM} WPM (≥300 WPM threshold)`); score+=80; }
+        { signals.push(`Physically impossible speed: ${timings.impliedWPM} WPM (≥250 WPM threshold)`); score+=80; }
       else if (timings.extremelyFast)
         { signals.push(`Extremely fast: ${timings.impliedWPM} WPM (180-249 range)`); score+=30; }
 
@@ -2191,7 +2191,7 @@ const AntiCheat = (() => {
 
     // Timing hard signal — physically impossible speeds need no DOM evidence
     const timingHardSignal = !timings.insufficient && (
-      timings.physicallyImpossible ||                        // ≥300 WPM — impossible
+      timings.physicallyImpossible ||                        // ≥250 WPM — impossible
       (timings.extremelyFast && timings.tooUniform) ||      // 180-249 WPM + uniform timing
       (timings.badTriplets && timings.badHold)              // near-instant triplets + short hold
     );
@@ -2312,10 +2312,10 @@ const DeviceFingerprint = (() => {
       ctx.fillRect(125, 1, 62, 20);
       ctx.fillStyle    = '#069';
       ctx.font         = '11pt "Times New Roman"';
-      ctx.fillText('PandaType 🐼 anticheat', 2, 15);
+      ctx.fillText('ZebraType 🦓 anticheat', 2, 15);
       ctx.fillStyle    = 'rgba(102, 204, 0, 0.7)';
       ctx.font         = '18pt Arial';
-      ctx.fillText('PandaType 🐼 anticheat', 4, 45);
+      ctx.fillText('ZebraType 🦓 anticheat', 4, 45);
 
       // Geometric operations — blending and compositing vary by GPU
       ctx.globalCompositeOperation = 'multiply';
@@ -9708,7 +9708,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
   }
 
   function updateGauge(wpm){
-    var maxWpm = 300; // raised from 160 — fast typists can exceed that ceiling
+    var maxWpm = 250; // raised from 160 — fast typists can exceed that ceiling
     var clamped = Math.max(0, Math.min(maxWpm, wpm));
     var deg = (clamped/maxWpm) * 180 - 90; // -90deg .. +90deg
     var needleGroup = document.getElementById("needleGroup");
@@ -11227,6 +11227,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
             '<option value="Redline">Redline</option>' +
             '<option value="Sessionist">Sessionist</option>' +
             '<option value="Premium">Premium</option>' +
+            '<option value="Achievement\u00b2">Achievement\u00b2</option>' +
           '</select>' +
         '</div>' +
 
@@ -11553,7 +11554,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     }
 
     var condLabels = { races:"Races \u2265", bestWpm:"Best WPM \u2265", ownedCars:"Cars owned \u2265", coins:"Coins \u2265", racesWithRarity:"Races with rarity \u2265", bestSession:"Best session \u2265" };
-    var SECTION_OPTIONS = ["Common","Rare","Ultra Rare","Legendary","Mythic","Ascended","Unobtainable","Loaded","Redline","Sessionist","Premium"];
+    var SECTION_OPTIONS = ["Common","Rare","Ultra Rare","Legendary","Mythic","Ascended","Unobtainable","Loaded","Redline","Sessionist","Premium","Achievement\u00b2"];
     box.innerHTML = list.map(function(a){
       var condBase = (condLabels[a.conditionType] || a.conditionType) + " " + a.conditionValue;
       var cond = a.conditionType === "racesWithRarity" && a.conditionRarity ? condBase + " (" + a.conditionRarity + ")" : condBase;
@@ -19484,10 +19485,13 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
         { key: "Ascended",    color: "#C7CCD4" },
         { key: "Unobtainable",color: "#FF4D45" },
         { key: "Loaded",      color: "#FFD54F" },
-        { key: "Redline",     color: "#8B0000" },
+        // Redline darkened from #FF4D45 to free that colour up for
+        // Achievement\u00b2 below.
+        { key: "Redline",     color: "#B71C1C" },
         { key: "Sessionist",  color: "#26C6DA" },
         { key: "Premium",     color: "#FFD700" },
-        { key: "Achievement²",color: "#FF4D45" },
+        // Redline's old colour.
+        { key: "Achievement\u00b2", color: "#FF4D45" }
       ];
 
       function sectionHtml(title, color, items){
