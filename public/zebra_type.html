@@ -16430,9 +16430,15 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
       if(!catalog.length){ box.innerHTML = '<div class="center-note">No titles yet.</div>'; return; }
       box.innerHTML = catalog.map(function(t){
         var color = RARITY_COLORS[t.rarity] || "var(--muted)";
+        // Without this there's no way to tell which titles are marked
+        // seasonal -- the flag was invisible once saved, so "is this one
+        // seasonal?" could only be answered by opening Edit on every title.
+        var seasonalBadge = t.isSeasonal
+          ? '<span style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--amber);border:1px solid var(--amber);border-radius:6px;padding:1px 6px;margin-left:8px;">Seasonal</span>'
+          : '';
         return '<div class="admin-car-row">' +
           '<div style="flex:1;">' +
-            '<div style="font-size:14px;font-weight:700;color:' + color + ';font-style:italic;">&ldquo;' + escapeHtml(t.text) + '&rdquo;</div>' +
+            '<div style="font-size:14px;font-weight:700;color:' + color + ';font-style:italic;">&ldquo;' + escapeHtml(t.text) + '&rdquo;' + seasonalBadge + '</div>' +
             '<div style="font-size:11px;">' + rarityTextHtml(t.rarity||"Common") + '</div>' +
           '</div>' +
           '<button class="small-btn" data-edit-title="' + escapeHtml(t.id) + '" style="margin-right:6px;">Edit</button>' +
