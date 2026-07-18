@@ -6593,8 +6593,9 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
         coins: 0,
         ownedCarIds: [],
         carQuantities: {},     // how many of each car the player owns: { [carId]: count }
-        equippedNameTag: null, // data URL of their active race name tag; null = use the default
-        ownedNameTags: [],     // data URLs of every name tag they've earned
+        equippedNameTag: null, // catalog id of their active race name tag; null = use the default
+        ownedNameTags: [],     // catalog ids of every name tag they've earned
+        nameTagQuantities: {}, // { tagId: count } — duplicates from the wheel
         hasPremiumPass: false,       // admin-granted; gates the premium season reward track
         displayName: "",             // optional public display name; falls back to username if blank
         seasonFreeClaimedLevel: 0,   // highest free season level already granted
@@ -15946,8 +15947,19 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
       if(!box) return;
       try{
         var results = await Promise.all([fetchBlackMarketListings(), fetchBMItemListings()]);
-        var carL = (results[0]||[]).filter(function(l){ return l.sellerUsername && l.sellerUsername.toLowerCase() === acc.username.toLowerCase(); });
-        var itemL = (results[1]||[]).filter(function(l){ return l.sellerUsername && l.sellerUsername.toLowerCase() === acc.username.toLowerCase(); });
+        // Tag each listing with which store it came from.
+        //
+        // These are the raw records, and listingType isn't a field on them --
+        // it's added by the shop view when it merges the two. So l.listingType
+        // was undefined here and the `|| "car"` below made every listing claim
+        // to be a car. Cancelling a name tag, title or avatar listing then
+        // filtered the CAR list, found nothing to remove, saved it back
+        // unchanged, and the listing survived. Cars cancelled fine, which is
+        // what made it look like Cancel worked.
+        var carL = (results[0]||[]).filter(function(l){ return l.sellerUsername && l.sellerUsername.toLowerCase() === acc.username.toLowerCase(); })
+          .map(function(l){ return Object.assign({}, l, { listingType: "car" }); });
+        var itemL = (results[1]||[]).filter(function(l){ return l.sellerUsername && l.sellerUsername.toLowerCase() === acc.username.toLowerCase(); })
+          .map(function(l){ return Object.assign({}, l, { listingType: "item" }); });
         var all = carL.concat(itemL);
         if(!all.length){ box.innerHTML = '<div class="center-note" style="font-size:13px;color:var(--muted);">No active listings.</div>'; return; }
         box.innerHTML = all.map(function(l){
@@ -17315,6 +17327,21 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
           return;
         }
 
+        // The seasonal filter below decides what's winnable by looking each
+        // prize up in its catalog. An empty cache means every lookup misses,
+        // every check passes, and seasonal items go straight into the pool --
+        // which is exactly how seasonal name tags stayed winnable: the filter
+        // was written against a cache that didn't exist yet.
+        //
+        // A filter that fails open on a missing cache is worse than no filter,
+        // because it looks like it's working. Load them before deciding.
+        if(!titleCatalogCache.length){
+          try{ titleCatalogCache = (await fetchTitleCatalog()) || []; }catch(e){}
+        }
+        if(!nameTagCatalogCache.length){
+          try{ await fetchNameTagCatalog(); }catch(e){}
+        }
+
         var prizesForWheel = wheelPrizesCache.filter(function(p){
           if(p.wheelId !== wheelId) return false;
           // Never include seasonal cars in the prize pool — even if one was
@@ -17331,6 +17358,13 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
           if(p.rewardType === "avatar" && p.rewardAvatarPieceId){
             var avEntry = (avatarCatalogCache||[]).find(function(a){ return a.id === p.rewardAvatarPieceId; });
             if(avEntry && avEntry.isSeasonal) return false;
+          }
+          // Titles were missing from this list entirely -- they had no
+          // isSeasonal flag to check until now, so a seasonal title sat in the
+          // pool and was winnable like any other.
+          if(p.rewardType === "title" && p.rewardTitleId){
+            var tEntry = (titleCatalogCache||[]).find(function(t){ return t.id === p.rewardTitleId; });
+            if(tEntry && tEntry.isSeasonal) return false;
           }
           return true;
         });
@@ -20074,6 +20108,10 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     // the catalog. It also gates the image->id migration in getAccount, which
     // skips itself rather than migrate against an empty catalog.
     fetchNameTagCatalog().catch(function(){});
+
+    // Same reason: the wheel's seasonal filter looks titles up in this cache,
+    // and an empty cache means seasonal titles quietly stay winnable.
+    fetchTitleCatalog().then(function(tc){ titleCatalogCache = tc || []; }).catch(function(){});
 
     // Route based on current URL path.
     navigate(window.location.pathname, false);
