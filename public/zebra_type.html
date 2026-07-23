@@ -6116,6 +6116,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     else if(state.screen === "adminTestRace") renderAdminTestRace();
     else if(state.screen === "adminAbout") renderAdminAbout();
     else if(state.screen === "adminAnticheat") renderAdminAnticheat();
+    else if(state.screen === "adminBroadcast") renderAdminBroadcast();
     else if(state.screen === "adminAutomod") renderAdminAutomod();
     else if(state.screen === "account") renderAccount();
     else if(state.screen === "shop") renderShop();
@@ -11040,6 +11041,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
         (state.isSuperAdmin ? '<button class="admin-navbar-tab' + (activeTab==="about" ? " active" : "") + '" data-admin-tab="about">\uD83D\uDCD6 About</button>' : '') +
         (state.isSuperAdmin ? '<button class="admin-navbar-tab' + (activeTab==="anticheat" ? " active" : "") + '" data-admin-tab="anticheat">\uD83D\uDEE1\uFE0F Anti-Cheat</button>' : '') +
       (state.isSuperAdmin ? '<button class="admin-navbar-tab' + (activeTab==="automod" ? " active" : "") + '" data-admin-tab="automod">\uD83E\uDDF9 Automod</button>' : '') +
+      (state.isSuperAdmin ? '<button class="admin-navbar-tab' + (activeTab==="broadcast" ? " active" : "") + '" data-admin-tab="broadcast">\uD83D\uDCE6 Send to All</button>' : '') +
       '</div>' +
       '<div class="admin-navbar-right">' +
         '<div class="userpill">Admin: <b>' + escapeHtml(state.adminUsername || "") + '</b></div>' +
@@ -11090,6 +11092,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
           : tab === "about" ? "adminAbout"
           : tab === "anticheat" ? "adminAnticheat"
           : tab === "automod" ? "adminAutomod"
+          : tab === "broadcast" ? "adminBroadcast"
           : "adminAchievements";
         renderApp();
       });
@@ -17754,6 +17757,207 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     return '';
   }
 
+  // ── Send to All (super admin) ─────────────────────────────────────────
+  //
+  // Grants coins and/or one item to every account. The grant itself runs
+  // server-side (POST /api/grant-all) so it goes through the same inventory
+  // helpers as everything else and can't be undone by a stale client save.
+  //
+  // Preview is mandatory: the button starts as "Preview", and only after the
+  // server reports how many accounts it would touch does the real Send button
+  // appear. Any change to the form clears that confirmation, so you can't
+  // preview one thing and send another.
+  async function renderAdminBroadcast(){
+    if(!state.isAdmin || !state.isSuperAdmin){ state.screen = "adminCars"; renderApp(); return; }
+    state.adminTab = "broadcast";
+
+    app.innerHTML =
+      brandHeader() +
+      adminNavBar("broadcast") +
+      '<div class="panel">' +
+        '<div class="garage-title" style="color:var(--text);font-size:18px;margin-bottom:4px;">\uD83D\uDCE6 Send to All Players</div>' +
+        '<div class="hint-text" style="margin-top:0;margin-bottom:16px;">Grants coins and/or one item to every account on the site. Useful for beta rewards, apology gifts, or launch bonuses. Preview first \u2014 this can\u2019t be undone.</div>' +
+
+        '<div class="field">' +
+          '<label for="grantAllCoins">Coins (0 for none)</label>' +
+          '<input id="grantAllCoins" type="number" min="0" value="0" style="width:100%;background:var(--panel-2);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:11px 12px;font-size:15px;" />' +
+        '</div>' +
+
+        '<div class="field">' +
+          '<label for="grantAllType">Item (optional)</label>' +
+          '<select id="grantAllType" style="width:100%;background:var(--panel-2);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:11px 12px;font-size:14px;">' +
+            '<option value="">\u2014 No item \u2014</option>' +
+            '<option value="title">Title</option>' +
+            '<option value="nameTag">Name Tag</option>' +
+            '<option value="car">Car</option>' +
+            '<option value="avatar">Avatar Piece</option>' +
+          '</select>' +
+        '</div>' +
+        '<div class="field" id="grantAllItemWrap" style="display:none;">' +
+          '<label for="grantAllItem">Which one</label>' +
+          '<select id="grantAllItem" style="width:100%;background:var(--panel-2);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:11px 12px;font-size:14px;"></select>' +
+        '</div>' +
+
+        '<div class="field">' +
+          '<label style="display:flex;align-items:center;gap:10px;cursor:pointer;">' +
+            '<input type="checkbox" id="grantAllSkipBanned" checked style="width:18px;height:18px;cursor:pointer;" />' +
+            '<span>Skip banned and suspended accounts</span>' +
+          '</label>' +
+        '</div>' +
+
+        '<div class="error-text" id="grantAllError" style="margin-bottom:10px;"></div>' +
+        '<button class="btn btn-primary" id="grantAllPreviewBtn">Preview</button>' +
+        '<div id="grantAllResult" style="font-size:13px;margin-top:12px;"></div>' +
+        '<div id="grantAllConfirmWrap" style="margin-top:12px;"></div>' +
+      '</div>';
+
+    attachAdminNavListeners();
+
+    var typeSel = document.getElementById("grantAllType");
+    var itemWrap = document.getElementById("grantAllItemWrap");
+    var itemSel = document.getElementById("grantAllItem");
+    var errEl = document.getElementById("grantAllError");
+    var resultEl = document.getElementById("grantAllResult");
+    var confirmWrap = document.getElementById("grantAllConfirmWrap");
+
+    // Any edit invalidates a previous preview -- otherwise you could preview
+    // "100 coins", change it to "100000 coins", and hit a Send button that was
+    // confirmed against different numbers.
+    function invalidatePreview(){
+      confirmWrap.innerHTML = "";
+      resultEl.textContent = "";
+    }
+
+    async function populateItems(kind){
+      itemSel.innerHTML = '<option value="">Loading\u2026</option>';
+      var opts = [];
+      try{
+        if(kind === "title"){
+          var tc = await fetchTitleCatalog();
+          opts = (tc||[]).map(function(t){ return { value: t.id, label: '\u201c' + (t.text||t.id) + '\u201d \u2014 ' + (t.rarity||"Common") + (t.isSeasonal ? " (seasonal)" : ""), slot: null }; });
+        } else if(kind === "nameTag"){
+          var nc = await fetchNameTagCatalog();
+          opts = (nc||[]).map(function(t){ return { value: t.id, label: (t.name||t.id) + ' \u2014 ' + (t.rarity||"Common") + (t.isSeasonal ? " (seasonal)" : ""), slot: null }; });
+        } else if(kind === "car"){
+          var cc = await fetchCustomCars();
+          opts = (cc||[]).map(function(c){ return { value: c.id, label: (c.name||c.id) + ' \u2014 ' + (c.rarity||"Common"), slot: null }; });
+        } else if(kind === "avatar"){
+          var ac = await fetchAvatarCatalog();
+          opts = (ac||[]).map(function(p){ return { value: p.id, label: (p.name||p.id) + ' \u2014 ' + (AVATAR_SLOT_LABELS[p.slot]||p.slot), slot: p.slot }; });
+        }
+      }catch(e){
+        itemSel.innerHTML = '<option value="">Couldn\u2019t load catalog</option>';
+        return;
+      }
+      if(!opts.length){ itemSel.innerHTML = '<option value="">Nothing in this catalog yet</option>'; return; }
+      itemSel.innerHTML = opts.map(function(o){
+        return '<option value="' + escapeHtml(o.value) + '" data-slot="' + escapeHtml(o.slot||"") + '">' + escapeHtml(o.label) + '</option>';
+      }).join("");
+    }
+
+    typeSel.addEventListener("change", function(){
+      invalidatePreview();
+      var kind = typeSel.value;
+      if(!kind){ itemWrap.style.display = "none"; return; }
+      itemWrap.style.display = "";
+      populateItems(kind);
+    });
+    document.getElementById("grantAllCoins").addEventListener("input", invalidatePreview);
+    itemSel.addEventListener("change", invalidatePreview);
+    document.getElementById("grantAllSkipBanned").addEventListener("change", invalidatePreview);
+
+    function readForm(){
+      var coins = parseInt(document.getElementById("grantAllCoins").value, 10) || 0;
+      var kind = typeSel.value || null;
+      var opt = itemSel.options[itemSel.selectedIndex];
+      return {
+        coins: coins,
+        itemType: kind,
+        itemId: kind ? (itemSel.value || null) : null,
+        slot: (kind === "avatar" && opt) ? (opt.getAttribute("data-slot") || null) : null,
+        skipBanned: document.getElementById("grantAllSkipBanned").checked
+      };
+    }
+
+    async function callGrant(payload, dryRun){
+      var r = await fetch(SERVER_URL + "/api/grant-all", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-session-token": currentToken || "" },
+        body: JSON.stringify(Object.assign({}, payload, { dryRun: dryRun }))
+      });
+      var d = await r.json().catch(function(){ return {}; });
+      return { ok: r.ok, status: r.status, data: d };
+    }
+
+    document.getElementById("grantAllPreviewBtn").addEventListener("click", async function(){
+      var btn = document.getElementById("grantAllPreviewBtn");
+      errEl.textContent = "";
+      invalidatePreview();
+      var payload = readForm();
+      if(!payload.coins && !payload.itemType){ errEl.textContent = "Enter a coin amount or pick an item."; return; }
+      if(payload.itemType && !payload.itemId){ errEl.textContent = "Pick which item to send."; return; }
+
+      btn.disabled = true; btn.textContent = "Checking\u2026";
+      try{
+        var out = await callGrant(payload, true);
+        if(!out.ok){ errEl.textContent = out.data.message || out.data.error || ("Error " + out.status); return; }
+
+        var d = out.data;
+        var parts = [];
+        if(payload.coins) parts.push(COIN_ICON + payload.coins.toLocaleString());
+        if(payload.itemType){
+          var lbl = itemSel.options[itemSel.selectedIndex];
+          parts.push('\u201c' + (lbl ? lbl.textContent : payload.itemId) + '\u201d');
+        }
+        resultEl.style.color = "var(--muted)";
+        resultEl.textContent = "Would send " + parts.join(" and ") + " to " + d.granted +
+          " account" + (d.granted === 1 ? "" : "s") +
+          (d.skipped ? " (" + d.skipped + " banned/suspended skipped)" : "") +
+          (d.failed ? ", " + d.failed + " unreadable" : "") + ".";
+
+        if(!d.granted){ confirmWrap.innerHTML = '<div class="hint-text" style="margin:0;">Nothing to send to.</div>'; return; }
+        confirmWrap.innerHTML =
+          '<button class="small-btn" id="grantAllSendBtn" data-stage="confirm" style="color:var(--red);border-color:var(--red);">Send to ' + d.granted + ' account' + (d.granted === 1 ? "" : "s") + '</button>';
+
+        var sendBtn = document.getElementById("grantAllSendBtn");
+        sendBtn.addEventListener("click", async function(){
+          if(sendBtn.getAttribute("data-stage") === "confirm"){
+            sendBtn.setAttribute("data-stage", "armed");
+            sendBtn.textContent = "Click again \u2014 this can\u2019t be undone";
+            setTimeout(function(){
+              if(sendBtn.getAttribute("data-stage") === "armed"){
+                sendBtn.setAttribute("data-stage", "confirm");
+                sendBtn.textContent = "Send to " + d.granted + " account" + (d.granted === 1 ? "" : "s");
+              }
+            }, 4000);
+            return;
+          }
+          sendBtn.disabled = true; sendBtn.textContent = "Sending\u2026";
+          resultEl.style.color = "var(--muted)";
+          resultEl.textContent = "Writing to every account \u2014 this may take a moment.";
+          var sent = await callGrant(payload, false);
+          if(!sent.ok){
+            resultEl.style.color = "var(--red)";
+            resultEl.textContent = "Failed: " + (sent.data.message || sent.data.error || ("error " + sent.status));
+            sendBtn.disabled = false; sendBtn.setAttribute("data-stage", "confirm");
+            sendBtn.textContent = "Send to " + d.granted + " account" + (d.granted === 1 ? "" : "s");
+            return;
+          }
+          resultEl.style.color = "var(--green)";
+          resultEl.textContent = "Sent to " + sent.data.granted + " account" + (sent.data.granted === 1 ? "" : "s") +
+            (sent.data.skipped ? ", " + sent.data.skipped + " skipped" : "") +
+            (sent.data.failed ? ", " + sent.data.failed + " failed" : "") + ".";
+          sendBtn.textContent = "Sent";
+          sendBtn.style.opacity = "0.5";
+        });
+      }catch(e){
+        errEl.textContent = "Error: " + ((e&&e.message)?e.message:String(e));
+      }finally{
+        btn.disabled = false; btn.textContent = "Preview";
+      }
+    });
+  }
+
   function renderSeason(){
     var acc = state.user;
 
@@ -17783,6 +17987,35 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
         bannerDiv.style.cssText = "background:rgba(220,38,38,0.12);border:1px solid var(--red);border-radius:10px;padding:14px 18px;margin-bottom:18px;display:flex;align-items:center;gap:12px;";
         bannerDiv.innerHTML = '<span style="font-size:22px;">\u26D4</span><div><div style="font-weight:700;color:var(--red);font-size:15px;">Season Ended</div><div style="font-size:13px;color:var(--muted);">This season ended on ' + endDate.toLocaleString() + '. Races no longer count toward the season leaderboard and no more rewards can be earned.</div></div>';
         seasonPanel.insertBefore(bannerDiv, seasonPanel.firstChild);
+      } else if(cfg.seasonEndsAt && seasonPanel){
+        // The end date was only ever shown AFTER the season finished, which is
+        // the one moment it stops being useful. While it's running, how long is
+        // left is what decides whether someone bothers grinding the last few
+        // levels -- so show it up front.
+        var endsAt = new Date(cfg.seasonEndsAt);
+        var msLeft = cfg.seasonEndsAt - Date.now();
+        var daysLeft = Math.floor(msLeft / 86400000);
+        var hoursLeft = Math.floor((msLeft % 86400000) / 3600000);
+        var leftText = daysLeft > 0
+          ? daysLeft + " day" + (daysLeft === 1 ? "" : "s") + (hoursLeft > 0 ? ", " + hoursLeft + " hour" + (hoursLeft === 1 ? "" : "s") : "")
+          : hoursLeft > 0
+            ? hoursLeft + " hour" + (hoursLeft === 1 ? "" : "s")
+            : Math.max(1, Math.floor(msLeft / 60000)) + " minute" + (Math.floor(msLeft / 60000) === 1 ? "" : "s");
+        // Under a day turns amber -- at that point it's a deadline, not a date.
+        var urgent = msLeft < 86400000;
+        var activeBanner = document.createElement("div");
+        activeBanner.style.cssText = "background:" + (urgent ? "rgba(245,158,11,0.12)" : "rgba(255,255,255,0.04)") +
+          ";border:1px solid " + (urgent ? "var(--amber)" : "var(--line)") +
+          ";border-radius:10px;padding:14px 18px;margin-bottom:18px;display:flex;align-items:center;gap:12px;";
+        activeBanner.innerHTML =
+          '<span style="font-size:22px;">' + (urgent ? "\u23F0" : "\uD83C\uDFC1") + '</span>' +
+          '<div>' +
+            '<div style="font-weight:700;color:' + (urgent ? "var(--amber)" : "var(--text)") + ';font-size:15px;">' +
+              leftText + ' left in this season' +
+            '</div>' +
+            '<div style="font-size:13px;color:var(--muted);">Ends ' + endsAt.toLocaleString() + '. Unclaimed rewards are lost once the season closes.</div>' +
+          '</div>';
+        seasonPanel.insertBefore(activeBanner, seasonPanel.firstChild);
       }
 
       var levels = cfg.levels || [];
