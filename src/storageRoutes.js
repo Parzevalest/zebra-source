@@ -1222,10 +1222,18 @@ function reconcileAccountSelfWrite(incoming, current, baseline) {
     // whether a baseline happened to be attached.
     incoming.titleQuantities = clampQtyMap(incoming.titleQuantities);
     incoming.nameTagQuantities = clampQtyMap(incoming.nameTagQuantities);
+    // Coins pass through this path verbatim, so a save with no baseline could
+    // simply declare any balance it liked -- no delta needed. Same ceiling
+    // applies here as below.
+    incoming.coins = clampCoinGain(current.coins, incoming.coins, incoming.username);
     return incoming;
   }
 
-  incoming.coins        = reconcileNumber(current.coins, incoming.coins, baseline.coins);
+  incoming.coins = clampCoinGain(
+    current.coins,
+    reconcileNumber(current.coins, incoming.coins, baseline.coins),
+    incoming.username
+  );
   incoming.ownedCarIds  = reconcileStringList(current.ownedCarIds, incoming.ownedCarIds, baseline.ownedCarIds);
   incoming.carQuantities = reconcileQtyMap(current.carQuantities, incoming.carQuantities, baseline.carQuantities);
   incoming.ownedNameTags = reconcileStringList(current.ownedNameTags, incoming.ownedNameTags, baseline.ownedNameTags);
@@ -1405,6 +1413,42 @@ async function getTitleCatalog() {
 // single copy. Runs on every self-write, so accounts repair themselves the
 // next time their owner plays.
 const MAX_SANE_QUANTITY = 999;
+
+// ── Coin gain ceiling ───────────────────────────────────────────────────────
+//
+// Coins are merged with reconcileNumber: db + (incoming - baseline). The
+// client supplies BOTH `incoming` and `baseline`, so a crafted save claiming
+// "my coins went from 0 to 104,110,405,640" produces a delta of +104 billion
+// and the server applies it. Nothing validated the size of that delta.
+//
+// The Black Market isn't where the coins come from -- /bm-buy is symmetric
+// (buyer debited, seller credited, price read from the stored listing). It's
+// where minted coins get LAUNDERED: mint locally, then buy from an alt so the
+// balance looks earned. Capping the mint is what closes it.
+//
+// The ceiling is deliberately far above anything legitimate. The largest real
+// single-save gains are a race (10 + wpm + place + premium, so ~350 at 300wpm)
+// and a Mythic quick-sell (1500); wheel coin prizes are admin-set, so the
+// headroom is for those. Black Market sales don't pass through here at all --
+// /bm-buy credits the seller server-side.
+//
+// Raise it if a real player ever trips it. Every clamp is logged with the
+// username and the attempted amount, so it shows up rather than failing quietly.
+const MAX_COIN_GAIN_PER_SAVE = 100000;
+
+function clampCoinGain(dbCoins, nextCoins, username) {
+  const before = _num(dbCoins);
+  const after = _num(nextCoins);
+  if (!isFinite(after)) return before;
+  const ceiling = before + MAX_COIN_GAIN_PER_SAVE;
+  if (after > ceiling) {
+    console.log("[coins] gain clamped for", username, "-- claimed:", after, "had:", before, "-> allowed:", ceiling);
+    return ceiling;
+  }
+  // Losses aren't capped. Spending is legitimate and unbounded, and a client
+  // can only ever hurt itself by claiming to have less.
+  return after;
+}
 
 function clampQtyMap(map) {
   const out = {};
@@ -1905,6 +1949,78 @@ router.post("/unban-player", async (req, res) => {
 // Safe against stale tabs. The merge is a delta: a tab still holding {T:512}
 // sends incoming 512 against baseline 512, the delta is 0, and the emptied map
 // stays emptied. It can't be reintroduced.
+// ── Mass grant: coins and/or one item to every account ──────────────────────
+//
+// Written server-side rather than by looping /kv/ from the browser, so the
+// grant lands through the same inventory helpers the rest of the game uses --
+// quantities stay correct, and nothing goes through the client's delta merge
+// where a stale tab could undo it.
+//
+// `dryRun` returns the counts without writing anything. The admin UI always
+// calls that first: a tool that rewrites every account on the site should
+// never be one misclick away from doing so.
+router.post("/grant-all", async (req, res) => {
+  const session = await getSession(req);
+  if (!session || !session.isAdmin) return res.status(403).json({ error: "forbidden" });
+
+  const body = req.body || {};
+  const coins = Math.floor(_num(body.coins));
+  const itemType = body.itemType ? String(body.itemType) : null;
+  const itemId = body.itemId ? String(body.itemId) : null;
+  const slot = body.slot ? String(body.slot) : null;
+  const dryRun = !!body.dryRun;
+  const skipBanned = body.skipBanned !== false; // default: don't reward banned accounts
+
+  if (!coins && !itemType) return res.status(400).json({ error: "nothing_to_grant" });
+  if (coins < 0) return res.status(400).json({ error: "negative_coins", message: "Use a positive amount." });
+  // The per-save ceiling exists to stop coin minting; a grant that dwarfs it
+  // would be indistinguishable from the exploit in the logs.
+  if (coins > MAX_COIN_GAIN_PER_SAVE) {
+    return res.status(400).json({ error: "coins_too_large", message: "Grant at most " + MAX_COIN_GAIN_PER_SAVE.toLocaleString() + " coins at a time." });
+  }
+  if (itemType && !itemId) return res.status(400).json({ error: "missing_item" });
+  if (itemType && ["car", "nameTag", "title", "avatar"].indexOf(itemType) === -1) {
+    return res.status(400).json({ error: "bad_item_type" });
+  }
+  if (itemType === "avatar" && !slot) return res.status(400).json({ error: "missing_slot" });
+
+  try {
+    const rows = await store.listEntries("account:");
+    let scanned = 0, granted = 0, skipped = 0, failed = 0;
+
+    for (const row of rows) {
+      scanned++;
+      let acc;
+      try { acc = JSON.parse(row.value); } catch (e) { failed++; continue; }
+      if (!acc) { failed++; continue; }
+      if (skipBanned && (acc.isBanned || acc.isSuspended)) { skipped++; continue; }
+
+      if (dryRun) { granted++; continue; }
+
+      if (coins) acc.coins = _num(acc.coins) + coins;
+      if (itemType === "car") addCarToInventory(acc, itemId, 1);
+      else if (itemType === "nameTag") addNameTagToInventory(acc, itemId, 1);
+      else if (itemType === "title") addTitleToInventory(acc, itemId, 1);
+      else if (itemType === "avatar") addAvatarPieceToInventory(acc, slot, itemId);
+
+      try {
+        await store.set("system", row.key, JSON.stringify(acc), true);
+        granted++;
+      } catch (e) { failed++; }
+    }
+
+    if (!dryRun) {
+      console.log("[admin] grant-all by", session.username,
+        "-- coins:", coins, "item:", itemType || "none", itemId || "",
+        "| granted:", granted, "skipped:", skipped, "failed:", failed);
+    }
+    res.json({ dryRun, scanned, granted, skipped, failed });
+  } catch (e) {
+    console.error("[admin] grant-all error:", e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 router.post("/reset-title-quantities", async (req, res) => {
   const session = await getSession(req);
   if (!session || !session.isAdmin) return res.status(403).json({ error: "forbidden" });
