@@ -17978,44 +17978,60 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
       avatarCatalogCache = results[2];
       garageCachesLoaded = true;
 
-      // Show ended banner if season has finished
+      // Both banners are built as STRINGS and folded into panel.innerHTML
+      // below, not inserted into the DOM here.
+      //
+      // They used to be created as elements and insertBefore'd onto
+      // #seasonPanel -- but further down, panel.innerHTML is assigned outright,
+      // which replaces everything inside it. So the banner was created,
+      // attached, and then destroyed a few lines later, every single time.
+      // That's why no end date ever appeared; the "Season Ended" banner had
+      // been broken the same way since it was written.
       var seasonIsOver = cfg.seasonEndsAt && Date.now() > cfg.seasonEndsAt;
-      var seasonPanel = document.getElementById("seasonPanel");
-      if(seasonIsOver && seasonPanel){
+      var seasonBannerHtml = "";
+
+      if(seasonIsOver){
         var endDate = new Date(cfg.seasonEndsAt);
-        var bannerDiv = document.createElement("div");
-        bannerDiv.style.cssText = "background:rgba(220,38,38,0.12);border:1px solid var(--red);border-radius:10px;padding:14px 18px;margin-bottom:18px;display:flex;align-items:center;gap:12px;";
-        bannerDiv.innerHTML = '<span style="font-size:22px;">\u26D4</span><div><div style="font-weight:700;color:var(--red);font-size:15px;">Season Ended</div><div style="font-size:13px;color:var(--muted);">This season ended on ' + endDate.toLocaleString() + '. Races no longer count toward the season leaderboard and no more rewards can be earned.</div></div>';
-        seasonPanel.insertBefore(bannerDiv, seasonPanel.firstChild);
-      } else if(cfg.seasonEndsAt && seasonPanel){
+        seasonBannerHtml =
+          '<div style="background:rgba(220,38,38,0.12);border:1px solid var(--red);border-radius:10px;padding:14px 18px;margin-bottom:18px;display:flex;align-items:center;gap:12px;">' +
+            '<span style="font-size:22px;">\u26D4</span>' +
+            '<div>' +
+              '<div style="font-weight:700;color:var(--red);font-size:15px;">Season Ended</div>' +
+              '<div style="font-size:13px;color:var(--muted);">This season ended on ' + escapeHtml(endDate.toLocaleString()) + '. Races no longer count toward the season leaderboard and no more rewards can be earned.</div>' +
+            '</div>' +
+          '</div>';
+      } else if(cfg.seasonEndsAt){
         // The end date was only ever shown AFTER the season finished, which is
         // the one moment it stops being useful. While it's running, how long is
-        // left is what decides whether someone bothers grinding the last few
-        // levels -- so show it up front.
+        // left is what decides whether someone grinds the last few levels.
         var endsAt = new Date(cfg.seasonEndsAt);
         var msLeft = cfg.seasonEndsAt - Date.now();
         var daysLeft = Math.floor(msLeft / 86400000);
         var hoursLeft = Math.floor((msLeft % 86400000) / 3600000);
+        var minsLeft = Math.floor(msLeft / 60000);
+        // Clamped to at least 1 so the final seconds don't read "0 minutes" --
+        // and pluralised off the CLAMPED value, or 30 seconds left would say
+        // "1 minutes".
+        var minsShown = Math.max(1, minsLeft);
         var leftText = daysLeft > 0
           ? daysLeft + " day" + (daysLeft === 1 ? "" : "s") + (hoursLeft > 0 ? ", " + hoursLeft + " hour" + (hoursLeft === 1 ? "" : "s") : "")
           : hoursLeft > 0
             ? hoursLeft + " hour" + (hoursLeft === 1 ? "" : "s")
-            : Math.max(1, Math.floor(msLeft / 60000)) + " minute" + (Math.floor(msLeft / 60000) === 1 ? "" : "s");
+            : minsShown + " minute" + (minsShown === 1 ? "" : "s");
         // Under a day turns amber -- at that point it's a deadline, not a date.
         var urgent = msLeft < 86400000;
-        var activeBanner = document.createElement("div");
-        activeBanner.style.cssText = "background:" + (urgent ? "rgba(245,158,11,0.12)" : "rgba(255,255,255,0.04)") +
-          ";border:1px solid " + (urgent ? "var(--amber)" : "var(--line)") +
-          ";border-radius:10px;padding:14px 18px;margin-bottom:18px;display:flex;align-items:center;gap:12px;";
-        activeBanner.innerHTML =
-          '<span style="font-size:22px;">' + (urgent ? "\u23F0" : "\uD83C\uDFC1") + '</span>' +
-          '<div>' +
-            '<div style="font-weight:700;color:' + (urgent ? "var(--amber)" : "var(--text)") + ';font-size:15px;">' +
-              leftText + ' left in this season' +
+        seasonBannerHtml =
+          '<div style="background:' + (urgent ? "rgba(245,158,11,0.12)" : "rgba(255,255,255,0.04)") +
+            ';border:1px solid ' + (urgent ? "var(--amber)" : "var(--line)") +
+            ';border-radius:10px;padding:14px 18px;margin-bottom:18px;display:flex;align-items:center;gap:12px;">' +
+            '<span style="font-size:22px;">' + (urgent ? "\u23F0" : "\uD83C\uDFC1") + '</span>' +
+            '<div>' +
+              '<div style="font-weight:700;color:' + (urgent ? "var(--amber)" : "var(--text)") + ';font-size:15px;">' +
+                escapeHtml(leftText) + ' left in this season' +
+              '</div>' +
+              '<div style="font-size:13px;color:var(--muted);">Ends ' + escapeHtml(endsAt.toLocaleString()) + '. Unclaimed rewards are lost once the season closes.</div>' +
             '</div>' +
-            '<div style="font-size:13px;color:var(--muted);">Ends ' + endsAt.toLocaleString() + '. Unclaimed rewards are lost once the season closes.</div>' +
           '</div>';
-        seasonPanel.insertBefore(activeBanner, seasonPanel.firstChild);
       }
 
       var levels = cfg.levels || [];
@@ -18071,6 +18087,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
 
       var panel = document.getElementById("seasonPanel");
       panel.innerHTML =
+        seasonBannerHtml +
         '<div style="display:flex;align-items:baseline;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:4px;">' +
           '<div class="season-name">' + escapeHtml(cfg.name || "Season") + '</div>' +
           (hasPremium ? '<span style="font-size:11px;color:var(--amber);font-weight:700;text-transform:uppercase;letter-spacing:1px;">\u2605 Premium Active</span>' : '') +
