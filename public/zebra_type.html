@@ -2011,9 +2011,31 @@ const AntiCheat = (() => {
     const body = JSON.stringify({
       t:          _N.dateNow(),
       url:        location.href,
+      // score/confidence are still sent for the admin ban log's display, but
+      // the SERVER no longer trusts them -- it re-derives the verdict from the
+      // raw `signals` object below. See anticheatJudge.js. A cheater editing
+      // these two numbers changes nothing except what's shown in the log.
       score:      result.score,
       confidence: result.confidence,
-      signals:    result.signals,
+      // Raw observations the server scores itself. These are booleans/counts
+      // about what actually happened in the DOM, not a verdict -- deleting or
+      // faking any of them can only make the sender look cleaner, never make
+      // anyone else look guilty.
+      signals: {
+        canvasPresent:            result.signals_raw ? result.signals_raw.canvasPresent : undefined,
+        webglPresent:             result.signals_raw ? result.signals_raw.webglPresent : undefined,
+        audioPresent:             result.signals_raw ? result.signals_raw.audioPresent : undefined,
+        syntheticKeyDetected:     result.signals_raw ? result.signals_raw.syntheticKeyDetected : undefined,
+        nativeSetterTampered:     result.signals_raw ? result.signals_raw.nativeSetterTampered : undefined,
+        execCommandDetected:      result.signals_raw ? result.signals_raw.execCommandDetected : undefined,
+        descriptorRepatched:      result.signals_raw ? result.signals_raw.descriptorRepatched : undefined,
+        keypressValueMismatches:  result.signals_raw ? result.signals_raw.keypressValueMismatches : undefined,
+        valueJumpCount:           result.signals_raw ? result.signals_raw.valueJumpCount : undefined,
+        webdriverFlag:            result.signals_raw ? result.signals_raw.webdriverFlag : undefined,
+        automationArtifacts:      result.signals_raw ? result.signals_raw.automationArtifacts : undefined,
+      },
+      // The human-readable signal strings, kept for the admin log only.
+      signalText: result.signals,
       flags:      result.flags.slice(-30),
       timings:    result.timings,
       mouse:      result.mouse,
@@ -2209,6 +2231,24 @@ const AntiCheat = (() => {
     const result = {
       isBot, isSuspect, confidence, score, signals, flags, timings, mouse, focus,
       session: { ..._session },
+      // Raw observations, gathered here so _report can send them for the
+      // server to score independently. This is the SAME data the local scoring
+      // above used -- just exposed as flat booleans/counts rather than only as
+      // human-readable strings. The server ignores our verdict and re-judges
+      // from these.
+      signals_raw: {
+        canvasPresent:           !canvas.blocked,
+        webglPresent:            webgl.renderer !== 'no-webgl',
+        audioPresent:            (typeof audio !== 'undefined' && audio !== 'audio-error'),
+        syntheticKeyDetected:    !!syntheticKeyDetected,
+        nativeSetterTampered:    !!nativeSetterTampered,
+        execCommandDetected:     !!execCommandDetected,
+        descriptorRepatched:     !!descriptorRepatched,
+        keypressValueMismatches: keypressValueMismatches || 0,
+        valueJumpCount:          valueJumps.length,
+        webdriverFlag:           !!env.webdriverFlag,
+        automationArtifacts:     !!env.automationArtifacts,
+      },
       summary: isBot
         ? `BOT (${confidence}%) — ${signals.slice(0,2).join('; ')}${signals.length>2?` +${signals.length-2} more`:''}`
         : isSuspect
@@ -8716,6 +8756,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
               (function(){ var t = resolveTitle(targetAcc, titleCatalogCache); return t ? '<div style="font-size:12px;font-style:italic;font-weight:700;color:' + (RARITY_COLORS[t.rarity]||'var(--muted)') + ';margin-bottom:4px;">' + escapeHtml(t.text) + '</div>' : ''; })() +
               (targetAcc.isBanned ? '<span style="color:var(--red);font-weight:900;font-size:14px;">BANNED</span>' : '') +
               (targetAcc.isSuspended && !targetAcc.isBanned ? '<span style="color:var(--amber);font-weight:900;font-size:14px;">SUSPENDED</span>' : '') +
+              (targetAcc.serverWpmFlag ? '<span style="color:var(--amber);font-weight:700;font-size:11px;border:1px solid var(--amber);border-radius:6px;padding:2px 7px;" title="Lifetime average WPM in bot territory \u2014 flagged by the server, review manually">\u26A1 ' + targetAcc.serverWpmFlag.avgWpm + ' avg WPM over ' + targetAcc.serverWpmFlag.races + ' races</span>' : '') +
             '</div>' +
             (targetAcc.displayName && targetAcc.displayName.trim() ? '<div style="color:var(--muted);font-size:13px;margin-bottom:4px;">@' + escapeHtml(targetAcc.username) + '</div>' : '') +
             '<div style="margin-bottom:14px;"><img src="' + equippedTag + '" alt="" style="height:30px;object-fit:contain;image-rendering:pixelated;display:block;" /></div>' +
