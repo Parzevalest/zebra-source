@@ -3,6 +3,7 @@ const crypto = require("crypto");
 const store = require("./db");
 const security = require("./security");
 const moderation = require("./moderation");
+const anticheatJudge = require("./anticheatJudge");
 
 const router = express.Router();
 
@@ -745,6 +746,34 @@ router.post("/kv/:key", async (req, res) => {
         if (current && typeof incoming.races === "number") {
           if (incoming.races < (current.races || 0)) return res.status(400).json({ error: "invalid_stat", field: "races" });
         }
+
+        // Sustained-average detection -- the quiet-bot net.
+        //
+        // The per-race checks above cap any SINGLE race at 350 WPM, but a bot
+        // running 240 WPM on every race stays under that ceiling forever while
+        // posting an average no human sustains. This looks at the whole
+        // history: once someone has a meaningful number of races, their
+        // lifetime average WPM (sumWpm / races) shouldn't sit in bot territory.
+        //
+        // The threshold is deliberately high (220 avg over 30+ races). The
+        // fastest real typists peak near 200 and AVERAGE well below it across
+        // dozens of races with mistakes, pauses, and warm-up rounds. Crossing
+        // this isn't proof on its own, so it FLAGS rather than bans -- it sets
+        // a server-side marker the admin ban log surfaces, and it's immune to
+        // anything the client does because it's computed from data the server
+        // already stored. There's no client half to read or edit.
+        if (current && typeof incoming.sumWpm === "number" && typeof incoming.races === "number") {
+          const races = incoming.races || 0;
+          const avgWpm = races > 0 ? incoming.sumWpm / races : 0;
+          if (races >= 30 && avgWpm >= 220) {
+            if (!incoming.serverWpmFlag) {
+              console.log("[anticheat] sustained-WPM flag:", accountOwner, "-- avg", Math.round(avgWpm), "over", races, "races");
+            }
+            // Server-owned, so a later client save can't clear it. Records the
+            // figures that tripped it for the admin to review.
+            incoming.serverWpmFlag = { avgWpm: Math.round(avgWpm), races, flaggedAt: Date.now() };
+          }
+        }
         if (current && typeof incoming.totalPoints === "number") {
           if (incoming.totalPoints < (current.totalPoints || 0)) return res.status(400).json({ error: "invalid_stat", field: "totalPoints" });
           const ptsDelta = incoming.totalPoints - (current.totalPoints || 0);
@@ -1010,11 +1039,28 @@ router.post("/check-ban", async (req, res) => {
 
 router.post("/anticheat", async (req, res) => {
   const session = await getSession(req);
-  const { score, confidence, signals, fingerprint } = req.body || {};
+  const { fingerprint } = req.body || {};
   const hash = fingerprint?.hash;
   const username = session?.username || null;
   try {
-    if (confidence >= 99 && hash) {
+    // THE VERDICT IS DECIDED HERE, not by the client.
+    //
+    // This route used to read `confidence` straight from the request body and
+    // gate on `if (confidence >= 99)`. Since the browser computed and sent
+    // that number, a cheater with dev tools open simply sent `confidence: 0`
+    // and was never banned -- the entire anti-cheat was one editable field.
+    //
+    // Now the client sends only raw observations (in req.body.signals /
+    // .timings / .session) and anticheatJudge re-scores them on the server.
+    // The client's claimed score and confidence are ignored. The scoring
+    // itself lives in anticheatJudge.js, which never ships to the browser, so
+    // the thresholds can't be read or edited either.
+    const verdict = anticheatJudge.judge(req.body || {});
+    const score = verdict.score;
+    const confidence = verdict.confidence;
+    const signals = verdict.reasons;
+
+    if (verdict.shouldAutoBan && hash) {
       // A fingerprint whose device id couldn't be persisted (private browsing,
       // storage disabled) is random per page load -- it will never be seen
       // again. Banning it writes a record nothing can ever match, so skip it.
@@ -1049,7 +1095,7 @@ router.post("/anticheat", async (req, res) => {
         }
       }
     }
-  } catch (e) {}
+  } catch (e) { console.error("[anticheat] judge error:", e.message); }
   res.json({ received: true });
 });
 
@@ -1141,6 +1187,11 @@ const SERVER_OWNED_ACCOUNT_FIELDS = [
   // client that loaded before it must not be able to erase the evidence and
   // make the reset look like it never ran.
   "titleQtyResetAt",
+  // Set when a player's lifetime average WPM crosses into bot territory. Like
+  // the reset stamp, it records a server-side judgment and a client must not be
+  // able to wipe it -- otherwise a cheater just saves once to clear their own
+  // flag.
+  "serverWpmFlag",
   "unbannedAt",
   "unbannedBy",
 ];
