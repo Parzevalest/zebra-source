@@ -5617,22 +5617,26 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
   }
 
   // Removes a username from a guild's membership/leadership lists. If the
-  // departing player was the leader, promotes the senior co-leader (or, if
-  // none, the longest-standing remaining member) to leader. If they were
-  // the last member, the guild is deleted outright.
+  // departing player was the leader, promotes the senior co-leader. If there
+  // is NO co-leader, the guild is deleted and its remaining members are
+  // detached -- leadership does not fall to a random regular member. A guild
+  // is only ever led by someone who was explicitly made a co-leader.
   async function removeMemberFromGuild(guild, username){
     var lower = username.toLowerCase();
     guild.memberUsernames = (guild.memberUsernames || []).filter(function(u){ return u.toLowerCase() !== lower; });
     guild.coLeaderUsernames = (guild.coLeaderUsernames || []).filter(function(u){ return u.toLowerCase() !== lower; });
 
-    if(guild.leaderUsername && guild.leaderUsername.toLowerCase() === lower){
-      if(guild.coLeaderUsernames.length){
-        guild.leaderUsername = guild.coLeaderUsernames.shift();
-      } else if(guild.memberUsernames.length){
-        guild.leaderUsername = guild.memberUsernames[0];
-      } else {
-        guild.leaderUsername = null;
-      }
+    var leaderLeft = guild.leaderUsername && guild.leaderUsername.toLowerCase() === lower;
+
+    if(leaderLeft && guild.coLeaderUsernames.length){
+      // Senior co-leader takes over. shift() takes the longest-standing one.
+      guild.leaderUsername = guild.coLeaderUsernames.shift();
+    } else if(leaderLeft){
+      // Leader left and there's no co-leader to inherit. Delete the guild
+      // outright, detaching whatever regular members remain -- ownership must
+      // never fall to someone who was never trusted with co-leadership.
+      await detachAllMembersAndDeleteGuild(guild);
+      return null;
     }
 
     if(!guild.memberUsernames.length){
@@ -5641,6 +5645,34 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     }
     await saveGuild(guild);
     return guild;
+  }
+
+  // Clears guildId (and any stale guild tag/color) off every member of a guild,
+  // then deletes the guild record. Used when a guild is dissolved out from
+  // under its members -- e.g. the leader leaves with no co-leader to inherit.
+  async function detachAllMembersAndDeleteGuild(guild){
+    var everyone = (guild.memberUsernames || []).slice();
+    // Include leadership in case they aren't in memberUsernames for some reason.
+    if(guild.leaderUsername) everyone.push(guild.leaderUsername);
+    (guild.coLeaderUsernames || []).forEach(function(u){ everyone.push(u); });
+    var seen = {};
+    for(var i = 0; i < everyone.length; i++){
+      var uname = everyone[i];
+      if(!uname) continue;
+      var lk = uname.toLowerCase();
+      if(seen[lk]) continue;
+      seen[lk] = true;
+      try{
+        var r = await getAccount(uname);
+        if(r.ok && r.account && r.account.guildId === guild.id){
+          r.account.guildId = null;
+          r.account.guildTag = "";
+          r.account.guildColor = "";
+          await saveAccount(r.account);
+        }
+      }catch(e){ /* skip an unreadable member; the guild still gets deleted */ }
+    }
+    await deleteGuildRecord(guild.id);
   }
 
   // Keeps state.userGuild (used to show the guild tag in the garage and on
@@ -18310,6 +18342,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
           '</div>' +
           '<div style="font-size:13px;color:var(--muted);">' + memberCount + ' / ' + GUILD_MAX_MEMBERS + ' members</div>' +
           (guild.closed ? '<div style="font-size:12px;color:var(--red);margin-top:4px;">\uD83D\uDD12 Closed \u2014 not accepting new members</div>' : '') +
+          (!guild.closed && guild.inviteOnly ? '<div style="font-size:12px;color:var(--amber);margin-top:4px;">\u2709\uFE0F Invite-only \u2014 applications require approval</div>' : '') +
           guildDescriptionHtml(guild) +
           '<div class="guild-progress-wrap">' +
             '<div class="guild-progress-fill" style="width:' + Math.round(100 * memberCount / GUILD_MAX_MEMBERS) + '%;background:' + color + ';"></div>' +
@@ -18324,11 +18357,26 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
           '<div style="font-weight:700;font-size:15px;color:var(--text);margin-bottom:10px;">Members</div>' +
           membersHtml +
         '</div>' +
-        (state.user && !state.user.guildId && !guild.closed && (guild.memberUsernames||[]).length < GUILD_MAX_MEMBERS ?
-          '<div class="panel" style="margin-top:18px;text-align:center;">' +
-            '<button class="btn btn-primary" id="joinFromViewBtn">Request to Join [' + escapeHtml(guild.tag) + ']</button>' +
-            '<div id="joinFromViewMsg" style="font-size:13px;margin-top:8px;"></div>' +
-          '</div>' : "");
+        (state.user && !state.user.guildId && (guild.memberUsernames||[]).length < GUILD_MAX_MEMBERS ?
+          (guild.closed ?
+            // Closed takes priority -- no way in at all.
+            '<div class="panel" style="margin-top:18px;text-align:center;">' +
+              '<div style="font-size:13px;color:var(--red);">\uD83D\uDD12 This guild is closed and isn\u2019t accepting new members.</div>' +
+            '</div>'
+          : guild.inviteOnly ?
+            // Invite-only: Apply, not Join. Files into the same pendingRequests
+            // queue, but the label sets the expectation that it needs approval.
+            '<div class="panel" style="margin-top:18px;text-align:center;">' +
+              '<div style="font-size:12px;color:var(--amber);margin-bottom:8px;">\u2709\uFE0F Invite-only \u2014 a leader must approve your application.</div>' +
+              '<button class="btn btn-primary" id="joinFromViewBtn">Apply to [' + escapeHtml(guild.tag) + ']</button>' +
+              '<div id="joinFromViewMsg" style="font-size:13px;margin-top:8px;"></div>' +
+            '</div>'
+          :
+            '<div class="panel" style="margin-top:18px;text-align:center;">' +
+              '<button class="btn btn-primary" id="joinFromViewBtn">Request to Join [' + escapeHtml(guild.tag) + ']</button>' +
+              '<div id="joinFromViewMsg" style="font-size:13px;margin-top:8px;"></div>' +
+            '</div>'
+          ) : "");
 
       // Super admin: remove a roster entry whose account couldn't load
       if(state.isSuperAdmin){
@@ -18364,17 +18412,22 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
           var freshGuild = await fetchGuild(guild.id);
           if(!freshGuild){ msg.textContent = "Guild no longer exists."; return; }
           if((freshGuild.memberUsernames||[]).includes(state.user.username.toLowerCase())){ msg.textContent = "You're already a member."; return; }
+          // Re-check against the freshly fetched guild, not the copy this page
+          // rendered from -- the leader may have closed it since the page
+          // loaded, and a closed guild takes no requests at all.
+          if(freshGuild.closed){ msg.style.color = "var(--red)"; msg.textContent = "This guild is now closed."; joinBtn.disabled = true; return; }
+          if((freshGuild.memberUsernames||[]).length >= GUILD_MAX_MEMBERS){ msg.style.color = "var(--red)"; msg.textContent = "This guild is full."; joinBtn.disabled = true; return; }
           freshGuild.pendingRequests = freshGuild.pendingRequests || [];
-          if(freshGuild.pendingRequests.includes(state.user.username.toLowerCase())){ msg.style.color="var(--muted)"; msg.textContent = "Request already sent."; return; }
+          if(freshGuild.pendingRequests.includes(state.user.username.toLowerCase())){ msg.style.color="var(--muted)"; msg.textContent = freshGuild.inviteOnly ? "Application already sent." : "Request already sent."; return; }
           freshGuild.pendingRequests.push(state.user.username.toLowerCase());
           await saveGuild(freshGuild);
           msg.style.color = "var(--green)";
-          msg.textContent = "Request sent!";
-          joinBtn.textContent = "Requested";
+          msg.textContent = freshGuild.inviteOnly ? "Application sent \u2014 waiting for approval." : "Request sent!";
+          joinBtn.textContent = freshGuild.inviteOnly ? "Applied" : "Requested";
+          joinBtn.disabled = true;
         }catch(e){
           msg.textContent = "Failed to send request.";
           joinBtn.disabled = false;
-          joinBtn.textContent = "Requested";
         }
       });
 
@@ -18512,6 +18565,8 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
           leaderUsername: freshAcc.username,
           coLeaderUsernames: [],
           memberUsernames: [freshAcc.username],
+          closed: false,
+          inviteOnly: false,
           createdAt: Date.now()
         };
         var saveGuildRes = await saveGuild(guild);
@@ -18672,7 +18727,15 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
         '<div class="panel" style="margin-bottom:18px;">' +
           '<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:14px;">' +
             '<div class="garage-title" style="color:var(--text);font-size:16px;margin:0;">Edit Guild</div>' +
-            '<button class="small-btn" id="toggleGuildClosedBtn" style="color:' + (guild.closed ? 'var(--green)' : 'var(--red)') + ';border-color:' + (guild.closed ? 'var(--green)' : 'var(--red)') + ';">' + (guild.closed ? '\u2705 Open Guild' : '\uD83D\uDD12 Close Guild') + '</button>' +
+            '<div style="display:flex;gap:8px;flex-wrap:wrap;">' +
+              // Invite-only: when on, the public page shows Apply instead of a
+              // direct Join, and applicants land in the same Join Requests
+              // queue below. Independent of Closed -- a closed guild takes no
+              // requests at all; an invite-only-but-open guild takes them but
+              // requires approval. Closed wins if both are set.
+              '<button class="small-btn" id="toggleGuildInviteBtn" style="color:' + (guild.inviteOnly ? 'var(--amber)' : 'var(--muted)') + ';border-color:' + (guild.inviteOnly ? 'var(--amber)' : 'var(--line)') + ';">' + (guild.inviteOnly ? '\u2709\uFE0F Invite-Only: On' : '\u2709\uFE0F Invite-Only: Off') + '</button>' +
+              '<button class="small-btn" id="toggleGuildClosedBtn" style="color:' + (guild.closed ? 'var(--green)' : 'var(--red)') + ';border-color:' + (guild.closed ? 'var(--green)' : 'var(--red)') + ';">' + (guild.closed ? '\u2705 Open Guild' : '\uD83D\uDD12 Close Guild') + '</button>' +
+            '</div>' +
           '</div>' +
           '<div style="display:flex;gap:10px;margin-bottom:10px;flex-wrap:wrap;">' +
             '<div style="flex:1;min-width:140px;">' +
@@ -18810,6 +18873,17 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
         var res = await saveGuild(freshGuild);
         if(res.ok){ state.userGuild = freshGuild; renderGuildDetail(); }
         else { btn.disabled = false; }
+      });
+
+      var inviteToggle = document.getElementById("toggleGuildInviteBtn");
+      if(inviteToggle) inviteToggle.addEventListener("click", async function(){
+        inviteToggle.disabled = true;
+        var freshGuild = await fetchGuild(guild.id);
+        if(!freshGuild){ inviteToggle.disabled = false; return; }
+        freshGuild.inviteOnly = !freshGuild.inviteOnly;
+        var res = await saveGuild(freshGuild);
+        if(res.ok){ state.userGuild = freshGuild; renderGuildDetail(); }
+        else { inviteToggle.disabled = false; }
       });
 
       // Live character counter for the description. Counts code points, so a
