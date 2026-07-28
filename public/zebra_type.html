@@ -7602,18 +7602,6 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
   function nameTagFloorHtml(acc){
     var options = nameTagOptionsFor(acc);
     var equipped = acc.equippedNameTag || DEFAULT_NAME_TAG;
-    // TEMP DIAGNOSTIC -- remove once the missing-image bug is understood.
-    // Renders, visibly on the page, what each owned entry is and what the
-    // resolver turns it into, so we can see the real data instead of guessing.
-    var diag = '<div style="font-size:10px;color:#8f8;font-family:monospace;white-space:pre-wrap;word-break:break-all;background:#111;border:1px solid #333;border-radius:6px;padding:8px;margin-bottom:10px;">' +
-      'DIAG: catalog=' + (nameTagCatalogCache ? nameTagCatalogCache.length : "null") + ' entries\n' +
-      options.map(function(e, i){
-        var resolved = nameTagImageFor(e);
-        var kind = e === DEFAULT_NAME_TAG ? "DEFAULT" : (isNameTagImage(e) ? "IMG" : "ID");
-        var resKind = isNameTagImage(resolved) ? ("img len " + resolved.length) : ("NON-IMG: " + JSON.stringify(resolved).slice(0,40));
-        return i + ": entry[" + kind + "]=" + JSON.stringify(String(e).slice(0,30)) + " -> " + resKind;
-      }).join("\n") +
-      '</div>';
     var slots = options.map(function(entry, idx){
       var isEquipped = entry === equipped;
       var btnLabel = isEquipped ? 'Equipped' : 'Equip';
@@ -7627,7 +7615,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
         '<button class="equip-btn">' + btnLabel + '</button>' +
       '</div>';
     }).join("");
-    return diag + '<div class="garage-line"></div><div class="garage-row">' + slots + '</div>';
+    return '<div class="garage-line"></div><div class="garage-row">' + slots + '</div>';
   }
 
   /* ============ DASHBOARD ============ */
@@ -8852,8 +8840,12 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     }).join("");
 
     // Name tags: only ones actually owned (default is implicit/always shown if nothing else).
-    var nameTagsHtml = nameTagOptionsFor(targetAcc).map(function(src){
-      var isEquipped = src === equippedTag;
+    var nameTagsHtml = nameTagOptionsFor(targetAcc).map(function(entry){
+      var isEquipped = entry === (targetAcc.equippedNameTag || DEFAULT_NAME_TAG);
+      // entry is a catalog ID; resolve it to a picture. Putting the raw ID in
+      // an <img src> was the torn-icon bug -- the garage resolves it, the
+      // profile didn't.
+      var src = nameTagImageFor(entry);
       return '<div class="garage-slot' + (isEquipped ? ' equipped' : '') + '" style="cursor:default;width:160px;height:46px;flex:0 0 160px;">' +
           '<img src="' + src + '" alt="" style="width:100%;height:100%;object-fit:contain;display:block;image-rendering:pixelated;" />' +
         '</div>';
