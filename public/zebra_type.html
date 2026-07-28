@@ -8509,8 +8509,18 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     }
   }
 
-  function renderGarageNameTags(){
+  async function renderGarageNameTags(){
     var acc = state.user;
+
+    // Owned tags are catalog IDs now; nameTagImageFor turns an ID into its
+    // picture by looking it up in nameTagCatalogCache. If that cache is empty
+    // when this renders -- e.g. the player opened the garage before the boot
+    // pre-warm finished -- every lookup misses and falls back to the default
+    // tag image, which is the broken-thumbnail row you saw. Ensure it's loaded
+    // first.
+    if(!nameTagCatalogCache.length){
+      try{ await fetchNameTagCatalog(); }catch(e){}
+    }
 
     app.innerHTML =
       brandHeader() +
@@ -8675,15 +8685,22 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     });
 
     fetchTitleCatalog().then(function(tc){ titleCatalogCache = tc || []; });
+    // The profile shows name tags, which are stored as catalog IDs. Without
+    // the catalog loaded here, nameTagImageFor can't turn those IDs into
+    // pictures and every tag falls back to the broken default thumbnail. The
+    // garage loads it; the profile never did.
     Promise.all([
       getAccount(targetUsername),
       garageCachesLoaded ? Promise.resolve(customCarsCache) : fetchCustomCars(),
-      garageCachesLoaded ? Promise.resolve(avatarCatalogCache) : fetchAvatarCatalog()
+      garageCachesLoaded ? Promise.resolve(avatarCatalogCache) : fetchAvatarCatalog(),
+      nameTagCatalogCache.length ? Promise.resolve(nameTagCatalogCache) : fetchNameTagCatalog()
     ]).then(function(results){
       if(state.screen !== "profile" || state.profileUsername !== targetUsername) return; // navigated away while loading
       var res = results[0];
       customCarsCache = results[1];
       avatarCatalogCache = results[2];
+      // results[3] populates nameTagCatalogCache via fetchNameTagCatalog's own
+      // side effect; no assignment needed.
       garageCachesLoaded = true;
 
       var panelArea = app.querySelector(".panel");
