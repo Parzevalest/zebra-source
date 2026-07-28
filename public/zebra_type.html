@@ -3235,8 +3235,23 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
   function nameTagImageFor(entry, catalog){
     if(!entry) return DEFAULT_NAME_TAG;
     if(isNameTagImage(entry)) return entry;
-    var hit = (catalog || nameTagCatalogCache).find(function(t){ return t && t.id === entry; });
-    return hit ? hit.image : DEFAULT_NAME_TAG;
+    // entry should be a catalog id at this point. Look it up.
+    var list = catalog || nameTagCatalogCache;
+    var hit = list && list.find ? list.find(function(t){ return t && t.id === entry; }) : null;
+    if(hit && isNameTagImage(hit.image)) return hit.image;
+    // No usable image. This happens when: the catalog isn't loaded yet, the
+    // entry's catalog record was deleted, or the stored entry is a value we
+    // don't recognise. Whatever the cause, fall back to the default -- NEVER
+    // return the id/empty string, which is what renders as a torn-image icon.
+    // Logged once so the actual bad value is visible instead of guessed at.
+    if(typeof console !== "undefined" && console.warn && !nameTagImageFor._warned){
+      nameTagImageFor._warned = {};
+    }
+    if(typeof console !== "undefined" && console.warn && nameTagImageFor._warned && !nameTagImageFor._warned[entry]){
+      nameTagImageFor._warned[entry] = true;
+      console.warn("[nametag] no image for entry:", JSON.stringify(entry), "-- catalog loaded:", (list && list.length) || 0, "entries");
+    }
+    return DEFAULT_NAME_TAG;
   }
 
   // The catalog entry behind an owned entry, for name/rarity.
