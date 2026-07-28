@@ -9,6 +9,7 @@ const stripeRoutes = require("./stripeRoutes");
 const { handleStripeWebhook } = require("./stripeWebhook");
 const { makeRaceServer, setDb } = require("./race");
 const db = require("./db");
+const seasonRank = require("./seasonRank");
 const security = require("./security");
 
 const app = express();
@@ -97,6 +98,11 @@ app.use((req, res) => {
 
 const httpServer = http.createServer(app);
 setDb(db);
+// The race server and the rank cache both read accounts from the db.
+seasonRank.setDb(db);
+// Warm the rank cache at boot so the first race after a restart has badges,
+// rather than everyone showing unranked until the first rebuild.
+seasonRank.getRankMap().catch(() => {});
 makeRaceServer(httpServer);
 
 const PORT = process.env.PORT || 3001;

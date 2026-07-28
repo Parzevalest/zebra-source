@@ -4,6 +4,7 @@ const store = require("./db");
 const security = require("./security");
 const moderation = require("./moderation");
 const anticheatJudge = require("./anticheatJudge");
+const seasonRank = require("./seasonRank");
 
 const router = express.Router();
 
@@ -403,6 +404,20 @@ router.post("/register", security.rateLimit({
   const token = generateToken();
   await sessionSet(token, username.toLowerCase(), false);
   res.json({ ok: true, token });
+});
+
+// Verified season rank for a username. Reads the server-computed rank cache
+// (seasonRank.js) -- the client never decides a rank, only displays this. Used
+// by the garage and the player's own race nameplate; opponents get their rank
+// through the race server instead.
+router.get("/season-rank/:username", async (req, res) => {
+  try {
+    await seasonRank.getRankMap();
+    const rank = seasonRank.rankFor(req.params.username);
+    res.json({ username: req.params.username, rank: rank || null });
+  } catch (e) {
+    res.json({ username: req.params.username, rank: null });
+  }
 });
 
 router.get("/check-username/:username", async (req, res) => {

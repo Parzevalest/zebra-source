@@ -7,6 +7,7 @@
 
 const WebSocket = require("ws");
 const crypto = require("crypto");
+const seasonRank = require("./seasonRank");
 
 const ROOM_SIZE = 4;
 const JOIN_WINDOW_MS = 3000;
@@ -219,7 +220,11 @@ function makeRaceServer(httpServer) {
       // nameTag was missing here, which is the whole reason opponents showed a
       // default tag: the client renders whatever this list gives it, and it
       // was never given one.
-      list.push({ username, carId: p.carId, displayName: p.displayName || "", guildTag: p.guildTag || "", guildColor: p.guildColor || "", titleText: p.titleText || "", titleRarity: p.titleRarity || "", nameTag: p.nameTag || "" });
+      // seasonRank is the SERVER's verdict, looked up from the rank cache by
+      // username -- never taken from anything the client sent. That's what
+      // makes the top-player badge un-forgeable: a player can't claim a rank
+      // they don't hold, because the number comes from stored season points.
+      list.push({ username, carId: p.carId, displayName: p.displayName || "", guildTag: p.guildTag || "", guildColor: p.guildColor || "", titleText: p.titleText || "", titleRarity: p.titleRarity || "", nameTag: p.nameTag || "", seasonRank: seasonRank.rankFor(username) });
     });
     return list;
   }
@@ -568,6 +573,12 @@ function makeRaceServer(httpServer) {
           }
         }
         activePlayers.set(uname, ws);
+        // Keep the rank cache warm. This is fire-and-forget and internally
+        // rate-limited (rebuilds at most once per its TTL), so a busy room
+        // triggers at most one rebuild a minute, not one per join. The
+        // opponentList read below uses whatever's currently cached -- a badge
+        // being up to a minute stale is fine.
+        seasonRank.getRankMap().catch(() => {});
         joinRoom(ws, uname, msg.carId || "starter_car", msg.recentWpm || DEFAULT_WPM, msg.displayName || "", msg.guildTag || "", msg.guildColor || "", msg.titleText || "", msg.titleRarity || "", msg.nameTag || "");
         return;
       }
