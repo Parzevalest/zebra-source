@@ -3150,6 +3150,55 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     return (catalog || titleCatalogCache).find(function(x){ return x.id === equipped; }) || DEFAULT_TITLE;
   }
 
+  // ── Season top-player badges ────────────────────────────────────────────
+  //
+  // Awarded by SEASON leaderboard rank only. The rank itself is computed on
+  // the server (see seasonRank.js) so it can't be forged -- the client only
+  // renders whatever rank it's handed, it never decides one.
+  //
+  // This tier map is the exact mirror of badgeForRank() in seasonRank.js. If
+  // you change the cutoffs, change them in BOTH places or races and the garage
+  // will disagree.
+  function seasonBadgeForRank(rank){
+    if(!rank || rank < 1) return null;
+    if(rank === 1) return { label: "#1 Racer",     bg: "#F5C518", fg: "#3A2E00", border: "#B8940F" }; // gold
+    if(rank === 2) return { label: "#2 Racer",     bg: "#C9CDD4", fg: "#2A2E36", border: "#9AA0AA" }; // silver
+    if(rank === 3) return { label: "#3 Racer",     bg: "#CD7F32", fg: "#2A1A08", border: "#9E5F22" }; // bronze
+    if(rank <= 10) return { label: "Top 10 Racer", bg: "#4FA3FF", fg: "#04203F", border: "#2E7BD0" }; // blue
+    if(rank <= 50) return { label: "Top 50 Racer", bg: "#33CC78", fg: "#04240F", border: "#1F9E58" }; // green
+    return null;
+  }
+
+  // The player's own verified season rank, fetched from the server so the
+  // garage and their own race nameplate show the same un-forgeable number
+  // opponents see. Cached briefly; refreshed when the garage or a race opens.
+  var ownSeasonRank = null;
+  var ownSeasonRankAt = 0;
+  async function refreshOwnSeasonRank(){
+    if(!state.user) { ownSeasonRank = null; return null; }
+    // 45s cache -- the server recomputes at most once a minute anyway.
+    if(Date.now() - ownSeasonRankAt < 45000) return ownSeasonRank;
+    try{
+      var r = await fetch(SERVER_URL + "/api/season-rank/" + encodeURIComponent(state.user.username));
+      var d = await r.json().catch(function(){ return {}; });
+      ownSeasonRank = d.rank || null;
+      ownSeasonRankAt = Date.now();
+    }catch(e){ /* leave the last known rank in place */ }
+    return ownSeasonRank;
+  }
+
+  // Small inline badge box. `size` is "sm" (races/rosters) or "md" (garage).
+  function seasonBadgeHtml(rank, size){
+    var b = seasonBadgeForRank(rank);
+    if(!b) return "";
+    var pad = size === "md" ? "3px 10px" : "1px 7px";
+    var fs = size === "md" ? "12px" : "10px";
+    return '<span style="display:inline-block;background:' + b.bg + ';color:' + b.fg +
+      ';border:1px solid ' + b.border + ';border-radius:6px;padding:' + pad +
+      ';font-size:' + fs + ';font-weight:800;letter-spacing:.3px;white-space:nowrap;vertical-align:middle;">' +
+      b.label + '</span>';
+  }
+
   // ── Name tag identity ───────────────────────────────────────────────────
   //
   // ownedNameTags and equippedNameTag used to hold the image data URL itself
@@ -7565,6 +7614,13 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
   // profile back button — keeps working unchanged.
   function renderDashboard(){
     renderGarageCars();
+    // Fetch the verified season rank in the background; if it lands (or
+    // changed), repaint the garage header so the badge appears without a
+    // manual refresh.
+    var before = ownSeasonRank;
+    refreshOwnSeasonRank().then(function(rank){
+      if(rank !== before && state.screen === "garageCars") renderGarageCars();
+    });
   }
 
   // Stats panel + the Cars/Name Tags/Avatar switcher, shared across all
@@ -7663,7 +7719,12 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
         '<div style="display:flex;align-items:center;gap:18px;flex-wrap:wrap;">' +
           '<div style="flex:0 0 auto;">' + composedAvatarHtml(resolvedAvatar, 1.2) + '</div>' +
           '<div style="flex:1;min-width:0;">' +
-            '<div style="font-family:\'Arial Black\',Impact,sans-serif;font-style:italic;font-size:20px;color:var(--text);margin-bottom:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + escapeHtml(playerDisplayName) + '</div>' +
+            '<div style="display:flex;align-items:center;gap:8px;margin-bottom:2px;flex-wrap:wrap;">' +
+              '<span style="font-family:\'Arial Black\',Impact,sans-serif;font-style:italic;font-size:20px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + escapeHtml(playerDisplayName) + '</span>' +
+              // Season top-player badge. ownSeasonRank is fetched from the
+              // server (refreshOwnSeasonRank) so it matches what opponents see.
+              (ownSeasonRank ? seasonBadgeHtml(ownSeasonRank, "md") : "") +
+            '</div>' +
             '<div style="display:flex;align-items:center;gap:10px;margin-top:6px;">' +
               '<div style="width:80px;height:40px;flex:0 0 auto;">' + carVisualHtml(equippedCar) + '</div>' +
               '<div>' +
@@ -9265,6 +9326,10 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
   // for a real player, that's reserved for the admin Test Race tool and
   // the one-time calibration race.
   async function startMultiplayerRace(){
+    // Make sure the player's own badge is current before the race renders.
+    // Fire-and-forget -- it's cached, and a missing badge for one race is
+    // harmless.
+    refreshOwnSeasonRank();
     // Belt-and-suspenders alongside the onmessage/onclose guards above --
     // if a previous race's connection was somehow never cleanly closed
     // (e.g. the player abandoned it mid-connection), don't leave it
@@ -9337,7 +9402,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
           incoming.forEach(function(o){
             var exists = raceState.opponents.find(function(x){ return x.username === o.username; });
             if(!exists){
-              raceState.opponents.push({ username: o.username, carId: o.carId, charsTyped: 0, fraction: 0, wpm: 0, finished: false, place: null, displayName: o.displayName || "", guildTag: o.guildTag || "", guildColor: o.guildColor || "", trackStartGlideFired: false, trackFinishGlideFired: false, titleText: o.titleText || "", titleRarity: o.titleRarity || "", nameTag: o.nameTag || "" });
+              raceState.opponents.push({ username: o.username, carId: o.carId, charsTyped: 0, fraction: 0, wpm: 0, finished: false, place: null, displayName: o.displayName || "", guildTag: o.guildTag || "", guildColor: o.guildColor || "", trackStartGlideFired: false, trackFinishGlideFired: false, titleText: o.titleText || "", titleRarity: o.titleRarity || "", nameTag: o.nameTag || "", seasonRank: o.seasonRank || null });
             }
           });
           // Remove opponents no longer listed
@@ -9372,8 +9437,8 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
             // opponent who joined AFTER us is first seen right here, and this
             // push never set nameTag, so they fell back to the default. With
             // two opponents you'd reliably see one real tag and one default.
-            if(!exists) raceState.opponents.push({ username: o.username, carId: o.carId, charsTyped: 0, fraction: 0, wpm: 0, finished: false, place: null, displayName: o.displayName || "", guildTag: o.guildTag || "", guildColor: o.guildColor || "", trackStartGlideFired: false, trackFinishGlideFired: false, titleText: o.titleText || "", titleRarity: o.titleRarity || "", nameTag: o.nameTag || "" });
-            else { exists.carId = o.carId; exists.displayName = o.displayName || exists.displayName; exists.guildTag = o.guildTag || exists.guildTag; exists.guildColor = o.guildColor || exists.guildColor; exists.titleText = o.titleText || exists.titleText; exists.titleRarity = o.titleRarity || exists.titleRarity; exists.nameTag = o.nameTag || exists.nameTag; }
+            if(!exists) raceState.opponents.push({ username: o.username, carId: o.carId, charsTyped: 0, fraction: 0, wpm: 0, finished: false, place: null, displayName: o.displayName || "", guildTag: o.guildTag || "", guildColor: o.guildColor || "", trackStartGlideFired: false, trackFinishGlideFired: false, titleText: o.titleText || "", titleRarity: o.titleRarity || "", nameTag: o.nameTag || "", seasonRank: o.seasonRank || null });
+            else { exists.carId = o.carId; exists.displayName = o.displayName || exists.displayName; exists.guildTag = o.guildTag || exists.guildTag; exists.guildColor = o.guildColor || exists.guildColor; exists.titleText = o.titleText || exists.titleText; exists.titleRarity = o.titleRarity || exists.titleRarity; exists.nameTag = o.nameTag || exists.nameTag; if(o.seasonRank != null) exists.seasonRank = o.seasonRank; }
           });
           // Final safety: remove self from opponents
           var selfName = state.user ? state.user.username.toLowerCase() : "";
@@ -9550,7 +9615,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
         // above kept them -- so an opponent's title showed in the waiting room
         // and then vanished the instant the race began, because this rebuilds
         // the opponent objects from scratch. nameTag was never here at all.
-        return { username: o.username, carId: o.carId, charsTyped: 0, fraction: 0, wpm: 0, finished: false, place: null, displayName: o.displayName || "", guildTag: o.guildTag || "", guildColor: o.guildColor || "", trackStartGlideFired: false, trackFinishGlideFired: false, titleText: o.titleText || "", titleRarity: o.titleRarity || "", nameTag: o.nameTag || "" };
+        return { username: o.username, carId: o.carId, charsTyped: 0, fraction: 0, wpm: 0, finished: false, place: null, displayName: o.displayName || "", guildTag: o.guildTag || "", guildColor: o.guildColor || "", trackStartGlideFired: false, trackFinishGlideFired: false, titleText: o.titleText || "", titleRarity: o.titleRarity || "", nameTag: o.nameTag || "", seasonRank: o.seasonRank || null };
       }),
       lastProgressSentAt: 0,
       placements: [] // filled in as opponent_finished/race_complete arrive
@@ -9593,6 +9658,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
           nameTagHtml(nameTagImageFor(opp.nameTag), (opp.displayName && opp.displayName.trim()) ? opp.displayName : opp.username,
               opp.guildTag || null, opp.guildTag ? (GUILD_COLORS[opp.guildColor] || opp.guildColor || "#FFD54F") : null,
               opp.titleText || null, opp.titleRarity || null) +
+          (opp.seasonRank ? '<div style="text-align:center;margin-top:2px;">' + seasonBadgeHtml(opp.seasonRank, "sm") + '</div>' : '') +
         '</div>';
     }
 
@@ -9740,6 +9806,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
             nameTagHtml(nameTagImageFor(opp.nameTag), (opp.displayName && opp.displayName.trim()) ? opp.displayName : opp.username,
               opp.guildTag || null, opp.guildTag ? (GUILD_COLORS[opp.guildColor] || opp.guildColor || "#FFD54F") : null,
               opp.titleText || null, opp.titleRarity || null) +
+          (opp.seasonRank ? '<div style="text-align:center;margin-top:2px;">' + seasonBadgeHtml(opp.seasonRank, "sm") + '</div>' : '') +
           '</div>' +
         '</div>';
     }
@@ -9771,6 +9838,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
                       (state.userGuild && GUILD_COLORS[state.userGuild.color]) || (state.user && state.user.guildColor && GUILD_COLORS[state.user.guildColor]) || null,
                       (function(){ var ut = resolveTitle(state.user, titleCatalogCache); return ut ? ut.text : null; })(),
                       (function(){ var ut = resolveTitle(state.user, titleCatalogCache); return ut ? ut.rarity : null; })())) +
+                (!rs.isTestRace && ownSeasonRank ? '<div style="text-align:center;margin-top:2px;">' + seasonBadgeHtml(ownSeasonRank, "sm") + '</div>' : '') +
               '</div>' +
             '</div>' +
             openLanesHtml +
