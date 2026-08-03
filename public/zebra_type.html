@@ -2011,31 +2011,9 @@ const AntiCheat = (() => {
     const body = JSON.stringify({
       t:          _N.dateNow(),
       url:        location.href,
-      // score/confidence are still sent for the admin ban log's display, but
-      // the SERVER no longer trusts them -- it re-derives the verdict from the
-      // raw `signals` object below. See anticheatJudge.js. A cheater editing
-      // these two numbers changes nothing except what's shown in the log.
       score:      result.score,
       confidence: result.confidence,
-      // Raw observations the server scores itself. These are booleans/counts
-      // about what actually happened in the DOM, not a verdict -- deleting or
-      // faking any of them can only make the sender look cleaner, never make
-      // anyone else look guilty.
-      signals: {
-        canvasPresent:            result.signals_raw ? result.signals_raw.canvasPresent : undefined,
-        webglPresent:             result.signals_raw ? result.signals_raw.webglPresent : undefined,
-        audioPresent:             result.signals_raw ? result.signals_raw.audioPresent : undefined,
-        syntheticKeyDetected:     result.signals_raw ? result.signals_raw.syntheticKeyDetected : undefined,
-        nativeSetterTampered:     result.signals_raw ? result.signals_raw.nativeSetterTampered : undefined,
-        execCommandDetected:      result.signals_raw ? result.signals_raw.execCommandDetected : undefined,
-        descriptorRepatched:      result.signals_raw ? result.signals_raw.descriptorRepatched : undefined,
-        keypressValueMismatches:  result.signals_raw ? result.signals_raw.keypressValueMismatches : undefined,
-        valueJumpCount:           result.signals_raw ? result.signals_raw.valueJumpCount : undefined,
-        webdriverFlag:            result.signals_raw ? result.signals_raw.webdriverFlag : undefined,
-        automationArtifacts:      result.signals_raw ? result.signals_raw.automationArtifacts : undefined,
-      },
-      // The human-readable signal strings, kept for the admin log only.
-      signalText: result.signals,
+      signals:    result.signals,
       flags:      result.flags.slice(-30),
       timings:    result.timings,
       mouse:      result.mouse,
@@ -2231,24 +2209,6 @@ const AntiCheat = (() => {
     const result = {
       isBot, isSuspect, confidence, score, signals, flags, timings, mouse, focus,
       session: { ..._session },
-      // Raw observations, gathered here so _report can send them for the
-      // server to score independently. This is the SAME data the local scoring
-      // above used -- just exposed as flat booleans/counts rather than only as
-      // human-readable strings. The server ignores our verdict and re-judges
-      // from these.
-      signals_raw: {
-        canvasPresent:           !canvas.blocked,
-        webglPresent:            webgl.renderer !== 'no-webgl',
-        audioPresent:            (typeof audio !== 'undefined' && audio !== 'audio-error'),
-        syntheticKeyDetected:    !!syntheticKeyDetected,
-        nativeSetterTampered:    !!nativeSetterTampered,
-        execCommandDetected:     !!execCommandDetected,
-        descriptorRepatched:     !!descriptorRepatched,
-        keypressValueMismatches: keypressValueMismatches || 0,
-        valueJumpCount:          valueJumps.length,
-        webdriverFlag:           !!env.webdriverFlag,
-        automationArtifacts:     !!env.automationArtifacts,
-      },
       summary: isBot
         ? `BOT (${confidence}%) — ${signals.slice(0,2).join('; ')}${signals.length>2?` +${signals.length-2} more`:''}`
         : isSuspect
@@ -3150,55 +3110,6 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     return (catalog || titleCatalogCache).find(function(x){ return x.id === equipped; }) || DEFAULT_TITLE;
   }
 
-  // ── Season top-player badges ────────────────────────────────────────────
-  //
-  // Awarded by SEASON leaderboard rank only. The rank itself is computed on
-  // the server (see seasonRank.js) so it can't be forged -- the client only
-  // renders whatever rank it's handed, it never decides one.
-  //
-  // This tier map is the exact mirror of badgeForRank() in seasonRank.js. If
-  // you change the cutoffs, change them in BOTH places or races and the garage
-  // will disagree.
-  function seasonBadgeForRank(rank){
-    if(!rank || rank < 1) return null;
-    if(rank === 1) return { label: "#1 Racer",     bg: "#F5C518", fg: "#3A2E00", border: "#B8940F" }; // gold
-    if(rank === 2) return { label: "#2 Racer",     bg: "#C9CDD4", fg: "#2A2E36", border: "#9AA0AA" }; // silver
-    if(rank === 3) return { label: "#3 Racer",     bg: "#CD7F32", fg: "#2A1A08", border: "#9E5F22" }; // bronze
-    if(rank <= 10) return { label: "Top 10 Racer", bg: "#4FA3FF", fg: "#04203F", border: "#2E7BD0" }; // blue
-    if(rank <= 50) return { label: "Top 50 Racer", bg: "#33CC78", fg: "#04240F", border: "#1F9E58" }; // green
-    return null;
-  }
-
-  // The player's own verified season rank, fetched from the server so the
-  // garage and their own race nameplate show the same un-forgeable number
-  // opponents see. Cached briefly; refreshed when the garage or a race opens.
-  var ownSeasonRank = null;
-  var ownSeasonRankAt = 0;
-  async function refreshOwnSeasonRank(){
-    if(!state.user) { ownSeasonRank = null; return null; }
-    // 45s cache -- the server recomputes at most once a minute anyway.
-    if(Date.now() - ownSeasonRankAt < 45000) return ownSeasonRank;
-    try{
-      var r = await fetch(SERVER_URL + "/api/season-rank/" + encodeURIComponent(state.user.username));
-      var d = await r.json().catch(function(){ return {}; });
-      ownSeasonRank = d.rank || null;
-      ownSeasonRankAt = Date.now();
-    }catch(e){ /* leave the last known rank in place */ }
-    return ownSeasonRank;
-  }
-
-  // Small inline badge box. `size` is "sm" (races/rosters) or "md" (garage).
-  function seasonBadgeHtml(rank, size){
-    var b = seasonBadgeForRank(rank);
-    if(!b) return "";
-    var pad = size === "md" ? "3px 10px" : "1px 7px";
-    var fs = size === "md" ? "12px" : "10px";
-    return '<span style="display:inline-block;background:' + b.bg + ';color:' + b.fg +
-      ';border:1px solid ' + b.border + ';border-radius:6px;padding:' + pad +
-      ';font-size:' + fs + ';font-weight:800;letter-spacing:.3px;white-space:nowrap;vertical-align:middle;">' +
-      b.label + '</span>';
-  }
-
   // ── Name tag identity ───────────────────────────────────────────────────
   //
   // ownedNameTags and equippedNameTag used to hold the image data URL itself
@@ -3235,23 +3146,8 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
   function nameTagImageFor(entry, catalog){
     if(!entry) return DEFAULT_NAME_TAG;
     if(isNameTagImage(entry)) return entry;
-    // entry should be a catalog id at this point. Look it up.
-    var list = catalog || nameTagCatalogCache;
-    var hit = list && list.find ? list.find(function(t){ return t && t.id === entry; }) : null;
-    if(hit && isNameTagImage(hit.image)) return hit.image;
-    // No usable image. This happens when: the catalog isn't loaded yet, the
-    // entry's catalog record was deleted, or the stored entry is a value we
-    // don't recognise. Whatever the cause, fall back to the default -- NEVER
-    // return the id/empty string, which is what renders as a torn-image icon.
-    // Logged once so the actual bad value is visible instead of guessed at.
-    if(typeof console !== "undefined" && console.warn && !nameTagImageFor._warned){
-      nameTagImageFor._warned = {};
-    }
-    if(typeof console !== "undefined" && console.warn && nameTagImageFor._warned && !nameTagImageFor._warned[entry]){
-      nameTagImageFor._warned[entry] = true;
-      console.warn("[nametag] no image for entry:", JSON.stringify(entry), "-- catalog loaded:", (list && list.length) || 0, "entries");
-    }
-    return DEFAULT_NAME_TAG;
+    var hit = (catalog || nameTagCatalogCache).find(function(t){ return t && t.id === entry; });
+    return hit ? hit.image : DEFAULT_NAME_TAG;
   }
 
   // The catalog entry behind an owned entry, for name/rarity.
@@ -5681,26 +5577,22 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
   }
 
   // Removes a username from a guild's membership/leadership lists. If the
-  // departing player was the leader, promotes the senior co-leader. If there
-  // is NO co-leader, the guild is deleted and its remaining members are
-  // detached -- leadership does not fall to a random regular member. A guild
-  // is only ever led by someone who was explicitly made a co-leader.
+  // departing player was the leader, promotes the senior co-leader (or, if
+  // none, the longest-standing remaining member) to leader. If they were
+  // the last member, the guild is deleted outright.
   async function removeMemberFromGuild(guild, username){
     var lower = username.toLowerCase();
     guild.memberUsernames = (guild.memberUsernames || []).filter(function(u){ return u.toLowerCase() !== lower; });
     guild.coLeaderUsernames = (guild.coLeaderUsernames || []).filter(function(u){ return u.toLowerCase() !== lower; });
 
-    var leaderLeft = guild.leaderUsername && guild.leaderUsername.toLowerCase() === lower;
-
-    if(leaderLeft && guild.coLeaderUsernames.length){
-      // Senior co-leader takes over. shift() takes the longest-standing one.
-      guild.leaderUsername = guild.coLeaderUsernames.shift();
-    } else if(leaderLeft){
-      // Leader left and there's no co-leader to inherit. Delete the guild
-      // outright, detaching whatever regular members remain -- ownership must
-      // never fall to someone who was never trusted with co-leadership.
-      await detachAllMembersAndDeleteGuild(guild);
-      return null;
+    if(guild.leaderUsername && guild.leaderUsername.toLowerCase() === lower){
+      if(guild.coLeaderUsernames.length){
+        guild.leaderUsername = guild.coLeaderUsernames.shift();
+      } else if(guild.memberUsernames.length){
+        guild.leaderUsername = guild.memberUsernames[0];
+      } else {
+        guild.leaderUsername = null;
+      }
     }
 
     if(!guild.memberUsernames.length){
@@ -5709,34 +5601,6 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     }
     await saveGuild(guild);
     return guild;
-  }
-
-  // Clears guildId (and any stale guild tag/color) off every member of a guild,
-  // then deletes the guild record. Used when a guild is dissolved out from
-  // under its members -- e.g. the leader leaves with no co-leader to inherit.
-  async function detachAllMembersAndDeleteGuild(guild){
-    var everyone = (guild.memberUsernames || []).slice();
-    // Include leadership in case they aren't in memberUsernames for some reason.
-    if(guild.leaderUsername) everyone.push(guild.leaderUsername);
-    (guild.coLeaderUsernames || []).forEach(function(u){ everyone.push(u); });
-    var seen = {};
-    for(var i = 0; i < everyone.length; i++){
-      var uname = everyone[i];
-      if(!uname) continue;
-      var lk = uname.toLowerCase();
-      if(seen[lk]) continue;
-      seen[lk] = true;
-      try{
-        var r = await getAccount(uname);
-        if(r.ok && r.account && r.account.guildId === guild.id){
-          r.account.guildId = null;
-          r.account.guildTag = "";
-          r.account.guildColor = "";
-          await saveAccount(r.account);
-        }
-      }catch(e){ /* skip an unreadable member; the guild still gets deleted */ }
-    }
-    await deleteGuildRecord(guild.id);
   }
 
   // Keeps state.userGuild (used to show the guild tag in the garage and on
@@ -6252,7 +6116,6 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     else if(state.screen === "adminTestRace") renderAdminTestRace();
     else if(state.screen === "adminAbout") renderAdminAbout();
     else if(state.screen === "adminAnticheat") renderAdminAnticheat();
-    else if(state.screen === "adminBroadcast") renderAdminBroadcast();
     else if(state.screen === "adminAutomod") renderAdminAutomod();
     else if(state.screen === "account") renderAccount();
     else if(state.screen === "shop") renderShop();
@@ -7629,13 +7492,6 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
   // profile back button — keeps working unchanged.
   function renderDashboard(){
     renderGarageCars();
-    // Fetch the verified season rank in the background; if it lands (or
-    // changed), repaint the garage header so the badge appears without a
-    // manual refresh.
-    var before = ownSeasonRank;
-    refreshOwnSeasonRank().then(function(rank){
-      if(rank !== before && state.screen === "garageCars") renderGarageCars();
-    });
   }
 
   // Stats panel + the Cars/Name Tags/Avatar switcher, shared across all
@@ -7734,12 +7590,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
         '<div style="display:flex;align-items:center;gap:18px;flex-wrap:wrap;">' +
           '<div style="flex:0 0 auto;">' + composedAvatarHtml(resolvedAvatar, 1.2) + '</div>' +
           '<div style="flex:1;min-width:0;">' +
-            '<div style="display:flex;align-items:center;gap:8px;margin-bottom:2px;flex-wrap:wrap;">' +
-              '<span style="font-family:\'Arial Black\',Impact,sans-serif;font-style:italic;font-size:20px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + escapeHtml(playerDisplayName) + '</span>' +
-              // Season top-player badge. ownSeasonRank is fetched from the
-              // server (refreshOwnSeasonRank) so it matches what opponents see.
-              (ownSeasonRank ? seasonBadgeHtml(ownSeasonRank, "md") : "") +
-            '</div>' +
+            '<div style="font-family:\'Arial Black\',Impact,sans-serif;font-style:italic;font-size:20px;color:var(--text);margin-bottom:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + escapeHtml(playerDisplayName) + '</div>' +
             '<div style="display:flex;align-items:center;gap:10px;margin-top:6px;">' +
               '<div style="width:80px;height:40px;flex:0 0 auto;">' + carVisualHtml(equippedCar) + '</div>' +
               '<div>' +
@@ -8524,18 +8375,8 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     }
   }
 
-  async function renderGarageNameTags(){
+  function renderGarageNameTags(){
     var acc = state.user;
-
-    // Owned tags are catalog IDs now; nameTagImageFor turns an ID into its
-    // picture by looking it up in nameTagCatalogCache. If that cache is empty
-    // when this renders -- e.g. the player opened the garage before the boot
-    // pre-warm finished -- every lookup misses and falls back to the default
-    // tag image, which is the broken-thumbnail row you saw. Ensure it's loaded
-    // first.
-    if(!nameTagCatalogCache.length){
-      try{ await fetchNameTagCatalog(); }catch(e){}
-    }
 
     app.innerHTML =
       brandHeader() +
@@ -8700,22 +8541,15 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     });
 
     fetchTitleCatalog().then(function(tc){ titleCatalogCache = tc || []; });
-    // The profile shows name tags, which are stored as catalog IDs. Without
-    // the catalog loaded here, nameTagImageFor can't turn those IDs into
-    // pictures and every tag falls back to the broken default thumbnail. The
-    // garage loads it; the profile never did.
     Promise.all([
       getAccount(targetUsername),
       garageCachesLoaded ? Promise.resolve(customCarsCache) : fetchCustomCars(),
-      garageCachesLoaded ? Promise.resolve(avatarCatalogCache) : fetchAvatarCatalog(),
-      nameTagCatalogCache.length ? Promise.resolve(nameTagCatalogCache) : fetchNameTagCatalog()
+      garageCachesLoaded ? Promise.resolve(avatarCatalogCache) : fetchAvatarCatalog()
     ]).then(function(results){
       if(state.screen !== "profile" || state.profileUsername !== targetUsername) return; // navigated away while loading
       var res = results[0];
       customCarsCache = results[1];
       avatarCatalogCache = results[2];
-      // results[3] populates nameTagCatalogCache via fetchNameTagCatalog's own
-      // side effect; no assignment needed.
       garageCachesLoaded = true;
 
       var panelArea = app.querySelector(".panel");
@@ -8840,12 +8674,8 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     }).join("");
 
     // Name tags: only ones actually owned (default is implicit/always shown if nothing else).
-    var nameTagsHtml = nameTagOptionsFor(targetAcc).map(function(entry){
-      var isEquipped = entry === (targetAcc.equippedNameTag || DEFAULT_NAME_TAG);
-      // entry is a catalog ID; resolve it to a picture. Putting the raw ID in
-      // an <img src> was the torn-icon bug -- the garage resolves it, the
-      // profile didn't.
-      var src = nameTagImageFor(entry);
+    var nameTagsHtml = nameTagOptionsFor(targetAcc).map(function(src){
+      var isEquipped = src === equippedTag;
       return '<div class="garage-slot' + (isEquipped ? ' equipped' : '') + '" style="cursor:default;width:160px;height:46px;flex:0 0 160px;">' +
           '<img src="' + src + '" alt="" style="width:100%;height:100%;object-fit:contain;display:block;image-rendering:pixelated;" />' +
         '</div>';
@@ -8885,7 +8715,6 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
               (function(){ var t = resolveTitle(targetAcc, titleCatalogCache); return t ? '<div style="font-size:12px;font-style:italic;font-weight:700;color:' + (RARITY_COLORS[t.rarity]||'var(--muted)') + ';margin-bottom:4px;">' + escapeHtml(t.text) + '</div>' : ''; })() +
               (targetAcc.isBanned ? '<span style="color:var(--red);font-weight:900;font-size:14px;">BANNED</span>' : '') +
               (targetAcc.isSuspended && !targetAcc.isBanned ? '<span style="color:var(--amber);font-weight:900;font-size:14px;">SUSPENDED</span>' : '') +
-              (targetAcc.serverWpmFlag ? '<span style="color:var(--amber);font-weight:700;font-size:11px;border:1px solid var(--amber);border-radius:6px;padding:2px 7px;" title="Lifetime average WPM in bot territory \u2014 flagged by the server, review manually">\u26A1 ' + targetAcc.serverWpmFlag.avgWpm + ' avg WPM over ' + targetAcc.serverWpmFlag.races + ' races</span>' : '') +
             '</div>' +
             (targetAcc.displayName && targetAcc.displayName.trim() ? '<div style="color:var(--muted);font-size:13px;margin-bottom:4px;">@' + escapeHtml(targetAcc.username) + '</div>' : '') +
             '<div style="margin-bottom:14px;"><img src="' + equippedTag + '" alt="" style="height:30px;object-fit:contain;image-rendering:pixelated;display:block;" /></div>' +
@@ -9362,10 +9191,6 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
   // for a real player, that's reserved for the admin Test Race tool and
   // the one-time calibration race.
   async function startMultiplayerRace(){
-    // Make sure the player's own badge is current before the race renders.
-    // Fire-and-forget -- it's cached, and a missing badge for one race is
-    // harmless.
-    refreshOwnSeasonRank();
     // Belt-and-suspenders alongside the onmessage/onclose guards above --
     // if a previous race's connection was somehow never cleanly closed
     // (e.g. the player abandoned it mid-connection), don't leave it
@@ -9438,7 +9263,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
           incoming.forEach(function(o){
             var exists = raceState.opponents.find(function(x){ return x.username === o.username; });
             if(!exists){
-              raceState.opponents.push({ username: o.username, carId: o.carId, charsTyped: 0, fraction: 0, wpm: 0, finished: false, place: null, displayName: o.displayName || "", guildTag: o.guildTag || "", guildColor: o.guildColor || "", trackStartGlideFired: false, trackFinishGlideFired: false, titleText: o.titleText || "", titleRarity: o.titleRarity || "", nameTag: o.nameTag || "", seasonRank: o.seasonRank || null });
+              raceState.opponents.push({ username: o.username, carId: o.carId, charsTyped: 0, fraction: 0, wpm: 0, finished: false, place: null, displayName: o.displayName || "", guildTag: o.guildTag || "", guildColor: o.guildColor || "", trackStartGlideFired: false, trackFinishGlideFired: false, titleText: o.titleText || "", titleRarity: o.titleRarity || "", nameTag: o.nameTag || "" });
             }
           });
           // Remove opponents no longer listed
@@ -9473,8 +9298,8 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
             // opponent who joined AFTER us is first seen right here, and this
             // push never set nameTag, so they fell back to the default. With
             // two opponents you'd reliably see one real tag and one default.
-            if(!exists) raceState.opponents.push({ username: o.username, carId: o.carId, charsTyped: 0, fraction: 0, wpm: 0, finished: false, place: null, displayName: o.displayName || "", guildTag: o.guildTag || "", guildColor: o.guildColor || "", trackStartGlideFired: false, trackFinishGlideFired: false, titleText: o.titleText || "", titleRarity: o.titleRarity || "", nameTag: o.nameTag || "", seasonRank: o.seasonRank || null });
-            else { exists.carId = o.carId; exists.displayName = o.displayName || exists.displayName; exists.guildTag = o.guildTag || exists.guildTag; exists.guildColor = o.guildColor || exists.guildColor; exists.titleText = o.titleText || exists.titleText; exists.titleRarity = o.titleRarity || exists.titleRarity; exists.nameTag = o.nameTag || exists.nameTag; if(o.seasonRank != null) exists.seasonRank = o.seasonRank; }
+            if(!exists) raceState.opponents.push({ username: o.username, carId: o.carId, charsTyped: 0, fraction: 0, wpm: 0, finished: false, place: null, displayName: o.displayName || "", guildTag: o.guildTag || "", guildColor: o.guildColor || "", trackStartGlideFired: false, trackFinishGlideFired: false, titleText: o.titleText || "", titleRarity: o.titleRarity || "", nameTag: o.nameTag || "" });
+            else { exists.carId = o.carId; exists.displayName = o.displayName || exists.displayName; exists.guildTag = o.guildTag || exists.guildTag; exists.guildColor = o.guildColor || exists.guildColor; exists.titleText = o.titleText || exists.titleText; exists.titleRarity = o.titleRarity || exists.titleRarity; exists.nameTag = o.nameTag || exists.nameTag; }
           });
           // Final safety: remove self from opponents
           var selfName = state.user ? state.user.username.toLowerCase() : "";
@@ -9651,7 +9476,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
         // above kept them -- so an opponent's title showed in the waiting room
         // and then vanished the instant the race began, because this rebuilds
         // the opponent objects from scratch. nameTag was never here at all.
-        return { username: o.username, carId: o.carId, charsTyped: 0, fraction: 0, wpm: 0, finished: false, place: null, displayName: o.displayName || "", guildTag: o.guildTag || "", guildColor: o.guildColor || "", trackStartGlideFired: false, trackFinishGlideFired: false, titleText: o.titleText || "", titleRarity: o.titleRarity || "", nameTag: o.nameTag || "", seasonRank: o.seasonRank || null };
+        return { username: o.username, carId: o.carId, charsTyped: 0, fraction: 0, wpm: 0, finished: false, place: null, displayName: o.displayName || "", guildTag: o.guildTag || "", guildColor: o.guildColor || "", trackStartGlideFired: false, trackFinishGlideFired: false, titleText: o.titleText || "", titleRarity: o.titleRarity || "", nameTag: o.nameTag || "" };
       }),
       lastProgressSentAt: 0,
       placements: [] // filled in as opponent_finished/race_complete arrive
@@ -9694,7 +9519,6 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
           nameTagHtml(nameTagImageFor(opp.nameTag), (opp.displayName && opp.displayName.trim()) ? opp.displayName : opp.username,
               opp.guildTag || null, opp.guildTag ? (GUILD_COLORS[opp.guildColor] || opp.guildColor || "#FFD54F") : null,
               opp.titleText || null, opp.titleRarity || null) +
-          (opp.seasonRank ? '<div style="text-align:center;margin-top:2px;">' + seasonBadgeHtml(opp.seasonRank, "sm") + '</div>' : '') +
         '</div>';
     }
 
@@ -9842,7 +9666,6 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
             nameTagHtml(nameTagImageFor(opp.nameTag), (opp.displayName && opp.displayName.trim()) ? opp.displayName : opp.username,
               opp.guildTag || null, opp.guildTag ? (GUILD_COLORS[opp.guildColor] || opp.guildColor || "#FFD54F") : null,
               opp.titleText || null, opp.titleRarity || null) +
-          (opp.seasonRank ? '<div style="text-align:center;margin-top:2px;">' + seasonBadgeHtml(opp.seasonRank, "sm") + '</div>' : '') +
           '</div>' +
         '</div>';
     }
@@ -9874,7 +9697,6 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
                       (state.userGuild && GUILD_COLORS[state.userGuild.color]) || (state.user && state.user.guildColor && GUILD_COLORS[state.user.guildColor]) || null,
                       (function(){ var ut = resolveTitle(state.user, titleCatalogCache); return ut ? ut.text : null; })(),
                       (function(){ var ut = resolveTitle(state.user, titleCatalogCache); return ut ? ut.rarity : null; })())) +
-                (!rs.isTestRace && ownSeasonRank ? '<div style="text-align:center;margin-top:2px;">' + seasonBadgeHtml(ownSeasonRank, "sm") + '</div>' : '') +
               '</div>' +
             '</div>' +
             openLanesHtml +
@@ -10273,6 +10095,23 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
 
     var val = e.target.value;
     if(val.length > rs.passage.length) val = val.slice(0, rs.passage.length);
+
+    // Race hasn't started yet -- reject the keystroke outright.
+    //
+    // startTime is set only when the countdown reaches GO! (see the countdown
+    // completion). A "race start hijacker" userscript forces the input enabled
+    // during the countdown and banks characters early; because WPM is
+    // chars / (now - startTime), those free early characters inflate the whole
+    // race's speed once the clock starts -- the reported 110 -> 150 jump. If
+    // there's no startTime, or the shared clock says the race hasn't begun,
+    // nothing the player types counts.
+    var raceHasStarted = !!rs.startTime && (!rs.isMultiplayer || typeof rs.startsAt !== "number" || Date.now() >= rs.startsAt - 250);
+    if(rs.isWaiting || !raceHasStarted){
+      // Snap the field back to whatever's legitimately been typed (empty at
+      // the start) so banked characters don't linger in the input.
+      e.target.value = rs.typed || "";
+      return;
+    }
 
     // Anti-paste backstop: a real keystroke either appends exactly one
     // character to the end, or deletes from the end (backspace). Anything
@@ -11218,7 +11057,6 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
         (state.isSuperAdmin ? '<button class="admin-navbar-tab' + (activeTab==="about" ? " active" : "") + '" data-admin-tab="about">\uD83D\uDCD6 About</button>' : '') +
         (state.isSuperAdmin ? '<button class="admin-navbar-tab' + (activeTab==="anticheat" ? " active" : "") + '" data-admin-tab="anticheat">\uD83D\uDEE1\uFE0F Anti-Cheat</button>' : '') +
       (state.isSuperAdmin ? '<button class="admin-navbar-tab' + (activeTab==="automod" ? " active" : "") + '" data-admin-tab="automod">\uD83E\uDDF9 Automod</button>' : '') +
-      (state.isSuperAdmin ? '<button class="admin-navbar-tab' + (activeTab==="broadcast" ? " active" : "") + '" data-admin-tab="broadcast">\uD83D\uDCE6 Send to All</button>' : '') +
       '</div>' +
       '<div class="admin-navbar-right">' +
         '<div class="userpill">Admin: <b>' + escapeHtml(state.adminUsername || "") + '</b></div>' +
@@ -11269,7 +11107,6 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
           : tab === "about" ? "adminAbout"
           : tab === "anticheat" ? "adminAnticheat"
           : tab === "automod" ? "adminAutomod"
-          : tab === "broadcast" ? "adminBroadcast"
           : "adminAchievements";
         renderApp();
       });
@@ -17934,207 +17771,6 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     return '';
   }
 
-  // ── Send to All (super admin) ─────────────────────────────────────────
-  //
-  // Grants coins and/or one item to every account. The grant itself runs
-  // server-side (POST /api/grant-all) so it goes through the same inventory
-  // helpers as everything else and can't be undone by a stale client save.
-  //
-  // Preview is mandatory: the button starts as "Preview", and only after the
-  // server reports how many accounts it would touch does the real Send button
-  // appear. Any change to the form clears that confirmation, so you can't
-  // preview one thing and send another.
-  async function renderAdminBroadcast(){
-    if(!state.isAdmin || !state.isSuperAdmin){ state.screen = "adminCars"; renderApp(); return; }
-    state.adminTab = "broadcast";
-
-    app.innerHTML =
-      brandHeader() +
-      adminNavBar("broadcast") +
-      '<div class="panel">' +
-        '<div class="garage-title" style="color:var(--text);font-size:18px;margin-bottom:4px;">\uD83D\uDCE6 Send to All Players</div>' +
-        '<div class="hint-text" style="margin-top:0;margin-bottom:16px;">Grants coins and/or one item to every account on the site. Useful for beta rewards, apology gifts, or launch bonuses. Preview first \u2014 this can\u2019t be undone.</div>' +
-
-        '<div class="field">' +
-          '<label for="grantAllCoins">Coins (0 for none)</label>' +
-          '<input id="grantAllCoins" type="number" min="0" value="0" style="width:100%;background:var(--panel-2);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:11px 12px;font-size:15px;" />' +
-        '</div>' +
-
-        '<div class="field">' +
-          '<label for="grantAllType">Item (optional)</label>' +
-          '<select id="grantAllType" style="width:100%;background:var(--panel-2);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:11px 12px;font-size:14px;">' +
-            '<option value="">\u2014 No item \u2014</option>' +
-            '<option value="title">Title</option>' +
-            '<option value="nameTag">Name Tag</option>' +
-            '<option value="car">Car</option>' +
-            '<option value="avatar">Avatar Piece</option>' +
-          '</select>' +
-        '</div>' +
-        '<div class="field" id="grantAllItemWrap" style="display:none;">' +
-          '<label for="grantAllItem">Which one</label>' +
-          '<select id="grantAllItem" style="width:100%;background:var(--panel-2);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:11px 12px;font-size:14px;"></select>' +
-        '</div>' +
-
-        '<div class="field">' +
-          '<label style="display:flex;align-items:center;gap:10px;cursor:pointer;">' +
-            '<input type="checkbox" id="grantAllSkipBanned" checked style="width:18px;height:18px;cursor:pointer;" />' +
-            '<span>Skip banned and suspended accounts</span>' +
-          '</label>' +
-        '</div>' +
-
-        '<div class="error-text" id="grantAllError" style="margin-bottom:10px;"></div>' +
-        '<button class="btn btn-primary" id="grantAllPreviewBtn">Preview</button>' +
-        '<div id="grantAllResult" style="font-size:13px;margin-top:12px;"></div>' +
-        '<div id="grantAllConfirmWrap" style="margin-top:12px;"></div>' +
-      '</div>';
-
-    attachAdminNavListeners();
-
-    var typeSel = document.getElementById("grantAllType");
-    var itemWrap = document.getElementById("grantAllItemWrap");
-    var itemSel = document.getElementById("grantAllItem");
-    var errEl = document.getElementById("grantAllError");
-    var resultEl = document.getElementById("grantAllResult");
-    var confirmWrap = document.getElementById("grantAllConfirmWrap");
-
-    // Any edit invalidates a previous preview -- otherwise you could preview
-    // "100 coins", change it to "100000 coins", and hit a Send button that was
-    // confirmed against different numbers.
-    function invalidatePreview(){
-      confirmWrap.innerHTML = "";
-      resultEl.textContent = "";
-    }
-
-    async function populateItems(kind){
-      itemSel.innerHTML = '<option value="">Loading\u2026</option>';
-      var opts = [];
-      try{
-        if(kind === "title"){
-          var tc = await fetchTitleCatalog();
-          opts = (tc||[]).map(function(t){ return { value: t.id, label: '\u201c' + (t.text||t.id) + '\u201d \u2014 ' + (t.rarity||"Common") + (t.isSeasonal ? " (seasonal)" : ""), slot: null }; });
-        } else if(kind === "nameTag"){
-          var nc = await fetchNameTagCatalog();
-          opts = (nc||[]).map(function(t){ return { value: t.id, label: (t.name||t.id) + ' \u2014 ' + (t.rarity||"Common") + (t.isSeasonal ? " (seasonal)" : ""), slot: null }; });
-        } else if(kind === "car"){
-          var cc = await fetchCustomCars();
-          opts = (cc||[]).map(function(c){ return { value: c.id, label: (c.name||c.id) + ' \u2014 ' + (c.rarity||"Common"), slot: null }; });
-        } else if(kind === "avatar"){
-          var ac = await fetchAvatarCatalog();
-          opts = (ac||[]).map(function(p){ return { value: p.id, label: (p.name||p.id) + ' \u2014 ' + (AVATAR_SLOT_LABELS[p.slot]||p.slot), slot: p.slot }; });
-        }
-      }catch(e){
-        itemSel.innerHTML = '<option value="">Couldn\u2019t load catalog</option>';
-        return;
-      }
-      if(!opts.length){ itemSel.innerHTML = '<option value="">Nothing in this catalog yet</option>'; return; }
-      itemSel.innerHTML = opts.map(function(o){
-        return '<option value="' + escapeHtml(o.value) + '" data-slot="' + escapeHtml(o.slot||"") + '">' + escapeHtml(o.label) + '</option>';
-      }).join("");
-    }
-
-    typeSel.addEventListener("change", function(){
-      invalidatePreview();
-      var kind = typeSel.value;
-      if(!kind){ itemWrap.style.display = "none"; return; }
-      itemWrap.style.display = "";
-      populateItems(kind);
-    });
-    document.getElementById("grantAllCoins").addEventListener("input", invalidatePreview);
-    itemSel.addEventListener("change", invalidatePreview);
-    document.getElementById("grantAllSkipBanned").addEventListener("change", invalidatePreview);
-
-    function readForm(){
-      var coins = parseInt(document.getElementById("grantAllCoins").value, 10) || 0;
-      var kind = typeSel.value || null;
-      var opt = itemSel.options[itemSel.selectedIndex];
-      return {
-        coins: coins,
-        itemType: kind,
-        itemId: kind ? (itemSel.value || null) : null,
-        slot: (kind === "avatar" && opt) ? (opt.getAttribute("data-slot") || null) : null,
-        skipBanned: document.getElementById("grantAllSkipBanned").checked
-      };
-    }
-
-    async function callGrant(payload, dryRun){
-      var r = await fetch(SERVER_URL + "/api/grant-all", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "x-session-token": currentToken || "" },
-        body: JSON.stringify(Object.assign({}, payload, { dryRun: dryRun }))
-      });
-      var d = await r.json().catch(function(){ return {}; });
-      return { ok: r.ok, status: r.status, data: d };
-    }
-
-    document.getElementById("grantAllPreviewBtn").addEventListener("click", async function(){
-      var btn = document.getElementById("grantAllPreviewBtn");
-      errEl.textContent = "";
-      invalidatePreview();
-      var payload = readForm();
-      if(!payload.coins && !payload.itemType){ errEl.textContent = "Enter a coin amount or pick an item."; return; }
-      if(payload.itemType && !payload.itemId){ errEl.textContent = "Pick which item to send."; return; }
-
-      btn.disabled = true; btn.textContent = "Checking\u2026";
-      try{
-        var out = await callGrant(payload, true);
-        if(!out.ok){ errEl.textContent = out.data.message || out.data.error || ("Error " + out.status); return; }
-
-        var d = out.data;
-        var parts = [];
-        if(payload.coins) parts.push(COIN_ICON + payload.coins.toLocaleString());
-        if(payload.itemType){
-          var lbl = itemSel.options[itemSel.selectedIndex];
-          parts.push('\u201c' + (lbl ? lbl.textContent : payload.itemId) + '\u201d');
-        }
-        resultEl.style.color = "var(--muted)";
-        resultEl.textContent = "Would send " + parts.join(" and ") + " to " + d.granted +
-          " account" + (d.granted === 1 ? "" : "s") +
-          (d.skipped ? " (" + d.skipped + " banned/suspended skipped)" : "") +
-          (d.failed ? ", " + d.failed + " unreadable" : "") + ".";
-
-        if(!d.granted){ confirmWrap.innerHTML = '<div class="hint-text" style="margin:0;">Nothing to send to.</div>'; return; }
-        confirmWrap.innerHTML =
-          '<button class="small-btn" id="grantAllSendBtn" data-stage="confirm" style="color:var(--red);border-color:var(--red);">Send to ' + d.granted + ' account' + (d.granted === 1 ? "" : "s") + '</button>';
-
-        var sendBtn = document.getElementById("grantAllSendBtn");
-        sendBtn.addEventListener("click", async function(){
-          if(sendBtn.getAttribute("data-stage") === "confirm"){
-            sendBtn.setAttribute("data-stage", "armed");
-            sendBtn.textContent = "Click again \u2014 this can\u2019t be undone";
-            setTimeout(function(){
-              if(sendBtn.getAttribute("data-stage") === "armed"){
-                sendBtn.setAttribute("data-stage", "confirm");
-                sendBtn.textContent = "Send to " + d.granted + " account" + (d.granted === 1 ? "" : "s");
-              }
-            }, 4000);
-            return;
-          }
-          sendBtn.disabled = true; sendBtn.textContent = "Sending\u2026";
-          resultEl.style.color = "var(--muted)";
-          resultEl.textContent = "Writing to every account \u2014 this may take a moment.";
-          var sent = await callGrant(payload, false);
-          if(!sent.ok){
-            resultEl.style.color = "var(--red)";
-            resultEl.textContent = "Failed: " + (sent.data.message || sent.data.error || ("error " + sent.status));
-            sendBtn.disabled = false; sendBtn.setAttribute("data-stage", "confirm");
-            sendBtn.textContent = "Send to " + d.granted + " account" + (d.granted === 1 ? "" : "s");
-            return;
-          }
-          resultEl.style.color = "var(--green)";
-          resultEl.textContent = "Sent to " + sent.data.granted + " account" + (sent.data.granted === 1 ? "" : "s") +
-            (sent.data.skipped ? ", " + sent.data.skipped + " skipped" : "") +
-            (sent.data.failed ? ", " + sent.data.failed + " failed" : "") + ".";
-          sendBtn.textContent = "Sent";
-          sendBtn.style.opacity = "0.5";
-        });
-      }catch(e){
-        errEl.textContent = "Error: " + ((e&&e.message)?e.message:String(e));
-      }finally{
-        btn.disabled = false; btn.textContent = "Preview";
-      }
-    });
-  }
-
   function renderSeason(){
     var acc = state.user;
 
@@ -18155,60 +17791,15 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
       avatarCatalogCache = results[2];
       garageCachesLoaded = true;
 
-      // Both banners are built as STRINGS and folded into panel.innerHTML
-      // below, not inserted into the DOM here.
-      //
-      // They used to be created as elements and insertBefore'd onto
-      // #seasonPanel -- but further down, panel.innerHTML is assigned outright,
-      // which replaces everything inside it. So the banner was created,
-      // attached, and then destroyed a few lines later, every single time.
-      // That's why no end date ever appeared; the "Season Ended" banner had
-      // been broken the same way since it was written.
+      // Show ended banner if season has finished
       var seasonIsOver = cfg.seasonEndsAt && Date.now() > cfg.seasonEndsAt;
-      var seasonBannerHtml = "";
-
-      if(seasonIsOver){
+      var seasonPanel = document.getElementById("seasonPanel");
+      if(seasonIsOver && seasonPanel){
         var endDate = new Date(cfg.seasonEndsAt);
-        seasonBannerHtml =
-          '<div style="background:rgba(220,38,38,0.12);border:1px solid var(--red);border-radius:10px;padding:14px 18px;margin-bottom:18px;display:flex;align-items:center;gap:12px;">' +
-            '<span style="font-size:22px;">\u26D4</span>' +
-            '<div>' +
-              '<div style="font-weight:700;color:var(--red);font-size:15px;">Season Ended</div>' +
-              '<div style="font-size:13px;color:var(--muted);">This season ended on ' + escapeHtml(endDate.toLocaleString()) + '. Races no longer count toward the season leaderboard and no more rewards can be earned.</div>' +
-            '</div>' +
-          '</div>';
-      } else if(cfg.seasonEndsAt){
-        // The end date was only ever shown AFTER the season finished, which is
-        // the one moment it stops being useful. While it's running, how long is
-        // left is what decides whether someone grinds the last few levels.
-        var endsAt = new Date(cfg.seasonEndsAt);
-        var msLeft = cfg.seasonEndsAt - Date.now();
-        var daysLeft = Math.floor(msLeft / 86400000);
-        var hoursLeft = Math.floor((msLeft % 86400000) / 3600000);
-        var minsLeft = Math.floor(msLeft / 60000);
-        // Clamped to at least 1 so the final seconds don't read "0 minutes" --
-        // and pluralised off the CLAMPED value, or 30 seconds left would say
-        // "1 minutes".
-        var minsShown = Math.max(1, minsLeft);
-        var leftText = daysLeft > 0
-          ? daysLeft + " day" + (daysLeft === 1 ? "" : "s") + (hoursLeft > 0 ? ", " + hoursLeft + " hour" + (hoursLeft === 1 ? "" : "s") : "")
-          : hoursLeft > 0
-            ? hoursLeft + " hour" + (hoursLeft === 1 ? "" : "s")
-            : minsShown + " minute" + (minsShown === 1 ? "" : "s");
-        // Under a day turns amber -- at that point it's a deadline, not a date.
-        var urgent = msLeft < 86400000;
-        seasonBannerHtml =
-          '<div style="background:' + (urgent ? "rgba(245,158,11,0.12)" : "rgba(255,255,255,0.04)") +
-            ';border:1px solid ' + (urgent ? "var(--amber)" : "var(--line)") +
-            ';border-radius:10px;padding:14px 18px;margin-bottom:18px;display:flex;align-items:center;gap:12px;">' +
-            '<span style="font-size:22px;">' + (urgent ? "\u23F0" : "\uD83C\uDFC1") + '</span>' +
-            '<div>' +
-              '<div style="font-weight:700;color:' + (urgent ? "var(--amber)" : "var(--text)") + ';font-size:15px;">' +
-                escapeHtml(leftText) + ' left in this season' +
-              '</div>' +
-              '<div style="font-size:13px;color:var(--muted);">Ends ' + escapeHtml(endsAt.toLocaleString()) + '. Unclaimed rewards are lost once the season closes.</div>' +
-            '</div>' +
-          '</div>';
+        var bannerDiv = document.createElement("div");
+        bannerDiv.style.cssText = "background:rgba(220,38,38,0.12);border:1px solid var(--red);border-radius:10px;padding:14px 18px;margin-bottom:18px;display:flex;align-items:center;gap:12px;";
+        bannerDiv.innerHTML = '<span style="font-size:22px;">\u26D4</span><div><div style="font-weight:700;color:var(--red);font-size:15px;">Season Ended</div><div style="font-size:13px;color:var(--muted);">This season ended on ' + endDate.toLocaleString() + '. Races no longer count toward the season leaderboard and no more rewards can be earned.</div></div>';
+        seasonPanel.insertBefore(bannerDiv, seasonPanel.firstChild);
       }
 
       var levels = cfg.levels || [];
@@ -18264,7 +17855,6 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
 
       var panel = document.getElementById("seasonPanel");
       panel.innerHTML =
-        seasonBannerHtml +
         '<div style="display:flex;align-items:baseline;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:4px;">' +
           '<div class="season-name">' + escapeHtml(cfg.name || "Season") + '</div>' +
           (hasPremium ? '<span style="font-size:11px;color:var(--amber);font-weight:700;text-transform:uppercase;letter-spacing:1px;">\u2605 Premium Active</span>' : '') +
@@ -18446,7 +18036,6 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
           '</div>' +
           '<div style="font-size:13px;color:var(--muted);">' + memberCount + ' / ' + GUILD_MAX_MEMBERS + ' members</div>' +
           (guild.closed ? '<div style="font-size:12px;color:var(--red);margin-top:4px;">\uD83D\uDD12 Closed \u2014 not accepting new members</div>' : '') +
-          (!guild.closed && guild.inviteOnly ? '<div style="font-size:12px;color:var(--amber);margin-top:4px;">\u2709\uFE0F Invite-only \u2014 applications require approval</div>' : '') +
           guildDescriptionHtml(guild) +
           '<div class="guild-progress-wrap">' +
             '<div class="guild-progress-fill" style="width:' + Math.round(100 * memberCount / GUILD_MAX_MEMBERS) + '%;background:' + color + ';"></div>' +
@@ -18461,26 +18050,11 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
           '<div style="font-weight:700;font-size:15px;color:var(--text);margin-bottom:10px;">Members</div>' +
           membersHtml +
         '</div>' +
-        (state.user && !state.user.guildId && (guild.memberUsernames||[]).length < GUILD_MAX_MEMBERS ?
-          (guild.closed ?
-            // Closed takes priority -- no way in at all.
-            '<div class="panel" style="margin-top:18px;text-align:center;">' +
-              '<div style="font-size:13px;color:var(--red);">\uD83D\uDD12 This guild is closed and isn\u2019t accepting new members.</div>' +
-            '</div>'
-          : guild.inviteOnly ?
-            // Invite-only: Apply, not Join. Files into the same pendingRequests
-            // queue, but the label sets the expectation that it needs approval.
-            '<div class="panel" style="margin-top:18px;text-align:center;">' +
-              '<div style="font-size:12px;color:var(--amber);margin-bottom:8px;">\u2709\uFE0F Invite-only \u2014 a leader must approve your application.</div>' +
-              '<button class="btn btn-primary" id="joinFromViewBtn">Apply to [' + escapeHtml(guild.tag) + ']</button>' +
-              '<div id="joinFromViewMsg" style="font-size:13px;margin-top:8px;"></div>' +
-            '</div>'
-          :
-            '<div class="panel" style="margin-top:18px;text-align:center;">' +
-              '<button class="btn btn-primary" id="joinFromViewBtn">Request to Join [' + escapeHtml(guild.tag) + ']</button>' +
-              '<div id="joinFromViewMsg" style="font-size:13px;margin-top:8px;"></div>' +
-            '</div>'
-          ) : "");
+        (state.user && !state.user.guildId && !guild.closed && (guild.memberUsernames||[]).length < GUILD_MAX_MEMBERS ?
+          '<div class="panel" style="margin-top:18px;text-align:center;">' +
+            '<button class="btn btn-primary" id="joinFromViewBtn">Request to Join [' + escapeHtml(guild.tag) + ']</button>' +
+            '<div id="joinFromViewMsg" style="font-size:13px;margin-top:8px;"></div>' +
+          '</div>' : "");
 
       // Super admin: remove a roster entry whose account couldn't load
       if(state.isSuperAdmin){
@@ -18516,22 +18090,17 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
           var freshGuild = await fetchGuild(guild.id);
           if(!freshGuild){ msg.textContent = "Guild no longer exists."; return; }
           if((freshGuild.memberUsernames||[]).includes(state.user.username.toLowerCase())){ msg.textContent = "You're already a member."; return; }
-          // Re-check against the freshly fetched guild, not the copy this page
-          // rendered from -- the leader may have closed it since the page
-          // loaded, and a closed guild takes no requests at all.
-          if(freshGuild.closed){ msg.style.color = "var(--red)"; msg.textContent = "This guild is now closed."; joinBtn.disabled = true; return; }
-          if((freshGuild.memberUsernames||[]).length >= GUILD_MAX_MEMBERS){ msg.style.color = "var(--red)"; msg.textContent = "This guild is full."; joinBtn.disabled = true; return; }
           freshGuild.pendingRequests = freshGuild.pendingRequests || [];
-          if(freshGuild.pendingRequests.includes(state.user.username.toLowerCase())){ msg.style.color="var(--muted)"; msg.textContent = freshGuild.inviteOnly ? "Application already sent." : "Request already sent."; return; }
+          if(freshGuild.pendingRequests.includes(state.user.username.toLowerCase())){ msg.style.color="var(--muted)"; msg.textContent = "Request already sent."; return; }
           freshGuild.pendingRequests.push(state.user.username.toLowerCase());
           await saveGuild(freshGuild);
           msg.style.color = "var(--green)";
-          msg.textContent = freshGuild.inviteOnly ? "Application sent \u2014 waiting for approval." : "Request sent!";
-          joinBtn.textContent = freshGuild.inviteOnly ? "Applied" : "Requested";
-          joinBtn.disabled = true;
+          msg.textContent = "Request sent!";
+          joinBtn.textContent = "Requested";
         }catch(e){
           msg.textContent = "Failed to send request.";
           joinBtn.disabled = false;
+          joinBtn.textContent = "Requested";
         }
       });
 
@@ -18669,8 +18238,6 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
           leaderUsername: freshAcc.username,
           coLeaderUsernames: [],
           memberUsernames: [freshAcc.username],
-          closed: false,
-          inviteOnly: false,
           createdAt: Date.now()
         };
         var saveGuildRes = await saveGuild(guild);
@@ -18831,15 +18398,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
         '<div class="panel" style="margin-bottom:18px;">' +
           '<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:14px;">' +
             '<div class="garage-title" style="color:var(--text);font-size:16px;margin:0;">Edit Guild</div>' +
-            '<div style="display:flex;gap:8px;flex-wrap:wrap;">' +
-              // Invite-only: when on, the public page shows Apply instead of a
-              // direct Join, and applicants land in the same Join Requests
-              // queue below. Independent of Closed -- a closed guild takes no
-              // requests at all; an invite-only-but-open guild takes them but
-              // requires approval. Closed wins if both are set.
-              '<button class="small-btn" id="toggleGuildInviteBtn" style="color:' + (guild.inviteOnly ? 'var(--amber)' : 'var(--muted)') + ';border-color:' + (guild.inviteOnly ? 'var(--amber)' : 'var(--line)') + ';">' + (guild.inviteOnly ? '\u2709\uFE0F Invite-Only: On' : '\u2709\uFE0F Invite-Only: Off') + '</button>' +
-              '<button class="small-btn" id="toggleGuildClosedBtn" style="color:' + (guild.closed ? 'var(--green)' : 'var(--red)') + ';border-color:' + (guild.closed ? 'var(--green)' : 'var(--red)') + ';">' + (guild.closed ? '\u2705 Open Guild' : '\uD83D\uDD12 Close Guild') + '</button>' +
-            '</div>' +
+            '<button class="small-btn" id="toggleGuildClosedBtn" style="color:' + (guild.closed ? 'var(--green)' : 'var(--red)') + ';border-color:' + (guild.closed ? 'var(--green)' : 'var(--red)') + ';">' + (guild.closed ? '\u2705 Open Guild' : '\uD83D\uDD12 Close Guild') + '</button>' +
           '</div>' +
           '<div style="display:flex;gap:10px;margin-bottom:10px;flex-wrap:wrap;">' +
             '<div style="flex:1;min-width:140px;">' +
@@ -18977,17 +18536,6 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
         var res = await saveGuild(freshGuild);
         if(res.ok){ state.userGuild = freshGuild; renderGuildDetail(); }
         else { btn.disabled = false; }
-      });
-
-      var inviteToggle = document.getElementById("toggleGuildInviteBtn");
-      if(inviteToggle) inviteToggle.addEventListener("click", async function(){
-        inviteToggle.disabled = true;
-        var freshGuild = await fetchGuild(guild.id);
-        if(!freshGuild){ inviteToggle.disabled = false; return; }
-        freshGuild.inviteOnly = !freshGuild.inviteOnly;
-        var res = await saveGuild(freshGuild);
-        if(res.ok){ state.userGuild = freshGuild; renderGuildDetail(); }
-        else { inviteToggle.disabled = false; }
       });
 
       // Live character counter for the description. Counts code points, so a
