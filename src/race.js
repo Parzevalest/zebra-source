@@ -7,7 +7,6 @@
 
 const WebSocket = require("ws");
 const crypto = require("crypto");
-const seasonRank = require("./seasonRank");
 
 const ROOM_SIZE = 4;
 const JOIN_WINDOW_MS = 3000;
@@ -217,14 +216,7 @@ function makeRaceServer(httpServer) {
     const list = [];
     room.players.forEach((p, username) => {
       if (username === exceptUsername) return;
-      // nameTag was missing here, which is the whole reason opponents showed a
-      // default tag: the client renders whatever this list gives it, and it
-      // was never given one.
-      // seasonRank is the SERVER's verdict, looked up from the rank cache by
-      // username -- never taken from anything the client sent. That's what
-      // makes the top-player badge un-forgeable: a player can't claim a rank
-      // they don't hold, because the number comes from stored season points.
-      list.push({ username, carId: p.carId, displayName: p.displayName || "", guildTag: p.guildTag || "", guildColor: p.guildColor || "", titleText: p.titleText || "", titleRarity: p.titleRarity || "", nameTag: p.nameTag || "", seasonRank: seasonRank.rankFor(username) });
+      list.push({ username, carId: p.carId, displayName: p.displayName || "", guildTag: p.guildTag || "", guildColor: p.guildColor || "", titleText: p.titleText || "", titleRarity: p.titleRarity || "" });
     });
     return list;
   }
@@ -341,21 +333,7 @@ function makeRaceServer(httpServer) {
     });
   }
 
-  // A player's equipped name tag is a data URL (an image inlined as text), not
-  // an id -- see equippedNameTag in zebra_type.html. That means it travels on
-  // the wire in full, and gets re-sent to every player each time someone joins.
-  // A cap keeps one oversized tag from turning a 4-player room into megabytes
-  // of traffic on every join. Over the limit, the player just shows a default
-  // tag to others rather than the room paying for it.
-  const NAME_TAG_MAX_CHARS = 96 * 1024;
-
-  function safeNameTag(tag) {
-    if (typeof tag !== "string" || !tag) return "";
-    if (tag.length > NAME_TAG_MAX_CHARS) return "";
-    return tag;
-  }
-
-  function joinRoom(ws, username, carId, recentWpm, displayName, guildTag, guildColor, titleText, titleRarity, nameTag) {
+  function joinRoom(ws, username, carId, recentWpm, displayName, guildTag, guildColor, titleText, titleRarity) {
     let room = openRoom;
     if (!room || room.locked || room.players.size >= ROOM_SIZE) {
       const roomId = crypto.randomBytes(6).toString("hex");
@@ -368,25 +346,12 @@ function makeRaceServer(httpServer) {
       room.botCheckTimer = setTimeout(() => injectBotIfNeeded(room), Math.max(500, JOIN_WINDOW_MS - 1000));
     }
 
-    room.players.set(username, { ws, carId, recentWpm: recentWpm || DEFAULT_WPM, displayName: displayName || "", guildTag: guildTag || "", guildColor: guildColor || "", titleText: titleText || "", titleRarity: titleRarity || "", nameTag: safeNameTag(nameTag) });
+    room.players.set(username, { ws, carId, recentWpm: recentWpm || DEFAULT_WPM, displayName: displayName || "", guildTag: guildTag || "", guildColor: guildColor || "", titleText: titleText || "", titleRarity: titleRarity || "" });
     ws.roomId = room.id;
     ws.username = username;
 
     send(ws, { type: "room_joined", roomId: room.id, opponentsSoFar: opponentList(room, username) });
-    // The full roster, not opponentList(room, ws.username).
-    //
-    // ws.username was assigned two lines up, so it IS the joiner -- meaning
-    // this broadcast sent everyone else a list with the person who just
-    // joined removed from it. One payload goes to every existing player, so
-    // it can't be personalised anyway; the only correct thing to send is
-    // everyone. The client filters itself out on receipt (see the
-    // room_joined handler), which is exactly what the other broadcast of
-    // this message already relies on by passing null here.
-    //
-    // The visible effect: existing players never learned about a late joiner
-    // until race_starting, so that opponent was first created by the merge
-    // there rather than here.
-    broadcastToRoom(room, { type: "room_joined", roomId: room.id, opponentsSoFar: opponentList(room, null) }, username);
+    broadcastToRoom(room, { type: "room_joined", roomId: room.id, opponentsSoFar: opponentList(room, ws.username) }, username);
 
     if (room.players.size >= ROOM_SIZE && !room.locked) {
       clearTimeout(room.joinTimer);
@@ -497,13 +462,41 @@ function makeRaceServer(httpServer) {
       const playerData = room.players.get(username);
       if (playerData && room.startsAt && timeMs > 0) {
         const passageLen = playerData.passage ? playerData.passage.length : 0;
+
+        // Server-authoritative elapsed time. room.startsAt is the moment the
+        // server declared the race live; a finish arriving now genuinely took
+        // at least (now - startsAt) of wall-clock time, no matter what timeMs
+        // the client reports.
+        //
+        // The "race start hijacker" exploit banks characters DURING the
+        // countdown, then reports a short timeMs measured from GO! -- so its
+        // claimed time is much smaller than the real elapsed time, inflating
+        // WPM (the observed 110 -> 150+). If the client's timeMs is
+        // implausibly short compared to the server's own measurement, trust
+        // the server's clock instead. A small grace covers network latency and
+        // the fact that a fast finisher legitimately ends before the message
+        // lands.
+        const serverElapsedMs = Date.now() - room.startsAt;
+        const GRACE_MS = 1500;
+        if (serverElapsedMs > 0 && timeMs < serverElapsedMs - GRACE_MS) {
+          console.warn(`[race] time understated for ${username}: client ${timeMs}ms vs server ${serverElapsedMs}ms -- using server time`);
+          timeMs = serverElapsedMs;
+        }
+
         if (passageLen > 0) {
           const elapsedMinutes = timeMs / 60000;
+          // Recomputed from the (possibly corrected) timeMs, so a banked-start
+          // finish is re-rated at its true speed rather than its claimed one.
           const impliedWpm = Math.round((passageLen / 5) / elapsedMinutes);
           const SERVER_WPM_CAP = 350;
           if (impliedWpm > SERVER_WPM_CAP) {
             wpm = SERVER_WPM_CAP;
             console.warn(`[race] WPM clamped for ${username}: implied ${impliedWpm} → ${SERVER_WPM_CAP}`);
+          } else if (wpm > impliedWpm + 5) {
+            // The client also reports its own wpm; if that's meaningfully
+            // higher than what the (corrected) time implies, the time was
+            // understated -- pin wpm to the honest figure.
+            wpm = impliedWpm;
           }
         }
 
@@ -573,13 +566,7 @@ function makeRaceServer(httpServer) {
           }
         }
         activePlayers.set(uname, ws);
-        // Keep the rank cache warm. This is fire-and-forget and internally
-        // rate-limited (rebuilds at most once per its TTL), so a busy room
-        // triggers at most one rebuild a minute, not one per join. The
-        // opponentList read below uses whatever's currently cached -- a badge
-        // being up to a minute stale is fine.
-        seasonRank.getRankMap().catch(() => {});
-        joinRoom(ws, uname, msg.carId || "starter_car", msg.recentWpm || DEFAULT_WPM, msg.displayName || "", msg.guildTag || "", msg.guildColor || "", msg.titleText || "", msg.titleRarity || "", msg.nameTag || "");
+        joinRoom(ws, uname, msg.carId || "starter_car", msg.recentWpm || DEFAULT_WPM, msg.displayName || "", msg.guildTag || "", msg.guildColor || "", msg.titleText || "", msg.titleRarity || "");
         return;
       }
 
