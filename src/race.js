@@ -51,7 +51,7 @@ const RACE_BOTS = [
   { username: "bot5", displayName: "Meg", carId: "car_1783241897969_850", titleText: "Panda Type Bot", titleRarity: "Common" },
 ];
 const BOT_MIN_WPM = 60;
-const BOT_MAX_WPM = 130;
+const BOT_MAX_WPM = 110;
 const BOT_PROGRESS_TICKS = 5; // how many opponent_progress updates a bot sends over the course of a race
 
 // Creates each bot's account in storage if it doesn't already exist yet.
