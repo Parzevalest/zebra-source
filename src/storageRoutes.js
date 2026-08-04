@@ -1928,6 +1928,22 @@ router.post("/bm-buy", async (req, res) => {
   await store.set("system", key, JSON.stringify(remaining), true);
   await storeAccount(seller);
   await storeAccount(buyer);
+
+  // Record the sale in the recent-purchases log (the Black Market "Recents"
+  // tab). Best-effort: a failure to log must never fail the purchase itself,
+  // which has already completed above.
+  try {
+    await appendRecentPurchase({
+      buyer: buyer.username,
+      seller: seller.username,
+      itemName: listing.itemName || (listing.itemType === "car" ? "Car" : "Item"),
+      itemType: listing.itemType || "car",
+      rarity: listing.rarity || null,
+      price,
+      at: Date.now(),
+    });
+  } catch (e) { console.error("[bm] recent-purchase log failed:", e.message); }
+
   res.json({ ok: true });
 });
 
@@ -2000,7 +2016,83 @@ router.post("/unban-player", async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// ── One-time repair: title quantity reset ───────────────────────────────────
+// ── Car Mastery feature toggle (super admin) ────────────────────────────────
+//
+// Lets a super admin hide the entire Car Mastery feature from players -- the
+// leaderboard tab, the garage rank display, and the per-car badges -- WITHOUT
+// stopping any tracking. masteryPoints keep accruing on every race regardless;
+// this flag only controls visibility, and flipping it back on restores
+// everything with no data lost.
+//
+// Stored server-side so the client can't re-enable it by editing local state,
+// and read by a public endpoint so every client honours the current setting.
+const FEATURE_CONFIG_KEY = "feature_config";
+
+async function getFeatureConfig() {
+  try {
+    const row = await store.get("system", FEATURE_CONFIG_KEY, true);
+    const cfg = row && row.value ? JSON.parse(row.value) : {};
+    return cfg && typeof cfg === "object" ? cfg : {};
+  } catch (e) { return {}; }
+}
+
+// Public read -- every client fetches this to know what to show.
+router.get("/feature-config", async (req, res) => {
+  const cfg = await getFeatureConfig();
+  res.json({
+    // Default ON: absence of the flag means the feature is visible, so
+    // existing installs behave exactly as before until a super admin turns it
+    // off.
+    carMasteryEnabled: cfg.carMasteryEnabled !== false,
+  });
+});
+
+// Super-admin write.
+router.post("/feature-config", async (req, res) => {
+  const session = await getSession(req);
+  if (!session || !session.isAdmin) return res.status(403).json({ error: "forbidden" });
+  const body = req.body || {};
+  const cfg = await getFeatureConfig();
+  if (typeof body.carMasteryEnabled === "boolean") cfg.carMasteryEnabled = body.carMasteryEnabled;
+  await store.set("system", FEATURE_CONFIG_KEY, JSON.stringify(cfg), true);
+  console.log("[admin] feature config updated by", session.username, "--", JSON.stringify(cfg));
+  res.json({ ok: true, carMasteryEnabled: cfg.carMasteryEnabled !== false });
+});
+
+// ── Black Market recent purchases ───────────────────────────────────────────
+//
+// A rolling log of the last N completed sales, shown in the "Recents" tab.
+// Stored as a single JSON array under one key -- newest first, capped -- so
+// reading it is one fetch and it can never grow unbounded.
+const RECENT_PURCHASES_KEY = "bm_recent_purchases";
+const RECENT_PURCHASES_MAX = 50;
+
+async function appendRecentPurchase(entry) {
+  let list = [];
+  try {
+    const row = await store.get("system", RECENT_PURCHASES_KEY, true);
+    if (row && row.value) list = JSON.parse(row.value);
+    if (!Array.isArray(list)) list = [];
+  } catch (e) { list = []; }
+  // Newest first, then trim to the cap so the list is bounded forever.
+  list.unshift(entry);
+  if (list.length > RECENT_PURCHASES_MAX) list = list.slice(0, RECENT_PURCHASES_MAX);
+  await store.set("system", RECENT_PURCHASES_KEY, JSON.stringify(list), true);
+}
+
+// Public read -- any player can see the recent purchases feed. Returns the
+// list as stored (already newest-first, already capped).
+router.get("/bm-recent-purchases", async (req, res) => {
+  try {
+    const row = await store.get("system", RECENT_PURCHASES_KEY, true);
+    const list = row && row.value ? JSON.parse(row.value) : [];
+    res.json({ purchases: Array.isArray(list) ? list : [] });
+  } catch (e) {
+    res.json({ purchases: [] });
+  }
+});
+
+
 //
 // The titleQuantities doubling bug (baseline snapshot didn't carry the field,
 // so every self-write added the whole value on top of itself) left accounts
