@@ -17839,6 +17839,20 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
       }).join("");
 
       var bonusCount = acc.seasonBonusClaimedCount || 0;
+      // Progress toward the NEXT bonus. Bonuses start counting only after the
+      // last real level (extraRaces), and one is earned per interval -- so the
+      // races into the current interval is extraRaces % interval. Clamped at 0
+      // for anyone not yet past max level.
+      var bonusExtraRaces = Math.max(0, races - maxLevel * RACES_PER_SEASON_LEVEL);
+      var bonusProgress = bonusExtraRaces % SEASON_BONUS_RACE_INTERVAL;
+      var bonusPct = Math.round((bonusProgress / SEASON_BONUS_RACE_INTERVAL) * 100);
+      var bonusBarHtml =
+        '<div style="margin-top:6px;">' +
+          '<div style="height:6px;background:var(--panel-2);border:1px solid var(--line);border-radius:4px;overflow:hidden;">' +
+            '<div style="height:100%;width:' + bonusPct + '%;background:var(--amber);border-radius:3px;transition:width .3s ease;"></div>' +
+          '</div>' +
+          '<div style="font-size:10px;color:var(--muted);margin-top:3px;">' + bonusProgress + ' / ' + SEASON_BONUS_RACE_INTERVAL + ' races</div>' +
+        '</div>';
       var bonusColHtml = maxLevel > 0
         ? '<div class="season-bonus-col">' +
             '<div class="season-level-num">+' + SEASON_BONUS_RACE_INTERVAL + '</div>' +
@@ -17846,6 +17860,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
               '<div style="font-size:22px;">' + COIN_ICON + '</div>' +
               '<div class="season-cell-label">' + SEASON_BONUS_COINS + ' every ' + SEASON_BONUS_RACE_INTERVAL + ' races</div>' +
               '<div style="font-size:10px;color:var(--green);">Earned ' + bonusCount + 'x</div>' +
+              bonusBarHtml +
             '</div>' +
             '<div class="season-bonus-cell premium">' +
               '<div style="font-size:10px;color:var(--muted);">Shared with free track</div>' +
