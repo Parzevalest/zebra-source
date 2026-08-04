@@ -3667,6 +3667,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
         '</div>' +
       '</div>' +
 
+      (carMasteryEnabled() ?
       '<div style="display:flex;align-items:center;gap:14px;background:var(--panel-2);border:1px solid var(--line);border-radius:10px;padding:14px;margin-bottom:16px;">' +
         masteryIconHtml(rank, 44) +
         '<div>' +
@@ -3674,7 +3675,8 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
           '<div style="font-family:\'Arial Black\',Impact,sans-serif;font-style:italic;font-size:18px;color:var(--text);">' + escapeHtml(rank) + '</div>' +
           progressHtml +
         '</div>' +
-      '</div>' +
+      '</div>'
+      : '') +
 
       '<div class="stat-grid" style="margin:0;">' +
         '<div class="stat-card"><div class="num">' + races.toLocaleString() + '</div><div class="lbl">Races</div></div>' +
@@ -13024,6 +13026,16 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     app.innerHTML =
       brandHeader() +
       adminNavBar("season") +
+      (state.isSuperAdmin ?
+      '<div class="panel" style="margin-bottom:18px;">' +
+        '<div class="garage-title" style="color:var(--text);font-size:18px;margin-bottom:4px;">Car Mastery Visibility</div>' +
+        '<div class="hint-text" style="margin-top:0;margin-bottom:12px;">Hides the entire Car Mastery feature from players \u2014 the leaderboard tab, the garage rank display, and the per-car badges. Tracking never stops: mastery keeps accruing on every race, and turning this back on restores everything exactly as it was.</div>' +
+        '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">' +
+          '<button class="small-btn" id="toggleCarMasteryBtn">Loading\u2026</button>' +
+          '<span id="carMasteryStatus" style="font-size:13px;color:var(--muted);"></span>' +
+        '</div>' +
+      '</div>'
+      : '') +
       '<div class="panel">' +
         '<div class="garage-title" style="color:var(--text);font-size:18px;margin-bottom:4px;">Season Name</div>' +
         '<div class="hint-text" style="margin-top:0;margin-bottom:14px;">Shown top-left of the player Season page.</div>' +
@@ -13158,6 +13170,41 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     fetchAvatarCatalog().then(function(list){
       avatarCatalogCache = list;
     });
+
+    var masteryBtn = document.getElementById("toggleCarMasteryBtn");
+    if(masteryBtn){
+      var masteryStatus = document.getElementById("carMasteryStatus");
+      // Paint the button from the freshest server value.
+      var paintMastery = function(enabled){
+        masteryBtn.textContent = enabled ? "Car Mastery: On" : "Car Mastery: Off";
+        masteryBtn.style.color = enabled ? "var(--green)" : "var(--red)";
+        masteryBtn.style.borderColor = enabled ? "var(--green)" : "var(--red)";
+        masteryStatus.textContent = enabled ? "Visible to players." : "Hidden from players (still tracking).";
+      };
+      fetchFeatureConfig().then(function(cfg){ paintMastery(cfg.carMasteryEnabled !== false); });
+      masteryBtn.addEventListener("click", async function(){
+        masteryBtn.disabled = true;
+        var next = !carMasteryEnabled();
+        try{
+          var r = await fetch(SERVER_URL + "/api/feature-config", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "x-session-token": currentToken || "" },
+            body: JSON.stringify({ carMasteryEnabled: next })
+          });
+          var d = await r.json().catch(function(){ return {}; });
+          if(r.ok){
+            featureConfigCache.carMasteryEnabled = d.carMasteryEnabled !== false;
+            paintMastery(featureConfigCache.carMasteryEnabled);
+          } else {
+            masteryStatus.textContent = "Failed: " + (d.error || r.status);
+          }
+        }catch(e){
+          masteryStatus.textContent = "Error: " + ((e&&e.message)||e);
+        }finally{
+          masteryBtn.disabled = false;
+        }
+      });
+    }
 
     document.getElementById("saveSeasonNameBtn").addEventListener("click", async function(){
       var msg = document.getElementById("seasonNameMsg");
@@ -17522,6 +17569,40 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
   // time we re-verify the seller still has at least one (minus whatever
   // they've already got listed elsewhere) before finalizing the trade, so a
   // listing can never sell a copy that's already gone.
+  // "3m ago" / "2h ago" / "5d ago" for the recent-purchases feed.
+  // ── Feature flags ───────────────────────────────────────────────────────
+  //
+  // Server-controlled toggles read by the whole client. Currently just Car
+  // Mastery visibility. Cached; defaults to everything-on so nothing hides
+  // before the config loads.
+  var featureConfigCache = { carMasteryEnabled: true };
+  async function fetchFeatureConfig(){
+    try{
+      var r = await fetch(SERVER_URL + "/api/feature-config");
+      var d = await r.json();
+      if(d && typeof d === "object"){
+        featureConfigCache.carMasteryEnabled = d.carMasteryEnabled !== false;
+      }
+    }catch(e){ /* keep the last known / default-on config */ }
+    return featureConfigCache;
+  }
+  // Single source of truth every mastery display checks. Server-authoritative:
+  // a player editing this in memory only affects their own view, and the
+  // leaderboard/rank data still comes from the server.
+  function carMasteryEnabled(){ return featureConfigCache.carMasteryEnabled !== false; }
+
+  function bmTimeAgo(ts){
+    if(!ts) return "";
+    var s = Math.floor((Date.now() - ts) / 1000);
+    if(s < 60) return "just now";
+    var m = Math.floor(s / 60);
+    if(m < 60) return m + "m ago";
+    var h = Math.floor(m / 60);
+    if(h < 24) return h + "h ago";
+    var d = Math.floor(h / 24);
+    return d + "d ago";
+  }
+
   function renderBlackMarket(){
     var acc = state.user;
     var coins = acc.coins || 0;
@@ -17535,6 +17616,12 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
       '<div class="panel" style="margin-bottom:18px;">' +
         '<div class="garage-title" style="color:var(--text);font-size:20px;margin-bottom:4px;">\uD83D\uDDA4 Black Market</div>' +
         '<div class="hint-text" style="margin-top:0;">Buy and sell cars, avatar pieces, and name tags. List items from your Garage.</div>' +
+      '</div>' +
+
+      '<div class="panel" style="margin-bottom:18px;">' +
+        '<div class="garage-title" style="color:var(--text);font-size:17px;margin-bottom:10px;">\uD83D\uDD52 Recent Purchases</div>' +
+        '<div class="hint-text" style="margin-top:0;margin-bottom:10px;">The last 50 sales made on the Black Market.</div>' +
+        '<div id="bmRecentsBox"><div class="center-note">Loading...</div></div>' +
       '</div>' +
 
       '<div class="panel" style="margin-bottom:18px;">' +
@@ -17600,6 +17687,35 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
 
       // Sort by price ascending
       allListings.sort(function(a,b){ return a.price - b.price; });
+
+      // Recent purchases feed. Fetched separately -- it's a server-maintained
+      // log, not derived from current listings.
+      (function(){
+        var recentsBox = document.getElementById("bmRecentsBox");
+        if(!recentsBox) return;
+        fetch(SERVER_URL + "/api/bm-recent-purchases").then(function(r){ return r.json(); }).then(function(d){
+          if(!document.getElementById("bmRecentsBox")) return; // navigated away
+          var purchases = (d && d.purchases) || [];
+          if(!purchases.length){
+            recentsBox.innerHTML = '<div class="center-note">No purchases yet.</div>';
+            return;
+          }
+          recentsBox.innerHTML = purchases.map(function(p){
+            var rarityColor = p.rarity ? (RARITY_COLORS[p.rarity] || "var(--text)") : "var(--text)";
+            var when = bmTimeAgo(p.at);
+            return '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:8px 10px;border:1px solid var(--line);border-radius:8px;margin-bottom:6px;font-size:13px;">' +
+              '<span style="color:var(--text);font-weight:700;">' + escapeHtml(p.buyer || "?") + '</span>' +
+              '<span style="color:var(--muted);">\u2192</span>' +
+              '<span style="color:var(--muted);">' + escapeHtml(p.seller || "?") + '</span>' +
+              '<span style="color:' + rarityColor + ';font-weight:600;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + escapeHtml(p.itemName || "Item") + '</span>' +
+              '<span style="color:var(--amber);font-weight:700;white-space:nowrap;">' + COIN_ICON + (p.price || 0).toLocaleString() + '</span>' +
+              (when ? '<span style="color:var(--muted);font-size:11px;white-space:nowrap;">' + when + '</span>' : '') +
+            '</div>';
+          }).join("");
+        }).catch(function(){
+          if(document.getElementById("bmRecentsBox")) document.getElementById("bmRecentsBox").innerHTML = '<div class="center-note">Couldn\u2019t load recent purchases.</div>';
+        });
+      })();
 
       // My listings box
       var myBox = document.getElementById("myListingsBox");
@@ -18871,6 +18987,10 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
   function renderLeaderboard(){
     var acc = state.user; // may be null for public view
     var mode = state.lbMode || "racing";
+    // If Car Mastery has been turned off but the player was left on that tab
+    // (or deep-linked to it), fall back to Racing rather than showing an empty
+    // hidden mode.
+    if(mode === "carMastery" && !carMasteryEnabled()){ mode = "racing"; state.lbMode = "racing"; }
 
     app.innerHTML =
       brandHeader() +
@@ -18879,7 +18999,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
         '<div class="garage-title" style="color:var(--text);font-size:20px;margin-bottom:16px;">\uD83C\uDFC6 Leaderboard</div>' +
         '<div class="lb-tabs">' +
           '<div class="lb-tab' + (mode==="racing" ? " active" : "") + '" data-lb-mode="racing">Racing</div>' +
-          '<div class="lb-tab' + (mode==="carMastery" ? " active" : "") + '" data-lb-mode="carMastery">Car Mastery</div>' +
+          (carMasteryEnabled() ? '<div class="lb-tab' + (mode==="carMastery" ? " active" : "") + '" data-lb-mode="carMastery">Car Mastery</div>' : '') +
           '<div class="lb-tab' + (mode==="guilds" ? " active" : "") + '" data-lb-mode="guilds">Guilds</div>' +
         '</div>' +
         '<div id="lbBody"></div>' +
@@ -20146,10 +20266,15 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     // the catalog. It also gates the image->id migration in getAccount, which
     // skips itself rather than migrate against an empty catalog.
     fetchNameTagCatalog().catch(function(){});
-
     // Same reason: the wheel's seasonal filter looks titles up in this cache,
     // and an empty cache means seasonal titles quietly stay winnable.
     fetchTitleCatalog().then(function(tc){ titleCatalogCache = tc || []; }).catch(function(){});
+
+    // Feature flags (currently: whether Car Mastery is visible). Fetched
+    // before routing so the leaderboard, garage, and per-car badges know
+    // whether to show mastery on first paint rather than flashing it and
+    // hiding it a moment later.
+    fetchFeatureConfig().catch(function(){});
 
     // Route based on current URL path.
     navigate(window.location.pathname, false);
