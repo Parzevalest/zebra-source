@@ -10,7 +10,7 @@ const crypto = require("crypto");
 
 const ROOM_SIZE = 4;
 const JOIN_WINDOW_MS = 3000;
-const COUNTDOWN_MS = 5000;
+const COUNTDOWN_MS = 3000;
 const TARGET_RACE_SECONDS = 20; // target race duration in seconds
 const CHARS_PER_WORD = 5;       // standard WPM measurement unit
 const DEFAULT_WPM = 60;         // fallback if a player has no history
