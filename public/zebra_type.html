@@ -18475,15 +18475,55 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
             ? '<button class="small-btn" disabled style="opacity:.5;">Closed</button>'
             : full
             ? '<button class="small-btn" disabled style="opacity:.5;">Full</button>'
+            : g.inviteOnly
+            ? '<button class="small-btn" data-apply-guild="' + escapeHtml(g.id) + '" style="color:var(--amber);border-color:var(--amber);">Apply</button>'
             : '<button class="small-btn" data-join-guild="' + escapeHtml(g.id) + '">Join</button>') +
         '</div>';
       }).join("");
+
+      // Apply buttons on invite-only guilds -- file into the pending-requests
+      // queue rather than joining. This handler was missing entirely, so the
+      // Apply button rendered but did nothing; meanwhile invite-only guilds
+      // that briefly showed a Join button (stale list) could still be joined
+      // directly. Both paths now go through approval.
+      listEl.querySelectorAll("[data-apply-guild]").forEach(function(btn){
+        btn.addEventListener("click", async function(){
+          var gid = btn.getAttribute("data-apply-guild");
+          btn.disabled = true; btn.textContent = "Applying...";
+          try{
+            var latest = await getAccount(acc.username);
+            if(!latest.ok || !latest.account){ btn.textContent = "Error"; btn.disabled = false; return; }
+            if(latest.account.guildId){ btn.textContent = "Already in a guild"; return; }
+
+            var checkGuild = await fetchGuild(gid);
+            if(!checkGuild){ btn.textContent = "Not found"; return; }
+            if(checkGuild.closed){ btn.textContent = "Closed"; return; }
+            if((checkGuild.memberUsernames||[]).length >= GUILD_MAX_MEMBERS){ btn.textContent = "Full"; return; }
+            if((checkGuild.memberUsernames||[]).includes(acc.username.toLowerCase())){ btn.textContent = "Member"; return; }
+
+            checkGuild.pendingRequests = checkGuild.pendingRequests || [];
+            if(checkGuild.pendingRequests.includes(acc.username.toLowerCase())){
+              btn.textContent = "Applied"; return;
+            }
+            checkGuild.pendingRequests.push(acc.username.toLowerCase());
+            var saveRes = await saveGuild(checkGuild);
+            if(!saveRes.ok){ btn.textContent = "Error"; btn.disabled = false; return; }
+            btn.textContent = "Applied";
+          }catch(e){
+            btn.textContent = "Error"; btn.disabled = false;
+          }
+        });
+      });
 
       listEl.querySelectorAll("[data-join-guild]").forEach(function(btn){
         btn.addEventListener("click", async function(){
           var gid = btn.getAttribute("data-join-guild");
           var checkGuild = await fetchGuild(gid);
           if(checkGuild && checkGuild.closed){ btn.textContent = "Closed"; btn.disabled = true; return; }
+          // Re-check invite-only against the live guild: it may have been
+          // switched on after this list rendered. An invite-only guild must
+          // never be joined directly -- it goes through the application queue.
+          if(checkGuild && checkGuild.inviteOnly){ btn.textContent = "Apply on page"; btn.disabled = true; renderGuildBrowse(); return; }
           var guildId = btn.getAttribute("data-join-guild");
           btn.disabled = true; btn.textContent = "Joining...";
           try{
