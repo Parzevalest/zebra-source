@@ -190,11 +190,65 @@ setInterval(() => {
 }, PRESENCE_TTL_MS).unref?.();
 
 // Client heartbeat. Requires a valid session so presence can't be spoofed for
-// someone else.
+// someone else. Returns any pending race invites for this user, so invites ride
+// the existing heartbeat rather than needing a separate polling channel.
 router.post("/presence/ping", async (req, res) => {
   const session = await getSession(req);
   if (!session || !session.username) return res.status(401).json({ error: "auth" });
   markOnline(session.username);
+  const invites = takeRaceInvites(session.username);
+  res.json({ ok: true, invites });
+});
+
+// ── Race invites ────────────────────────────────────────────────────────────
+//
+// A friend invite is just "come to host's lobby". Stored in-memory per
+// recipient with a short TTL, and delivered on the recipient's next heartbeat
+// (which is at most ~30s away, and immediate if they're actively in the app).
+// In-memory because an invite is worthless after a minute or a restart.
+const raceInvites = new Map(); // lowercased recipient -> [{ from, host, at }]
+const INVITE_TTL_MS = 90 * 1000;
+
+function addRaceInvite(to, from, host) {
+  const key = String(to).toLowerCase();
+  const list = raceInvites.get(key) || [];
+  // De-dupe: one pending invite per host.
+  const filtered = list.filter(i => i.host !== host);
+  filtered.push({ from, host, at: Date.now() });
+  raceInvites.set(key, filtered);
+}
+// Returns and clears the fresh invites for a user (stale ones dropped).
+function takeRaceInvites(username) {
+  const key = String(username).toLowerCase();
+  const list = raceInvites.get(key);
+  if (!list || !list.length) return [];
+  const cutoff = Date.now() - INVITE_TTL_MS;
+  const fresh = list.filter(i => i.at >= cutoff);
+  raceInvites.delete(key);
+  return fresh.map(i => ({ from: i.from, host: i.host }));
+}
+
+// Send a race invite to a friend. Requires a session; only works if the target
+// is a confirmed friend (so it can't be used to spam strangers) and online.
+router.post("/race-invite", async (req, res) => {
+  const session = await getSession(req);
+  if (!session || !session.username) return res.status(401).json({ error: "auth" });
+  const to = String((req.body && req.body.to) || "").toLowerCase();
+  const host = String((req.body && req.body.host) || "").toLowerCase();
+  if (!to || !host) return res.status(400).json({ error: "missing" });
+
+  // Must be a real friend of the sender.
+  try {
+    const row = await store.get("system", "account:" + session.username.toLowerCase(), true);
+    const me = row && row.value ? JSON.parse(row.value) : null;
+    const friends = (me && me.friendUsernames) || [];
+    if (!friends.some(f => f.toLowerCase() === to)) {
+      return res.status(403).json({ error: "not_friends" });
+    }
+  } catch (e) { return res.status(500).json({ error: "lookup_failed" }); }
+
+  if (!isOnline(to)) return res.status(200).json({ ok: false, error: "offline" });
+  addRaceInvite(to, session.username, host);
   res.json({ ok: true });
 });
 

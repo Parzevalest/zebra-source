@@ -190,6 +190,11 @@ function makeRaceServer(httpServer) {
 
   const rooms = new Map();
   let openRoom = null;
+  // Private friend-race lobbies, keyed by host username (lowercased). Separate
+  // from the auto-matchmaking `rooms` map: these never auto-start, never get
+  // bots, and only the host can start them. The room named after a host is
+  // what /race/<host> and friend invites both target.
+  const privateRooms = new Map(); // lowercased host username -> room
 
   // Track which usernames are currently in an active race.
   // Prevents the same player from joining two rooms simultaneously.
@@ -297,6 +302,41 @@ function makeRaceServer(httpServer) {
       if (!rooms.has(room.id)) return;
       finishPlayerRace(room, username, Math.round(wpm), accuracy, durationMs, true);
     }, untilStart + durationMs);
+  }
+
+  // Joins (or creates) a private friend-race lobby named after `hostUsername`.
+  // Unlike the matchmaking path: no join timer, no bot injection, no auto-
+  // start. The room waits until the host sends start_race. The first person to
+  // create it is recorded as the host; if the room already exists, the player
+  // just joins it.
+  function joinPrivateRoom(ws, username, hostUsername, carId, recentWpm, displayName, guildTag, guildColor, titleText, titleRarity) {
+    const hostKey = String(hostUsername).slice(0, 30).toLowerCase();
+    let room = privateRooms.get(hostKey);
+
+    if (!room) {
+      const roomId = "priv_" + crypto.randomBytes(6).toString("hex");
+      room = {
+        id: roomId, players: new Map(), locked: false, joinTimer: null,
+        botCheckTimer: null, finishedOrder: [], isPrivate: true,
+        host: hostKey,
+      };
+      rooms.set(roomId, room);
+      privateRooms.set(hostKey, room);
+    }
+
+    // Can't join a private room that's already racing.
+    if (room.locked) { send(ws, { type: "error", message: "race_in_progress" }); return; }
+    if (room.players.size >= ROOM_SIZE) { send(ws, { type: "error", message: "lobby_full" }); return; }
+
+    room.players.set(username, { ws, carId, recentWpm: recentWpm || DEFAULT_WPM, displayName: displayName || "", guildTag: guildTag || "", guildColor: guildColor || "", titleText: titleText || "", titleRarity: titleRarity || "" });
+    ws.roomId = room.id;
+    ws.username = username;
+    ws.privateHostKey = hostKey;
+
+    // Tell the joiner (with isHost so the client knows whether to show Start)
+    // and everyone already in the lobby.
+    send(ws, { type: "lobby_joined", roomId: room.id, host: room.host, isHost: (username === room.host), opponentsSoFar: opponentList(room, username) });
+    broadcastToRoom(room, { type: "lobby_joined", roomId: room.id, host: room.host, opponentsSoFar: opponentList(room, ws.username) }, username);
   }
 
   async function lockAndStartCountdown(room) {
@@ -566,7 +606,25 @@ function makeRaceServer(httpServer) {
           }
         }
         activePlayers.set(uname, ws);
-        joinRoom(ws, uname, msg.carId || "starter_car", msg.recentWpm || DEFAULT_WPM, msg.displayName || "", msg.guildTag || "", msg.guildColor || "", msg.titleText || "", msg.titleRarity || "");
+        // If a room (host username) is specified, this is a friend-race lobby
+        // join -- private path, no matchmaking. Otherwise, normal matchmaking.
+        if (msg.room) {
+          joinPrivateRoom(ws, uname, msg.room, msg.carId || "starter_car", msg.recentWpm || DEFAULT_WPM, msg.displayName || "", msg.guildTag || "", msg.guildColor || "", msg.titleText || "", msg.titleRarity || "");
+        } else {
+          joinRoom(ws, uname, msg.carId || "starter_car", msg.recentWpm || DEFAULT_WPM, msg.displayName || "", msg.guildTag || "", msg.guildColor || "", msg.titleText || "", msg.titleRarity || "");
+        }
+        return;
+      }
+
+      // Host starts a private friend race. Only the host of that room may do
+      // it; anyone else's start_race is ignored. Needs at least one opponent
+      // so it's an actual race, not a solo countdown.
+      if (msg.type === "start_race") {
+        const room = rooms.get(ws.roomId);
+        if (!room || !room.isPrivate || room.locked) return;
+        if (ws.username !== room.host) return; // host-only
+        if (room.players.size < 2) { send(ws, { type: "error", message: "need_two_players" }); return; }
+        lockAndStartCountdown(room);
         return;
       }
 
@@ -620,6 +678,19 @@ function makeRaceServer(httpServer) {
       room.players.delete(ws.username);
       broadcastToRoom(room, { type: "opponent_left", username: ws.username }, null);
 
+      // Private lobby: if the host leaves before the race starts, hand the
+      // lobby to whoever's been there longest so it isn't orphaned; if it's
+      // now empty, drop it from the private index too.
+      if (room.isPrivate && !room.locked) {
+        if (ws.username === room.host && room.players.size > 0) {
+          const newHost = room.players.keys().next().value;
+          room.host = newHost;
+          privateRooms.delete(ws.username);
+          privateRooms.set(newHost, room);
+          broadcastToRoom(room, { type: "lobby_host_changed", host: newHost }, null);
+        }
+      }
+
       // Clean up fully if nobody's left, OR if the only ones left are
       // bots -- a room with just a bot in it and no real player watching
       // has no reason to keep running.
@@ -628,6 +699,7 @@ function makeRaceServer(httpServer) {
         if (room.joinTimer) clearTimeout(room.joinTimer);
         if (room.botCheckTimer) clearTimeout(room.botCheckTimer);
         if (openRoom === room) openRoom = null;
+        if (room.isPrivate && room.host) privateRooms.delete(room.host);
         rooms.delete(room.id);
       }
     });
