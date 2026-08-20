@@ -4021,6 +4021,25 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
   // money or anything sensitive at scale.
   var currentToken = null; // session token issued by /api/login — sent as x-session-token header
 
+  // Presence heartbeat: while logged in and the tab is visible, tell the
+  // server we're online every 30s. This is what powers the friends-list green
+  // dot. One interval for the app's lifetime; it no-ops when there's no token
+  // or the tab is hidden, so a backgrounded tab eventually goes offline.
+  function presencePing(){
+    if(!currentToken) return;
+    if(typeof document !== "undefined" && document.hidden) return;
+    fetch(SERVER_URL + "/api/presence/ping", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-session-token": currentToken }
+    }).catch(function(){});
+  }
+  setInterval(presencePing, 30000);
+  // Ping immediately on regaining focus so a returning player shows online
+  // without waiting up to 30s.
+  if(typeof document !== "undefined"){
+    document.addEventListener("visibilitychange", function(){ if(!document.hidden) presencePing(); });
+  }
+
   // Runs once at startup. Pings the real server's /health endpoint —
   // STORAGE_MODE ends up "real" if it answers, "memory" if it's
   // unreachable (server not deployed yet, wrong SERVER_URL, network
@@ -6797,6 +6816,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
   async function finalizeLoginAndEnter(loginData){
     currentToken = loginData.token;
     try{ localStorage.setItem("zt_session", currentToken); }catch(e){}
+    presencePing(); // show online immediately, don't wait for the 30s tick
 
     var acc = loginData.account;
     // Ensure default title
@@ -8932,6 +8952,10 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     });
   }
 
+  // Which friends are currently online (lowercased username -> bool). Filled
+  // by a presence fetch when the friends screen renders; the dots read it.
+  var friendOnlineMap = {};
+
   function renderFriendsBody(acc){
     var body = document.getElementById("friendsBody");
     if(!body) return;
@@ -8939,6 +8963,26 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     var incoming = acc.incomingFriendRequests || [];
     var outgoing = acc.outgoingFriendRequests || [];
     var friends = acc.friendUsernames || [];
+
+    // Fetch online status for the friends list, then repaint so the dots go
+    // green without waiting on anything else. Best-effort -- if it fails, dots
+    // stay their default (offline) rather than blocking the list.
+    if(friends.length){
+      fetch(SERVER_URL + "/api/presence/online", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-session-token": currentToken || "" },
+        body: JSON.stringify({ usernames: friends.map(function(u){ return u.toLowerCase(); }) })
+      }).then(function(r){ return r.json(); }).then(function(d){
+        if(document.getElementById("friendsBody") !== body) return; // navigated away
+        var online = (d && d.online) || {};
+        var changed = false;
+        Object.keys(online).forEach(function(k){
+          if(!!friendOnlineMap[k] !== !!online[k]){ changed = true; }
+          friendOnlineMap[k] = !!online[k];
+        });
+        if(changed) renderFriendsBody(acc); // repaint dots
+      }).catch(function(){});
+    }
 
     body.innerHTML = '<div class="center-note">Loading...</div>';
 
@@ -9073,14 +9117,20 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
           '</div>';
       }
 
-      function userRow(username, actionsHtml){
+      function userRow(username, actionsHtml, showPresence){
         var rowAcc = accountsByUsername[username.toLowerCase()];
         var rowDisplayName = rowAcc ? displayNameFor(rowAcc) : username;
+        // Presence dot: green when the friend has the game open (heard from in
+        // the last minute), black otherwise. Only shown on the accepted-friends
+        // list, not on pending requests.
+        var dot = showPresence
+          ? '<span title="' + (friendOnlineMap[username.toLowerCase()] ? "Online" : "Offline") + '" style="display:inline-block;width:10px;height:10px;border-radius:50%;flex:0 0 auto;margin-right:2px;background:' + (friendOnlineMap[username.toLowerCase()] ? "#33CC78" : "#333") + ';box-shadow:' + (friendOnlineMap[username.toLowerCase()] ? "0 0 6px #33CC78" : "none") + ';"></span>'
+          : '';
         return '<div class="admin-car-row">' +
           avatarThumbHtml(username) +
           carThumbHtml(username) +
           '<div class="admin-car-name" style="font-size:28px;font-weight:700;font-style:italic;">' +
-            '<div style="display:flex;align-items:center;gap:8px;">' + clickableUsernameHtml(username, null, rowDisplayName) + '</div>' +
+            '<div style="display:flex;align-items:center;gap:8px;">' + dot + clickableUsernameHtml(username, null, rowDisplayName) + '</div>' +
             guildTagHtml(username) +
           '</div>' +
           statsHtml(username) +
@@ -9110,7 +9160,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
           '<div class="lbl" style="text-transform:uppercase;letter-spacing:1px;color:var(--muted);font-size:12px;margin-bottom:8px;">Friends (' + friends.length + ')</div>' +
           (friends.length
             ? friends.map(function(u){
-                return userRow(u, '<button class="small-btn" data-remove-friend="' + escapeHtml(u) + '">Remove</button>');
+                return userRow(u, '<button class="small-btn" data-remove-friend="' + escapeHtml(u) + '">Remove</button>', true);
               }).join("")
             : '<div class="center-note" style="padding:16px 0;">No friends yet \u2014 visit a player\'s profile to add one.</div>') +
         '</div>' +
@@ -17644,10 +17694,6 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     return d + "d ago";
   }
 
-  // Whether the Black Market "Recent Purchases" feed is expanded. Defaults to
-  // collapsed so it doesn't push the listings down; remembered for the session.
-  var bmRecentsOpen = false;
-
   function renderBlackMarket(){
     var acc = state.user;
     var coins = acc.coins || 0;
@@ -17664,18 +17710,9 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
       '</div>' +
 
       '<div class="panel" style="margin-bottom:18px;">' +
-        // Clickable header toggles the feed. Defaults collapsed because the
-        // 50-row list eats a lot of vertical space above the listings people
-        // actually came to browse. The open/closed choice is remembered for
-        // the session (bmRecentsOpen).
-        '<div id="bmRecentsHeader" style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none;' + (bmRecentsOpen ? 'margin-bottom:10px;' : '') + '">' +
-          '<span id="bmRecentsChevron" style="color:var(--muted);font-size:13px;transition:transform .15s ease;transform:rotate(' + (bmRecentsOpen ? '90' : '0') + 'deg);display:inline-block;">\u25B6</span>' +
-          '<span class="garage-title" style="color:var(--text);font-size:17px;margin:0;">\uD83D\uDD52 Recent Purchases</span>' +
-        '</div>' +
-        '<div id="bmRecentsWrap" style="display:' + (bmRecentsOpen ? 'block' : 'none') + ';">' +
-          '<div class="hint-text" style="margin-top:0;margin-bottom:10px;">The last 50 sales made on the Black Market.</div>' +
-          '<div id="bmRecentsBox"><div class="center-note">Loading...</div></div>' +
-        '</div>' +
+        '<div class="garage-title" style="color:var(--text);font-size:17px;margin-bottom:10px;">\uD83D\uDD52 Recent Purchases</div>' +
+        '<div class="hint-text" style="margin-top:0;margin-bottom:10px;">The last 50 sales made on the Black Market.</div>' +
+        '<div id="bmRecentsBox"><div class="center-note">Loading...</div></div>' +
       '</div>' +
 
       '<div class="panel" style="margin-bottom:18px;">' +
@@ -17743,13 +17780,10 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
       allListings.sort(function(a,b){ return a.price - b.price; });
 
       // Recent purchases feed. Fetched separately -- it's a server-maintained
-      // log, not derived from current listings. Only loads when the panel is
-      // expanded, so a collapsed feed costs nothing.
-      var bmRecentsLoaded = false;
-      function loadBmRecents(){
+      // log, not derived from current listings.
+      (function(){
         var recentsBox = document.getElementById("bmRecentsBox");
-        if(!recentsBox || bmRecentsLoaded) return;
-        bmRecentsLoaded = true;
+        if(!recentsBox) return;
         fetch(SERVER_URL + "/api/bm-recent-purchases").then(function(r){ return r.json(); }).then(function(d){
           if(!document.getElementById("bmRecentsBox")) return; // navigated away
           var purchases = (d && d.purchases) || [];
@@ -17770,26 +17804,9 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
             '</div>';
           }).join("");
         }).catch(function(){
-          bmRecentsLoaded = false; // allow a retry on next expand
           if(document.getElementById("bmRecentsBox")) document.getElementById("bmRecentsBox").innerHTML = '<div class="center-note">Couldn\u2019t load recent purchases.</div>';
         });
-      }
-
-      // Collapse toggle.
-      var recentsHeader = document.getElementById("bmRecentsHeader");
-      if(recentsHeader){
-        recentsHeader.addEventListener("click", function(){
-          bmRecentsOpen = !bmRecentsOpen;
-          var wrap = document.getElementById("bmRecentsWrap");
-          var chevron = document.getElementById("bmRecentsChevron");
-          if(wrap) wrap.style.display = bmRecentsOpen ? "block" : "none";
-          if(chevron) chevron.style.transform = "rotate(" + (bmRecentsOpen ? "90" : "0") + "deg)";
-          recentsHeader.style.marginBottom = bmRecentsOpen ? "10px" : "0";
-          if(bmRecentsOpen) loadBmRecents();
-        });
-      }
-      // If it was already expanded (e.g. re-render after toggling open), load now.
-      if(bmRecentsOpen) loadBmRecents();
+      })();
 
       // My listings box
       var myBox = document.getElementById("myListingsBox");
