@@ -160,6 +160,56 @@ function generateToken() { return crypto.randomBytes(32).toString("hex"); }
 
 async function getSession(req) { return await sessionGet(req.header("x-session-token")); }
 
+// ── Presence ("online" = has the game open) ─────────────────────────────────
+//
+// A simple in-memory heartbeat. The client pings /presence/ping every ~30s
+// while the app is open; we record the timestamp. A user counts as online if
+// we've heard from them within PRESENCE_TTL_MS. In-memory (not the DB) because
+// presence is ephemeral, high-churn, and worthless after a restart -- exactly
+// what you don't want to write to storage on every heartbeat.
+//
+// This is separate from the race server's activePlayers set (which only knows
+// about people currently AT a race); this covers anyone with the app loaded,
+// which is what the friends-list green dot needs.
+const presence = new Map(); // lowercased username -> lastSeenMs
+const PRESENCE_TTL_MS = 60 * 1000;
+
+function markOnline(username) {
+  if (!username) return;
+  presence.set(String(username).toLowerCase(), Date.now());
+}
+function isOnline(username) {
+  if (!username) return false;
+  const t = presence.get(String(username).toLowerCase());
+  return !!t && (Date.now() - t < PRESENCE_TTL_MS);
+}
+// Periodically drop stale entries so the map can't grow without bound.
+setInterval(() => {
+  const cutoff = Date.now() - PRESENCE_TTL_MS;
+  for (const [u, t] of presence) if (t < cutoff) presence.delete(u);
+}, PRESENCE_TTL_MS).unref?.();
+
+// Client heartbeat. Requires a valid session so presence can't be spoofed for
+// someone else.
+router.post("/presence/ping", async (req, res) => {
+  const session = await getSession(req);
+  if (!session || !session.username) return res.status(401).json({ error: "auth" });
+  markOnline(session.username);
+  res.json({ ok: true });
+});
+
+// Given a list of usernames (the caller's friends), return which are online.
+// POST so the friend list travels in the body, not the URL.
+router.post("/presence/online", async (req, res) => {
+  const session = await getSession(req);
+  if (!session) return res.status(401).json({ error: "auth" });
+  const names = Array.isArray(req.body && req.body.usernames) ? req.body.usernames : [];
+  const online = {};
+  for (const n of names.slice(0, 500)) online[n] = isOnline(n);
+  res.json({ online });
+});
+
+
 async function isIpBanned(ip) {
   if (!ip) return false;
   try {
