@@ -2827,6 +2827,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
   var PUBLIC_ROUTES = ["/leaderboards", "/leaderboard", "/about"];
   var PROFILE_PREFIX = "/racer/";
   var GUILD_PREFIX = "/guilds/";
+  var RACE_PREFIX = "/race/";
 
   var ROUTE_MAP = {
     "/":            "dashboard",
@@ -2868,6 +2869,18 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
       if(tag){
         state.guildViewTag = tag;
         state.screen = "guildView";
+        renderApp();
+        return;
+      }
+    }
+
+    // Friend-race lobby route: /race/HOSTUSERNAME
+    if(pathname.toLowerCase().indexOf(RACE_PREFIX) === 0){
+      var host = decodeURIComponent(pathname.slice(RACE_PREFIX.length)).replace(/\/+$/,"");
+      if(host){
+        if(!state.user){ state.pendingRaceHost = host; state.screen = "auth"; renderApp(); return; }
+        state.lobbyHost = host;
+        state.screen = "friendLobby";
         renderApp();
         return;
       }
@@ -4031,7 +4044,39 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     fetch(SERVER_URL + "/api/presence/ping", {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-session-token": currentToken }
+    }).then(function(r){ return r.json(); }).then(function(d){
+      if(d && d.invites && d.invites.length) d.invites.forEach(showRaceInvite);
     }).catch(function(){});
+  }
+
+  // Shows a dismissible invite toast with a Join button. Clicking Join routes
+  // into the host's lobby -- the same as opening the /race/<host> link.
+  var shownInviteHosts = {};
+  function showRaceInvite(inv){
+    if(!inv || !inv.host) return;
+    if(shownInviteHosts[inv.host]) return; // don't double-show the same invite
+    shownInviteHosts[inv.host] = true;
+    setTimeout(function(){ delete shownInviteHosts[inv.host]; }, 60000);
+
+    var box = document.createElement("div");
+    box.style.cssText = "position:fixed;bottom:24px;right:24px;background:var(--panel);border:1px solid var(--amber);border-radius:12px;padding:14px 16px;z-index:10000;max-width:300px;box-shadow:0 8px 30px rgba(0,0,0,.4);";
+    box.innerHTML =
+      '<div style="font-weight:700;color:var(--text);margin-bottom:4px;">\uD83C\uDFC1 Race Invite</div>' +
+      '<div style="font-size:13px;color:var(--muted);margin-bottom:10px;"><b style="color:var(--text);">' + escapeHtml(inv.from || inv.host) + '</b> invited you to a friends race.</div>' +
+      '<div style="display:flex;gap:8px;">' +
+        '<button class="btn btn-primary" style="font-size:13px;padding:6px 14px;" id="inviteJoinBtn">Join</button>' +
+        '<button class="small-btn" id="inviteDismissBtn">Dismiss</button>' +
+      '</div>';
+    document.body.appendChild(box);
+    var auto = setTimeout(function(){ box.remove(); }, 30000);
+    box.querySelector("#inviteJoinBtn").addEventListener("click", function(){
+      clearTimeout(auto); box.remove();
+      state.lobbyHost = inv.host;
+      state.screen = "friendLobby";
+      history.pushState(null, "", "/race/" + encodeURIComponent(inv.host));
+      renderApp();
+    });
+    box.querySelector("#inviteDismissBtn").addEventListener("click", function(){ clearTimeout(auto); box.remove(); });
   }
   setInterval(presencePing, 30000);
   // Ping immediately on regaining focus so a returning player shows online
@@ -6011,7 +6056,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
   // wrong URL, etc.) — callers use that rejection to show the "couldn't
   // reach the race server" error path rather than silently falling back
   // to a local race, per how this is supposed to work for real players.
-  function connectToRaceServer(username, carId, handlers){
+  function connectToRaceServer(username, carId, handlers, room){
     return new Promise(function(resolve, reject){
       var settled = false;
       var ws;
@@ -6045,7 +6090,11 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
         // clients fall back to DEFAULT_NAME_TAG themselves.
         var joinNameTag = (state.user && state.user.equippedNameTag && state.user.equippedNameTag !== DEFAULT_NAME_TAG)
           ? state.user.equippedNameTag : "";
-        ws.send(JSON.stringify({ type: "join_race", username: username, carId: carId, recentWpm: recentWpm, displayName: joinDisplayName, guildTag: joinGuildTag, guildColor: joinGuildColor, titleText: joinTitleText, titleRarity: joinTitleRarity, nameTag: joinNameTag }));
+        var joinMsg = { type: "join_race", username: username, carId: carId, recentWpm: recentWpm, displayName: joinDisplayName, guildTag: joinGuildTag, guildColor: joinGuildColor, titleText: joinTitleText, titleRarity: joinTitleRarity, nameTag: joinNameTag };
+        // Private friend lobby: name the host's room so the server routes us
+        // there instead of matchmaking.
+        if(room) joinMsg.room = room;
+        ws.send(JSON.stringify(joinMsg));
         if(!settled){
           settled = true;
           clearTimeout(connectTimeout);
@@ -6144,6 +6193,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     else if(state.screen === "garageTitles") renderGarageTitles();
     else if(state.screen === "profile") renderProfile();
     else if(state.screen === "friends") renderFriends();
+    else if(state.screen === "friendLobby") renderFriendLobby();
     else if(state.screen === "race") renderRace();
     else if(state.screen === "raceWaiting") renderRaceWaiting();
     else if(state.screen === "raceConnectError") renderRaceConnectError();
@@ -8937,12 +8987,24 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
       brandHeader() +
       renderNavBar("friends") +
       '<div class="panel">' +
-        '<div class="garage-title" style="color:var(--text);font-size:20px;margin-bottom:4px;">Friends</div>' +
+        '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:4px;">' +
+          '<div class="garage-title" style="color:var(--text);font-size:20px;margin:0;">Friends</div>' +
+          '<button class="btn btn-primary" id="startFriendsRaceBtn" style="font-size:14px;padding:8px 16px;">\uD83C\uDFC1 Start Friends Race</button>' +
+        '</div>' +
         '<div class="hint-text" style="margin-top:0;margin-bottom:16px;">Add friends from anywhere you see a username \u2014 leaderboards, guild rosters, and more.</div>' +
         '<div id="friendsBody"><div class="center-note">Loading...</div></div>' +
       '</div>';
 
     attachNavListeners();
+
+    var startFR = document.getElementById("startFriendsRaceBtn");
+    if(startFR) startFR.addEventListener("click", function(){
+      // The lobby is named after you -- you're the host.
+      state.lobbyHost = acc.username.toLowerCase();
+      state.screen = "friendLobby";
+      history.pushState(null, "", RACE_PREFIX + encodeURIComponent(acc.username.toLowerCase()));
+      renderApp();
+    });
 
     getAccount(acc.username).then(function(res){
       if(state.screen !== "friends") return;
@@ -9278,61 +9340,238 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     renderApp();
   }
 
-  // Connects to the live race server and shows the waiting room. Per how
-  // this is supposed to work: if the connection fails, show an error and
-  // let the player retry — there's no silent fallback to a local race
-  // for a real player, that's reserved for the admin Test Race tool and
-  // the one-time calibration race.
-  async function startMultiplayerRace(){
-    // Belt-and-suspenders alongside the onmessage/onclose guards above --
-    // if a previous race's connection was somehow never cleanly closed
-    // (e.g. the player abandoned it mid-connection), don't leave it
-    // lingering in the background. Starting a new race is exactly the
-    // moment we know for certain any earlier one is no longer wanted.
-    closeRaceSocket();
-    var acc = state.user;
-    var equippedCar = resolveCarById(acc.equippedCarId) || STARTER_CAR;
-    var carId = equippedCar.id || "starter_car";
+  // ── Friend race lobby ─────────────────────────────────────────────────────
+  //
+  // A private waiting room named after the host. Reached from "Start Friends
+  // Race" (you're the host) or the /race/<host> link (you're a guest). The
+  // host sees Start + Invite; guests just wait. When the host starts, the
+  // server sends race_starting and we hand off to the normal race flow.
+  var lobbyState = null;
 
-    // Pre-load title catalog so our title is sent correctly to opponents
-    if(!titleCatalogCache || !titleCatalogCache.length){
-      try{ titleCatalogCache = (await fetchTitleCatalog()) || []; }catch(e){}
+  async function renderFriendLobby(){
+    var acc = state.user;
+    if(!acc){ state.screen = "auth"; renderApp(); return; }
+    var host = (state.lobbyHost || acc.username).toLowerCase();
+    var iAmHost = (acc.username.toLowerCase() === host);
+
+    // First entry: connect. Re-renders (from lobby_joined etc.) reuse the
+    // existing connection and just repaint.
+    if(!lobbyState || lobbyState.host !== host){
+      closeRaceSocket();
+      lobbyState = { host: host, iAmHost: iAmHost, members: [], connecting: true, error: null };
+
+      var equippedCar = resolveCarById(acc.equippedCarId) || STARTER_CAR;
+      var carId = equippedCar.id || "starter_car";
+      if(!titleCatalogCache || !titleCatalogCache.length){ try{ titleCatalogCache = (await fetchTitleCatalog()) || []; }catch(e){} }
+
+      paintLobby();
+      try{
+        // Build the full race handler set, then layer the lobby-specific
+        // handlers on top so the SAME connection can be a lobby now and a race
+        // after the host starts -- no reconnect.
+        raceHandlerSet = buildRaceHandlers();
+        var lobbyHandlers = Object.assign({}, raceHandlerSet, {
+          error: function(msg){
+            lobbyState.error = msg.message === "race_in_progress" ? "That race has already started."
+              : msg.message === "lobby_full" ? "That lobby is full."
+              : msg.message === "already_in_race" ? "You're already in a race in another tab."
+              : msg.message === "need_two_players" ? "You need at least one friend to join before starting."
+              : "Couldn't join the lobby.";
+            lobbyState.connecting = false;
+            if(state.screen === "friendLobby") paintLobby();
+          },
+          lobby_joined: function(msg){
+            lobbyState.connecting = false;
+            if(msg.host) lobbyState.host = msg.host;
+            if(typeof msg.isHost === "boolean") lobbyState.iAmHost = msg.isHost;
+            var me = acc.username.toLowerCase();
+            var seen = {};
+            var list = [];
+            (msg.opponentsSoFar || []).forEach(function(o){
+              var lk = o.username.toLowerCase();
+              if(seen[lk]) return; seen[lk] = true;
+              list.push(o);
+            });
+            if(!seen[me]) list.unshift({ username: acc.username, displayName: displayNameFor(acc) });
+            lobbyState.members = list;
+            if(state.screen === "friendLobby") paintLobby();
+          },
+          lobby_host_changed: function(msg){
+            lobbyState.host = msg.host;
+            lobbyState.iAmHost = (msg.host === acc.username.toLowerCase());
+            if(state.screen === "friendLobby") paintLobby();
+          },
+          opponent_left: function(msg){
+            if(lobbyState){
+              lobbyState.members = lobbyState.members.filter(function(m){ return m.username.toLowerCase() !== msg.username.toLowerCase(); });
+              if(state.screen === "friendLobby") paintLobby();
+            }
+          },
+          race_starting: function(msg){
+            // Host started -- become a normal race using the shared handlers.
+            enterRaceFromLobby(msg);
+          }
+        });
+        await connectToRaceServer(acc.username, carId, lobbyHandlers, host);
+      }catch(e){
+        lobbyState.connecting = false;
+        lobbyState.error = "Couldn't connect to the race server.";
+        if(state.screen === "friendLobby") paintLobby();
+      }
+    } else {
+      paintLobby();
     }
 
-    var tracks = await fetchTracks();
-    tracksCache = tracks;
+    function paintLobby(){
+      if(state.screen !== "friendLobby") return;
+      var ls = lobbyState;
+      var shareUrl = location.origin + "/race/" + encodeURIComponent(ls.host);
+      var rosterHtml = ls.members.length
+        ? ls.members.map(function(m){
+            var isHostRow = m.username.toLowerCase() === ls.host;
+            return '<div style="display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--line);border-radius:8px;margin-bottom:6px;">' +
+              '<span style="font-weight:700;color:var(--text);">' + escapeHtml(m.displayName || m.username) + '</span>' +
+              (isHostRow ? '<span style="font-size:11px;color:var(--amber);">HOST</span>' : '') +
+            '</div>';
+          }).join("")
+        : '<div class="center-note">Waiting for players\u2026</div>';
 
-    // Build raceState immediately so the track renders right away.
-    // passage and startsAt are filled in when race_starting arrives.
-    var track = tracks.length ? tracks[Math.floor(Math.random() * tracks.length)] : null;
+      app.innerHTML =
+        brandHeader() +
+        renderNavBar("friends") +
+        '<div class="panel">' +
+          '<div class="garage-title" style="color:var(--text);font-size:20px;margin-bottom:4px;">\uD83C\uDFC1 Friends Race Lobby</div>' +
+          '<div class="hint-text" style="margin-top:0;margin-bottom:14px;">' +
+            (ls.connecting ? "Connecting\u2026" : (ls.iAmHost ? "You're the host. Invite friends, then start when ready." : "Waiting for the host to start the race.")) +
+          '</div>' +
+          (ls.error ? '<div class="error-text" style="margin-bottom:12px;">' + escapeHtml(ls.error) + '</div>' : '') +
+          '<div style="margin-bottom:14px;">' + rosterHtml + '</div>' +
+          (ls.iAmHost ?
+            '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px;">' +
+              '<button class="btn btn-primary" id="lobbyStartBtn"' + (ls.members.length < 2 ? ' disabled style="opacity:.5;"' : '') + '>Start Race</button>' +
+              '<button class="small-btn" id="lobbyInviteBtn">\uD83D\uDCE7 Invite Friends</button>' +
+              '<button class="small-btn" id="lobbyCopyBtn">\uD83D\uDD17 Copy Invite Link</button>' +
+            '</div>' +
+            (ls.members.length < 2 ? '<div class="hint-text" style="margin-top:0;">At least one friend must join before you can start.</div>' : '')
+          : '') +
+          '<div id="lobbyInvitePanel"></div>' +
+          '<button class="small-btn" id="lobbyLeaveBtn" style="margin-top:14px;">Leave Lobby</button>' +
+        '</div>';
+
+      attachNavListeners();
+
+      var startBtn = document.getElementById("lobbyStartBtn");
+      if(startBtn) startBtn.addEventListener("click", function(){
+        if(ls.members.length < 2) return;
+        if(raceSocket && raceSocket.readyState === 1){
+          raceSocket.send(JSON.stringify({ type: "start_race" }));
+        }
+      });
+
+      var copyBtn = document.getElementById("lobbyCopyBtn");
+      if(copyBtn) copyBtn.addEventListener("click", function(){
+        try{
+          navigator.clipboard.writeText(shareUrl);
+          copyBtn.textContent = "\u2713 Copied";
+          setTimeout(function(){ copyBtn.textContent = "\uD83D\uDD17 Copy Invite Link"; }, 2000);
+        }catch(e){
+          copyBtn.textContent = shareUrl;
+        }
+      });
+
+      var inviteBtn = document.getElementById("lobbyInviteBtn");
+      if(inviteBtn) inviteBtn.addEventListener("click", function(){ renderLobbyInvitePanel(shareUrl); });
+
+      var leaveBtn = document.getElementById("lobbyLeaveBtn");
+      if(leaveBtn) leaveBtn.addEventListener("click", function(){
+        closeRaceSocket();
+        lobbyState = null;
+        state.screen = "friends";
+        history.pushState(null, "", "/");
+        renderApp();
+      });
+    }
+
+    // Invite panel: lists the host's friends with an Invite button, greyed
+    // when offline. Invites push through the server to online friends.
+    async function renderLobbyInvitePanel(shareUrl){
+      var panel = document.getElementById("lobbyInvitePanel");
+      if(!panel) return;
+      panel.innerHTML = '<div class="center-note">Loading friends\u2026</div>';
+      var fresh = await getAccount(acc.username);
+      var friends = (fresh.ok && fresh.account && fresh.account.friendUsernames) || [];
+      if(!friends.length){ panel.innerHTML = '<div class="hint-text">No friends yet \u2014 share the invite link instead.</div>'; return; }
+
+      // Get online status so we can show who's invitable.
+      var online = {};
+      try{
+        var r = await fetch(SERVER_URL + "/api/presence/online", {
+          method: "POST", headers: { "Content-Type": "application/json", "x-session-token": currentToken || "" },
+          body: JSON.stringify({ usernames: friends.map(function(u){ return u.toLowerCase(); }) })
+        });
+        var d = await r.json(); online = (d && d.online) || {};
+      }catch(e){}
+
+      panel.innerHTML = '<div style="border-top:1px solid var(--line);margin-top:6px;padding-top:12px;">' +
+        '<div class="lbl" style="text-transform:uppercase;letter-spacing:1px;color:var(--muted);font-size:12px;margin-bottom:8px;">Invite Friends</div>' +
+        friends.map(function(u){
+          var on = !!online[u.toLowerCase()];
+          return '<div style="display:flex;align-items:center;gap:8px;padding:6px 0;">' +
+            '<span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:' + (on ? "#33CC78" : "#333") + ';"></span>' +
+            '<span style="flex:1;color:var(--text);">' + escapeHtml(u) + '</span>' +
+            (on ? '<button class="small-btn" data-invite-friend="' + escapeHtml(u.toLowerCase()) + '">Invite</button>'
+                : '<span style="font-size:11px;color:var(--muted);">Offline</span>') +
+          '</div>';
+        }).join("") +
+      '</div>';
+
+      panel.querySelectorAll("[data-invite-friend]").forEach(function(btn){
+        btn.addEventListener("click", async function(){
+          var friend = btn.getAttribute("data-invite-friend");
+          btn.disabled = true; btn.textContent = "Inviting\u2026";
+          try{
+            var res = await fetch(SERVER_URL + "/api/race-invite", {
+              method: "POST", headers: { "Content-Type": "application/json", "x-session-token": currentToken || "" },
+              body: JSON.stringify({ to: friend, host: lobbyState.host })
+            });
+            var dd = await res.json().catch(function(){ return {}; });
+            btn.textContent = res.ok ? "Invited" : (dd.error === "offline" ? "Offline" : "Failed");
+          }catch(e){ btn.textContent = "Failed"; btn.disabled = false; }
+        });
+      });
+    }
+  }
+
+  // Converts an active lobby into a running race when race_starting arrives.
+  function enterRaceFromLobby(startMsg){
+    var acc = state.user;
+    var equippedCar = resolveCarById(acc.equippedCarId) || STARTER_CAR;
+    var track = (tracksCache && tracksCache.length) ? tracksCache[Math.floor(Math.random()*tracksCache.length)] : null;
     raceState = {
-      passage: "",
-      typed: "",
-      startTime: null,
-      mistakes: 0,
-      mistakePositions: {},
-      finished: false,
-      raf: null,
-      passageScrollY: 0,
-      isCalibration: false,
-      carId: carId,
-      track: track,
-      trackStartGlideFired: false,
-      trackFinishGlideFired: false,
-      isTestRace: false,
-      isMultiplayer: true,
-      isWaiting: true, // still in queue, not yet racing
-      roomId: null,
-      startsAt: null,
-      opponents: [],
-      lastProgressSentAt: 0,
-      placements: []
+      passage: "", typed: "", startTime: null, mistakes: 0, mistakePositions: {},
+      finished: false, raf: null, passageScrollY: 0, isCalibration: false,
+      carId: equippedCar.id || "starter_car", track: track,
+      trackStartGlideFired: false, trackFinishGlideFired: false,
+      isTestRace: false, isMultiplayer: true, isWaiting: true,
+      roomId: startMsg.roomId, startsAt: null, opponents: [],
+      lastProgressSentAt: 0, placements: []
     };
+    lobbyState = null;
     state.screen = "race";
     renderApp();
+    // The lobby socket already has the full race handler set installed, so the
+    // shared race_starting handler runs and drives the countdown.
+    if(raceHandlerSet && raceHandlerSet.race_starting) raceHandlerSet.race_starting(startMsg);
+  }
 
-    try{
-      await connectToRaceServer(acc.username, carId, {
+  // Connects to the live race server and shows the waiting room. If the
+  // connection fails, show an error and let the player retry.
+  // Shared race message handlers, used by BOTH matchmade races and friend
+  // lobby races so their in-race behaviour is identical. Returns a fresh
+  // handler object; raceHandlerSet holds the active one.
+  var raceHandlerSet = null;
+  function buildRaceHandlers(){
+    return {
         error: function(msg){
           if(msg.message === "already_in_race"){
             // Server rejected join — player is already in a race in another tab
@@ -9522,7 +9761,60 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
             renderApp();
           }
         }
-      });
+    };
+  }
+
+  async function startMultiplayerRace(){
+    // Belt-and-suspenders alongside the onmessage/onclose guards above --
+    // if a previous race's connection was somehow never cleanly closed
+    // (e.g. the player abandoned it mid-connection), don't leave it
+    // lingering in the background. Starting a new race is exactly the
+    // moment we know for certain any earlier one is no longer wanted.
+    closeRaceSocket();
+    var acc = state.user;
+    var equippedCar = resolveCarById(acc.equippedCarId) || STARTER_CAR;
+    var carId = equippedCar.id || "starter_car";
+
+    // Pre-load title catalog so our title is sent correctly to opponents
+    if(!titleCatalogCache || !titleCatalogCache.length){
+      try{ titleCatalogCache = (await fetchTitleCatalog()) || []; }catch(e){}
+    }
+
+    var tracks = await fetchTracks();
+    tracksCache = tracks;
+
+    // Build raceState immediately so the track renders right away.
+    // passage and startsAt are filled in when race_starting arrives.
+    var track = tracks.length ? tracks[Math.floor(Math.random() * tracks.length)] : null;
+    raceState = {
+      passage: "",
+      typed: "",
+      startTime: null,
+      mistakes: 0,
+      mistakePositions: {},
+      finished: false,
+      raf: null,
+      passageScrollY: 0,
+      isCalibration: false,
+      carId: carId,
+      track: track,
+      trackStartGlideFired: false,
+      trackFinishGlideFired: false,
+      isTestRace: false,
+      isMultiplayer: true,
+      isWaiting: true, // still in queue, not yet racing
+      roomId: null,
+      startsAt: null,
+      opponents: [],
+      lastProgressSentAt: 0,
+      placements: []
+    };
+    state.screen = "race";
+    renderApp();
+
+    try{
+      raceHandlerSet = buildRaceHandlers();
+      await connectToRaceServer(acc.username, carId, raceHandlerSet);
     }catch(e){
       state.raceConnectError = (e && e.message) ? e.message : "Couldn't reach the race server.";
       state.screen = "raceConnectError";
@@ -17694,6 +17986,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     return d + "d ago";
   }
 
+  var bmRecentsOpen = false;
   function renderBlackMarket(){
     var acc = state.user;
     var coins = acc.coins || 0;
@@ -17710,9 +18003,14 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
       '</div>' +
 
       '<div class="panel" style="margin-bottom:18px;">' +
-        '<div class="garage-title" style="color:var(--text);font-size:17px;margin-bottom:10px;">\uD83D\uDD52 Recent Purchases</div>' +
-        '<div class="hint-text" style="margin-top:0;margin-bottom:10px;">The last 50 sales made on the Black Market.</div>' +
-        '<div id="bmRecentsBox"><div class="center-note">Loading...</div></div>' +
+        '<div id="bmRecentsHeader" style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none;' + (bmRecentsOpen ? 'margin-bottom:10px;' : '') + '">' +
+          '<span id="bmRecentsChevron" style="color:var(--muted);font-size:13px;transition:transform .15s ease;transform:rotate(' + (bmRecentsOpen ? '90' : '0') + 'deg);display:inline-block;">\u25B6</span>' +
+          '<span class="garage-title" style="color:var(--text);font-size:17px;margin:0;">\uD83D\uDD52 Recent Purchases</span>' +
+        '</div>' +
+        '<div id="bmRecentsWrap" style="display:' + (bmRecentsOpen ? 'block' : 'none') + ';">' +
+          '<div class="hint-text" style="margin-top:0;margin-bottom:10px;">The last 50 sales made on the Black Market.</div>' +
+          '<div id="bmRecentsBox"><div class="center-note">Loading...</div></div>' +
+        '</div>' +
       '</div>' +
 
       '<div class="panel" style="margin-bottom:18px;">' +
@@ -17779,11 +18077,13 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
       // Sort by price ascending
       allListings.sort(function(a,b){ return a.price - b.price; });
 
-      // Recent purchases feed. Fetched separately -- it's a server-maintained
-      // log, not derived from current listings.
-      (function(){
+      // Recent purchases feed. Only loads when the panel is expanded, so a
+      // collapsed feed costs nothing.
+      var bmRecentsLoaded = false;
+      function loadBmRecents(){
         var recentsBox = document.getElementById("bmRecentsBox");
-        if(!recentsBox) return;
+        if(!recentsBox || bmRecentsLoaded) return;
+        bmRecentsLoaded = true;
         fetch(SERVER_URL + "/api/bm-recent-purchases").then(function(r){ return r.json(); }).then(function(d){
           if(!document.getElementById("bmRecentsBox")) return; // navigated away
           var purchases = (d && d.purchases) || [];
@@ -17804,9 +18104,24 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
             '</div>';
           }).join("");
         }).catch(function(){
+          bmRecentsLoaded = false;
           if(document.getElementById("bmRecentsBox")) document.getElementById("bmRecentsBox").innerHTML = '<div class="center-note">Couldn\u2019t load recent purchases.</div>';
         });
-      })();
+      }
+
+      var recentsHeader = document.getElementById("bmRecentsHeader");
+      if(recentsHeader){
+        recentsHeader.addEventListener("click", function(){
+          bmRecentsOpen = !bmRecentsOpen;
+          var wrap = document.getElementById("bmRecentsWrap");
+          var chevron = document.getElementById("bmRecentsChevron");
+          if(wrap) wrap.style.display = bmRecentsOpen ? "block" : "none";
+          if(chevron) chevron.style.transform = "rotate(" + (bmRecentsOpen ? "90" : "0") + "deg)";
+          recentsHeader.style.marginBottom = bmRecentsOpen ? "10px" : "0";
+          if(bmRecentsOpen) loadBmRecents();
+        });
+      }
+      if(bmRecentsOpen) loadBmRecents();
 
       // My listings box
       var myBox = document.getElementById("myListingsBox");
