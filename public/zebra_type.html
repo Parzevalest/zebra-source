@@ -17644,6 +17644,10 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     return d + "d ago";
   }
 
+  // Whether the Black Market "Recent Purchases" feed is expanded. Defaults to
+  // collapsed so it doesn't push the listings down; remembered for the session.
+  var bmRecentsOpen = false;
+
   function renderBlackMarket(){
     var acc = state.user;
     var coins = acc.coins || 0;
@@ -17660,9 +17664,18 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
       '</div>' +
 
       '<div class="panel" style="margin-bottom:18px;">' +
-        '<div class="garage-title" style="color:var(--text);font-size:17px;margin-bottom:10px;">\uD83D\uDD52 Recent Purchases</div>' +
-        '<div class="hint-text" style="margin-top:0;margin-bottom:10px;">The last 50 sales made on the Black Market.</div>' +
-        '<div id="bmRecentsBox"><div class="center-note">Loading...</div></div>' +
+        // Clickable header toggles the feed. Defaults collapsed because the
+        // 50-row list eats a lot of vertical space above the listings people
+        // actually came to browse. The open/closed choice is remembered for
+        // the session (bmRecentsOpen).
+        '<div id="bmRecentsHeader" style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none;' + (bmRecentsOpen ? 'margin-bottom:10px;' : '') + '">' +
+          '<span id="bmRecentsChevron" style="color:var(--muted);font-size:13px;transition:transform .15s ease;transform:rotate(' + (bmRecentsOpen ? '90' : '0') + 'deg);display:inline-block;">\u25B6</span>' +
+          '<span class="garage-title" style="color:var(--text);font-size:17px;margin:0;">\uD83D\uDD52 Recent Purchases</span>' +
+        '</div>' +
+        '<div id="bmRecentsWrap" style="display:' + (bmRecentsOpen ? 'block' : 'none') + ';">' +
+          '<div class="hint-text" style="margin-top:0;margin-bottom:10px;">The last 50 sales made on the Black Market.</div>' +
+          '<div id="bmRecentsBox"><div class="center-note">Loading...</div></div>' +
+        '</div>' +
       '</div>' +
 
       '<div class="panel" style="margin-bottom:18px;">' +
@@ -17730,10 +17743,13 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
       allListings.sort(function(a,b){ return a.price - b.price; });
 
       // Recent purchases feed. Fetched separately -- it's a server-maintained
-      // log, not derived from current listings.
-      (function(){
+      // log, not derived from current listings. Only loads when the panel is
+      // expanded, so a collapsed feed costs nothing.
+      var bmRecentsLoaded = false;
+      function loadBmRecents(){
         var recentsBox = document.getElementById("bmRecentsBox");
-        if(!recentsBox) return;
+        if(!recentsBox || bmRecentsLoaded) return;
+        bmRecentsLoaded = true;
         fetch(SERVER_URL + "/api/bm-recent-purchases").then(function(r){ return r.json(); }).then(function(d){
           if(!document.getElementById("bmRecentsBox")) return; // navigated away
           var purchases = (d && d.purchases) || [];
@@ -17754,9 +17770,26 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
             '</div>';
           }).join("");
         }).catch(function(){
+          bmRecentsLoaded = false; // allow a retry on next expand
           if(document.getElementById("bmRecentsBox")) document.getElementById("bmRecentsBox").innerHTML = '<div class="center-note">Couldn\u2019t load recent purchases.</div>';
         });
-      })();
+      }
+
+      // Collapse toggle.
+      var recentsHeader = document.getElementById("bmRecentsHeader");
+      if(recentsHeader){
+        recentsHeader.addEventListener("click", function(){
+          bmRecentsOpen = !bmRecentsOpen;
+          var wrap = document.getElementById("bmRecentsWrap");
+          var chevron = document.getElementById("bmRecentsChevron");
+          if(wrap) wrap.style.display = bmRecentsOpen ? "block" : "none";
+          if(chevron) chevron.style.transform = "rotate(" + (bmRecentsOpen ? "90" : "0") + "deg)";
+          recentsHeader.style.marginBottom = bmRecentsOpen ? "10px" : "0";
+          if(bmRecentsOpen) loadBmRecents();
+        });
+      }
+      // If it was already expanded (e.g. re-render after toggling open), load now.
+      if(bmRecentsOpen) loadBmRecents();
 
       // My listings box
       var myBox = document.getElementById("myListingsBox");
