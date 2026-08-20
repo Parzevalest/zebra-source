@@ -4078,7 +4078,10 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     });
     box.querySelector("#inviteDismissBtn").addEventListener("click", function(){ clearTimeout(auto); box.remove(); });
   }
-  setInterval(presencePing, 30000);
+  // Every 5s: refresh presence and pick up any pending race invites. Invites
+  // ride this heartbeat, so a 5s cadence means an invite lands within a few
+  // seconds instead of up to 30. One tiny POST every 5s is negligible.
+  setInterval(presencePing, 5000);
   // Ping immediately on regaining focus so a returning player shows online
   // without waiting up to 30s.
   if(typeof document !== "undefined"){
@@ -9400,6 +9403,22 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
             lobbyState.host = msg.host;
             lobbyState.iAmHost = (msg.host === acc.username.toLowerCase());
             if(state.screen === "friendLobby") paintLobby();
+          },
+          lobby_closed: function(msg){
+            // The host left -- this lobby is gone. Return to the friends screen
+            // with a brief note rather than sitting in a dead room.
+            closeRaceSocket();
+            lobbyState = null;
+            if(state.screen === "friendLobby"){
+              state.screen = "friends";
+              history.pushState(null, "", "/");
+              renderApp();
+              var toast = document.createElement("div");
+              toast.textContent = "The host left \u2014 the lobby was closed.";
+              toast.style.cssText = "position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:var(--panel);border:1px solid var(--line);color:var(--text);padding:12px 20px;border-radius:10px;font-weight:600;font-size:14px;z-index:10000;";
+              document.body.appendChild(toast);
+              setTimeout(function(){ toast.remove(); }, 4000);
+            }
           },
           opponent_left: function(msg){
             if(lobbyState){
