@@ -333,10 +333,16 @@ function makeRaceServer(httpServer) {
     ws.username = username;
     ws.privateHostKey = hostKey;
 
-    // Tell the joiner (with isHost so the client knows whether to show Start)
-    // and everyone already in the lobby.
+    // Tell the joiner (with isHost so the client knows whether to show Start).
     send(ws, { type: "lobby_joined", roomId: room.id, host: room.host, isHost: (username === room.host), opponentsSoFar: opponentList(room, username) });
-    broadcastToRoom(room, { type: "lobby_joined", roomId: room.id, host: room.host, opponentsSoFar: opponentList(room, ws.username) }, username);
+    // Tell everyone ALREADY in the lobby that the roster changed. Each member
+    // must get a list excluding THEMSELVES (so they see the new joiner) -- not
+    // a single shared list excluding the joiner, which is the bug that made new
+    // players invisible to everyone already in the room.
+    room.players.forEach((p, memberName) => {
+      if (memberName === username) return; // the joiner already got theirs above
+      send(p.ws, { type: "lobby_joined", roomId: room.id, host: room.host, isHost: (memberName === room.host), opponentsSoFar: opponentList(room, memberName) });
+    });
   }
 
   async function lockAndStartCountdown(room) {
@@ -676,19 +682,31 @@ function makeRaceServer(httpServer) {
       if (!room) return;
 
       room.players.delete(ws.username);
+
+      // Private lobby: if the HOST leaves before the race starts, the lobby
+      // dies -- kick everyone else out and remove it from the index so nobody
+      // can join a hostless ghost room. (A non-host guest leaving just updates
+      // the roster below.)
+      if (room.isPrivate && !room.locked && ws.username === room.host) {
+        room.players.forEach((p) => {
+          try { send(p.ws, { type: "lobby_closed", reason: "host_left" }); } catch (e) {}
+          p.ws.roomId = null;
+          p.ws.privateHostKey = null;
+        });
+        room.players.clear();
+        privateRooms.delete(room.host);
+        rooms.delete(room.id);
+        return;
+      }
+
       broadcastToRoom(room, { type: "opponent_left", username: ws.username }, null);
 
-      // Private lobby: if the host leaves before the race starts, hand the
-      // lobby to whoever's been there longest so it isn't orphaned; if it's
-      // now empty, drop it from the private index too.
+      // A non-host guest left a private lobby: refresh each remaining member's
+      // roster so the departed player disappears from their list.
       if (room.isPrivate && !room.locked) {
-        if (ws.username === room.host && room.players.size > 0) {
-          const newHost = room.players.keys().next().value;
-          room.host = newHost;
-          privateRooms.delete(ws.username);
-          privateRooms.set(newHost, room);
-          broadcastToRoom(room, { type: "lobby_host_changed", host: newHost }, null);
-        }
+        room.players.forEach((p, memberName) => {
+          send(p.ws, { type: "lobby_joined", roomId: room.id, host: room.host, isHost: (memberName === room.host), opponentsSoFar: opponentList(room, memberName) });
+        });
       }
 
       // Clean up fully if nobody's left, OR if the only ones left are
