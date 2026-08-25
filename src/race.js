@@ -340,7 +340,7 @@ function makeRaceServer(httpServer) {
     // a single shared list excluding the joiner, which is the bug that made new
     // players invisible to everyone already in the room.
     room.players.forEach((p, memberName) => {
-      if (memberName === username) return; // the joiner already got theirs above
+      if (memberName === username) return;
       send(p.ws, { type: "lobby_joined", roomId: room.id, host: room.host, isHost: (memberName === room.host), opponentsSoFar: opponentList(room, memberName) });
     });
   }
@@ -581,6 +581,12 @@ function makeRaceServer(httpServer) {
         if (p.isBot) activeBotUsernames.delete(uname);
       });
       rooms.delete(room.id);
+      // A finished private lobby must also leave the privateRooms index --
+      // otherwise the (now locked, now deleted-from-rooms) corpse lingers under
+      // the host's name, and their next "Start Friends Race" finds a locked
+      // room and is rejected with "race already started." This is exactly that
+      // bug: clear the index so the host can open a fresh lobby.
+      if (room.isPrivate && room.host) privateRooms.delete(room.host);
     }
   }
 
