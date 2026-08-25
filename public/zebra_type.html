@@ -3194,6 +3194,23 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     "Admin":        "#D4AF37"
   };
 
+  // The ROYGBIV gradient used for Unobtainable text.
+  var UNOBTAINABLE_GRADIENT = "linear-gradient(90deg,#FF3B3B,#FF9E2C,#FFE234,#3DDC57,#3B9BFF,#4B4BFF,#B24BFF)";
+
+  // Returns an inline CSS style fragment for rendering a rarity's TEXT. Flat
+  // colour for every rarity except Unobtainable, which is a clipped rainbow
+  // gradient (can't be a plain color value). Defined here in the main app IIFE
+  // so it's in scope for every render function -- the "styleForRarityText is
+  // not defined" error meant a call reached the DOM before this definition did,
+  // which happens when the definition and its callers land in different pastes.
+  function styleForRarityText(rarityName, fallback){
+    if(rarityName === "Unobtainable"){
+      return "background:" + UNOBTAINABLE_GRADIENT + ";-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;color:transparent;";
+    }
+    var color = RARITY_COLORS[rarityName] || fallback || "var(--muted)";
+    return "color:" + color + ";";
+  }
+
   // Handmade rarity icons — the single place to wire them in later. Set
   // RARITY_ICONS[name] to an image data URL once available; until then a
   // colored text badge (using RARITY_COLORS above) is shown instead.
@@ -5002,7 +5019,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
       : isAvatarWin
       ? (wonAvatarPiece ? '<div style="width:120px;height:120px;display:flex;align-items:center;justify-content:center;"><img src="' + wonAvatarPiece.image + '" alt="" style="max-width:100%;max-height:100%;object-fit:contain;image-rendering:pixelated;display:block;" /></div>' : rarityIconHtml(reward.rarity, 56))
       : isTitleWin
-      ? ('<div style="font-family:\'Arial Black\',Impact,sans-serif;font-style:italic;font-size:22px;color:' + (RARITY_COLORS[reward.rarity]||"var(--text)") + ';text-align:center;padding:10px 6px;">' + escapeHtml(reward.rewardTitleText || "Title") + '</div>')
+      ? ('<div style="font-family:\'Arial Black\',Impact,sans-serif;font-style:italic;font-size:22px;' + styleForRarityText(reward.rarity, "var(--text)") + 'text-align:center;padding:10px 6px;">' + escapeHtml(reward.rewardTitleText || "Title") + '</div>')
       : isCoinsWin
       ? ('<div style="font-size:44px;">' + COIN_ICON + '</div>')
       : isFreeSpinsWin
@@ -7019,7 +7036,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
       ? '<span data-guild-tag-click="' + escapeHtml(guildTag) + '" style="color:' + (guildColor || "#FFD54F") + ';cursor:pointer;">[' + escapeHtml(guildTag) + ']</span> '
       : '';
     var titleEl = titleText
-      ? '<span style="font-size:9px;font-style:italic;font-weight:700;color:' + (RARITY_COLORS[titleRarity]||'#fff') + ';text-shadow:-1px -1px 0 #000,1px -1px 0 #000,-1px 1px 0 #000,1px 1px 0 #000;line-height:1;">' + escapeHtml(titleText) + '</span>'
+      ? '<span style="font-size:9px;font-style:italic;font-weight:700;' + styleForRarityText(titleRarity, '#fff') + 'text-shadow:-1px -1px 0 #000,1px -1px 0 #000,-1px 1px 0 #000,1px 1px 0 #000;line-height:1;">' + escapeHtml(titleText) + '</span>'
       : '';
     return '<div class="car-nametag">' +
       '<img src="' + (imageSrc || DEFAULT_NAME_TAG) + '" alt="" />' +
@@ -8236,7 +8253,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
       return '<div class="admin-car-thumb">' + (car ? carVisualHtml(car) : '') + '</div>';
     }
     if(l.itemType === "title" || !l.itemImage){
-      return '<div class="admin-car-thumb" style="width:80px;height:50px;flex:0 0 80px;display:flex;align-items:center;justify-content:center;font-style:italic;font-weight:700;font-size:11px;text-align:center;color:' + (RARITY_COLORS[l.rarity] || "var(--muted)") + ';">&ldquo;' + escapeHtml(l.itemName || "") + '&rdquo;</div>';
+      return '<div class="admin-car-thumb" style="width:80px;height:50px;flex:0 0 80px;display:flex;align-items:center;justify-content:center;font-style:italic;font-weight:700;font-size:11px;text-align:center;' + styleForRarityText(l.rarity, "var(--muted)") + '">&ldquo;' + escapeHtml(l.itemName || "") + '&rdquo;</div>';
     }
     return '<div class="admin-car-thumb" style="width:80px;height:50px;flex:0 0 80px;display:flex;align-items:center;justify-content:center;"><img src="' + escapeHtml(l.itemImage) + '" style="max-width:100%;max-height:100%;object-fit:contain;image-rendering:pixelated;" /></div>';
   }
@@ -8257,7 +8274,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     // show the title itself in its rarity colour instead.
     var previewHtml = item.itemImage
       ? '<img src="' + item.itemImage + '" style="width:80px;height:50px;object-fit:contain;image-rendering:pixelated;" />'
-      : '<div style="width:80px;height:50px;display:flex;align-items:center;justify-content:center;font-style:italic;font-weight:700;font-size:13px;text-align:center;color:' + (RARITY_COLORS[item.rarity] || "var(--muted)") + ';">&ldquo;' + escapeHtml(item.itemName) + '&rdquo;</div>';
+      : '<div style="width:80px;height:50px;display:flex;align-items:center;justify-content:center;font-style:italic;font-weight:700;font-size:13px;text-align:center;' + styleForRarityText(item.rarity, "var(--muted)") + '">&ldquo;' + escapeHtml(item.itemName) + '&rdquo;</div>';
     var html =
       '<button class="small-btn" id="modalCloseBtn" style="position:absolute;top:14px;right:14px;">\u2715</button>' +
       '<div style="display:flex;align-items:center;gap:14px;background:var(--panel-2);border:1px solid var(--line);border-radius:10px;padding:16px;margin-bottom:16px;">' +
@@ -8825,7 +8842,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
           '<div style="flex:1;min-width:220px;">' +
             '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:2px;">' +
               '<div class="garage-title" style="color:var(--text);font-size:22px;margin:0;">' + escapeHtml(displayNameFor(targetAcc)) + '</div>' +
-              (function(){ var t = resolveTitle(targetAcc, titleCatalogCache); return t ? '<div style="font-size:12px;font-style:italic;font-weight:700;color:' + (RARITY_COLORS[t.rarity]||'var(--muted)') + ';margin-bottom:4px;">' + escapeHtml(t.text) + '</div>' : ''; })() +
+              (function(){ var t = resolveTitle(targetAcc, titleCatalogCache); return t ? '<div style="font-size:12px;font-style:italic;font-weight:700;' + styleForRarityText(t.rarity, 'var(--muted)') + 'margin-bottom:4px;">' + escapeHtml(t.text) + '</div>' : ''; })() +
               (targetAcc.isBanned ? '<span style="color:var(--red);font-weight:900;font-size:14px;">BANNED</span>' : '') +
               (targetAcc.isSuspended && !targetAcc.isBanned ? '<span style="color:var(--amber);font-weight:900;font-size:14px;">SUSPENDED</span>' : '') +
             '</div>' +
@@ -10937,7 +10954,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
       '<div style="width:72px;height:36px;flex:0 0 auto;">' + carVisualHtml(car) + '</div>' +
       '<div style="flex:1;min-width:0;">' +
         '<div style="font-weight:700;font-size:14px;">' + guildBadge + clickableUsernameHtml(opts.username, null, opts.displayName) + '</div>' +
-        (opts.titleText ? '<div style="font-size:10px;font-style:italic;font-weight:700;color:' + (RARITY_COLORS[opts.titleRarity]||'var(--muted)') + ';">' + escapeHtml(opts.titleText) + '</div>' : '') +
+        (opts.titleText ? '<div style="font-size:10px;font-style:italic;font-weight:700;' + styleForRarityText(opts.titleRarity, 'var(--muted)') + '">' + escapeHtml(opts.titleText) + '</div>' : '') +
         '<div style="font-size:12px;">' + rarityTextHtml(car.rarity || "Common") + ' ' + escapeHtml(car.name || "") + '</div>' +
       '</div>' +
       '<div style="text-align:center;flex:0 0 auto;">' +
@@ -17880,7 +17897,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
             : isAvatarWin
             ? (wonAvatarPiece ? '<div style="width:120px;height:120px;display:flex;align-items:center;justify-content:center;"><img src="' + wonAvatarPiece.image + '" alt="" style="max-width:100%;max-height:100%;object-fit:contain;image-rendering:pixelated;display:block;" /></div>' : rarityIconHtml(winner.rarity, 56))
             : isTitleWin
-            ? ('<div style="font-family:\'Arial Black\',Impact,sans-serif;font-style:italic;font-size:22px;color:' + (RARITY_COLORS[winner.rarity]||"var(--text)") + ';text-align:center;padding:10px 6px;">' + escapeHtml(winner.rewardTitleText || "Title") + '</div>')
+            ? ('<div style="font-family:\'Arial Black\',Impact,sans-serif;font-style:italic;font-size:22px;' + styleForRarityText(winner.rarity, "var(--text)") + 'text-align:center;padding:10px 6px;">' + escapeHtml(winner.rewardTitleText || "Title") + '</div>')
             : '<div style="width:200px;height:50px;"><img src="' + winner.rewardNameTagImage + '" alt="" style="width:100%;height:100%;object-fit:contain;display:block;image-rendering:pixelated;" /></div>';
           var ownershipNote = isCarWin
             ? ('You now own ' + getCarQuantity(rewardAcc, winner.rewardCarId))
@@ -18546,7 +18563,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
           '<div class="guild-member-name-col">' +
             '<div style="font-weight:700;font-size:14px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">' +
               clickableUsernameHtml(m.username, null, m.displayName) +
-              (function(){ var gt = resolveTitle(m, titleCatalogCache); return gt ? '<span style="font-size:10px;font-style:italic;font-weight:700;color:' + (RARITY_COLORS[gt.rarity]||'var(--muted)') + ';">' + escapeHtml(gt.text) + '</span>' : ''; })() +
+              (function(){ var gt = resolveTitle(m, titleCatalogCache); return gt ? '<span style="font-size:10px;font-style:italic;font-weight:700;' + styleForRarityText(gt.rarity, 'var(--muted)') + '">' + escapeHtml(gt.text) + '</span>' : ''; })() +
               (m.isBanned ? '<span style="color:var(--red);font-weight:900;font-size:11px;">BANNED</span>' : '') +
               (m.isSuspended && !m.isBanned ? '<span style="color:var(--amber);font-weight:900;font-size:11px;">SUSPENDED</span>' : '') +
             '</div>' +
@@ -19388,7 +19405,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
           '<div class="guild-member-name-col">' +
             '<div style="font-weight:700;font-size:14px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">' +
               clickableUsernameHtml(m.username, null, m.displayName) +
-              (function(){ var gt = resolveTitle(m, titleCatalogCache); return gt ? '<span style="font-size:10px;font-style:italic;font-weight:700;color:' + (RARITY_COLORS[gt.rarity]||'var(--muted)') + ';">' + escapeHtml(gt.text) + '</span>' : ''; })() +
+              (function(){ var gt = resolveTitle(m, titleCatalogCache); return gt ? '<span style="font-size:10px;font-style:italic;font-weight:700;' + styleForRarityText(gt.rarity, 'var(--muted)') + '">' + escapeHtml(gt.text) + '</span>' : ''; })() +
               (m.isBanned ? '<span style="color:var(--red);font-weight:900;font-size:11px;">BANNED</span>' : '') +
               (m.isSuspended && !m.isBanned ? '<span style="color:var(--amber);font-weight:900;font-size:11px;">SUSPENDED</span>' : '') +
             '</div>' +
@@ -19615,7 +19632,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
             var guildBadgeLb = r.guildTag ? '<span data-guild-tag-click="' + escapeHtml(r.guildTag) + '" style="color:' + (GUILD_COLORS[r.guildColor] || r.guildColor || "#FFD54F") + ';font-size:11px;font-weight:700;margin-right:4px;cursor:pointer;">[' + escapeHtml(r.guildTag) + ']</span>' : '';
             return '<tr>' +
               '<td>' + badge(i) + '</td>' +
-              '<td class="' + (isYou ? "lb-you" : "") + '">' + guildBadgeLb + clickableUsernameHtml(r.username, null, r.displayName) + (r.titleText ? '<div style="font-size:10px;font-style:italic;font-weight:700;color:' + (RARITY_COLORS[r.titleRarity]||'var(--muted)') + ';">' + escapeHtml(r.titleText) + '</div>' : '') + '</td>' +
+              '<td class="' + (isYou ? "lb-you" : "") + '">' + guildBadgeLb + clickableUsernameHtml(r.username, null, r.displayName) + (r.titleText ? '<div style="font-size:10px;font-style:italic;font-weight:700;' + styleForRarityText(r.titleRarity, 'var(--muted)') + '">' + escapeHtml(r.titleText) + '</div>' : '') + '</td>' +
               '<td class="td-num">' + val + '</td>' +
               '<td class="td-muted">' + sec + '</td>' +
             '</tr>';
@@ -19650,7 +19667,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
                 '<div style="width:56px;height:28px;flex:0 0 56px;display:flex;align-items:center;justify-content:center;">' + carVisualHtml(c) + '</div>' +
                 '<div style="flex:1;min-width:0;">' +
                   '<div style="font-size:13px;font-weight:700;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + escapeHtml(c.name||"Bluez") + '</div>' +
-                  '<div style="font-size:11px;color:' + (RARITY_COLORS[c.rarity]||"var(--muted)") + ';font-weight:700;">' + escapeHtml(c.rarity||"Common") + '</div>' +
+                  '<div style="font-size:11px;' + styleForRarityText(c.rarity, "var(--muted)") + 'font-weight:700;">' + escapeHtml(c.rarity||"Common") + '</div>' +
                 '</div>' +
               '</div>';
             }).join("") +
