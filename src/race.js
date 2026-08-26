@@ -7,6 +7,10 @@
 
 const WebSocket = require("ws");
 const crypto = require("crypto");
+// Season perks: the Automaton (a special boss bot) and cog rewards live here.
+// awardCogs is server-authoritative -- race.js is the only caller, and only on
+// a verified finish ahead of the Automaton.
+const { awardCogs, getSeasonPerks } = require("./storageRoutes");
 
 const ROOM_SIZE = 4;
 const JOIN_WINDOW_MS = 3000;
@@ -262,16 +266,37 @@ function makeRaceServer(httpServer) {
 
     const fakeWs = { readyState: WebSocket.OPEN, send: () => {}, roomId: room.id };
     const recentWpm = BOT_MIN_WPM + Math.floor(Math.random() * (BOT_MAX_WPM - BOT_MIN_WPM + 1));
+
+    // Automaton roll: 2.5% of the time, if the perk is enabled and configured,
+    // this injected bot becomes THE AUTOMATON -- a recognizable boss with an
+    // admin-set title and vehicle. Beating it (finishing ahead of it) awards
+    // cogs, handled in the race-complete block. All server-decided; the client
+    // can't influence whether the Automaton appears or whether it was beaten.
+    let isAutomaton = false;
+    let automatonTitle = bot.titleText || "";
+    let automatonCar = (liveAccount && liveAccount.equippedCarId) || bot.carId;
+    try {
+      const perks = await getSeasonPerks();
+      if (perks && perks.automatonEnabled && perks.automaton && perks.automaton.title && Math.random() < 0.025) {
+        isAutomaton = true;
+        automatonTitle = perks.automaton.title;
+        if (perks.automaton.vehicleId) automatonCar = perks.automaton.vehicleId;
+        room.automatonReward = Math.max(0, Number(perks.automaton.cogReward) || 0);
+      }
+    } catch (e) { /* perks unavailable -> just a normal bot */ }
+
     room.players.set(bot.username, {
       ws: fakeWs,
-      carId: (liveAccount && liveAccount.equippedCarId) || bot.carId,
+      carId: isAutomaton ? automatonCar : ((liveAccount && liveAccount.equippedCarId) || bot.carId),
       recentWpm,
       displayName: (liveAccount && liveAccount.displayName) || bot.displayName,
       guildTag: "", guildColor: "",
-      titleText: bot.titleText || "",
-      titleRarity: bot.titleRarity || "",
+      titleText: isAutomaton ? automatonTitle : (bot.titleText || ""),
+      titleRarity: isAutomaton ? "Unobtainable" : (bot.titleRarity || ""),
       isBot: true,
+      isAutomaton,
     });
+    if (isAutomaton) room.automatonUsername = bot.username;
     broadcastToRoom(room, { type: "room_joined", roomId: room.id, opponentsSoFar: opponentList(room, null) }, null);
   }
 
@@ -576,6 +601,25 @@ function makeRaceServer(httpServer) {
 
     if (room.finishedOrder.length >= room.players.size) {
       broadcastToRoom(room, { type: "race_complete", placements: room.finishedOrder }, null);
+
+      // Automaton rewards: if this race had an Automaton, every REAL player who
+      // finished ahead of it earns the configured cog reward. Finish order is
+      // the server's own finishedOrder, so this can't be faked by a client.
+      if (room.automatonUsername && room.automatonReward > 0) {
+        const order = room.finishedOrder;
+        const autoIdx = order.findIndex(f => f.username === room.automatonUsername);
+        if (autoIdx !== -1) {
+          for (let i = 0; i < autoIdx; i++) {
+            const finisher = order[i];
+            const pdata = room.players.get(finisher.username);
+            // Real players only -- bots don't earn cogs.
+            if (pdata && !pdata.isBot) {
+              awardCogs(finisher.username, room.automatonReward);
+            }
+          }
+        }
+      }
+
       room.players.forEach((p, uname) => {
         p.ws.roomId = null;
         if (p.isBot) activeBotUsernames.delete(uname);
