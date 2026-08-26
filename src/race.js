@@ -274,16 +274,20 @@ function makeRaceServer(httpServer) {
     // can't influence whether the Automaton appears or whether it was beaten.
     let isAutomaton = false;
     let automatonTitle = bot.titleText || "";
-    let automatonCar = (liveAccount && liveAccount.equippedCarId) || bot.carId;
+    // Default to the bot's own (known-resolvable) car; only override if the
+    // admin actually configured a vehicle. This prevents an unset/blank
+    // vehicleId from rendering as an empty black car.
+    let automatonCar = bot.carId;
     try {
       const perks = await getSeasonPerks();
-      // Spawn chance is admin-configurable (percent). Fall back to 2.5% if it's
-      // unset/invalid so behaviour matches the old hardcoded default.
-      const spawnPct = Number(perks.automaton.spawnChance);
+      // Spawn chance is admin-configurable (percent). Fall back to 2.5% if unset.
+      const spawnPct = Number(perks && perks.automaton && perks.automaton.spawnChance);
       const spawnProb = (Number.isFinite(spawnPct) ? spawnPct : 2.5) / 100;
       if (perks && perks.automatonEnabled && perks.automaton && perks.automaton.title && Math.random() < spawnProb) {
         isAutomaton = true;
         automatonTitle = perks.automaton.title;
+        // Only override the car if a non-empty vehicle was configured; otherwise
+        // keep the bot's resolvable car so it never renders blank.
         if (perks.automaton.vehicleId) automatonCar = perks.automaton.vehicleId;
         room.automatonReward = Math.max(0, Number(perks.automaton.cogReward) || 0);
       }
@@ -293,7 +297,9 @@ function makeRaceServer(httpServer) {
       ws: fakeWs,
       carId: isAutomaton ? automatonCar : ((liveAccount && liveAccount.equippedCarId) || bot.carId),
       recentWpm,
-      displayName: (liveAccount && liveAccount.displayName) || bot.displayName,
+      // The Automaton presents as its OWN entity: its display name IS its title,
+      // so it never shows the hijacked bot's name. A normal bot keeps its name.
+      displayName: isAutomaton ? automatonTitle : ((liveAccount && liveAccount.displayName) || bot.displayName),
       guildTag: "", guildColor: "",
       titleText: isAutomaton ? automatonTitle : (bot.titleText || ""),
       titleRarity: isAutomaton ? "Unobtainable" : (bot.titleRarity || ""),
