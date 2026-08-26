@@ -3180,6 +3180,10 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     return '<div style="font-size:11px;font-style:italic;font-weight:700;color:' + color + ';line-height:1.2;opacity:0.9;">' + escapeHtml(t.text) + '</div>';
   }
 
+  // Number coercion: finite number or 0. Client-side twin of the server's
+  // _num, used by the Season Perks admin screen (and safe to reuse anywhere).
+  function _num(v){ var n = Number(v); return Number.isFinite(n) ? n : 0; }
+
   // Fallback colors used until handmade rarity icons are wired in below.
   var RARITY_COLORS = {
     "Common":       "#9AA1AB",
