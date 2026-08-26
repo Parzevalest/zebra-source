@@ -1313,6 +1313,17 @@ const SERVER_OWNED_ACCOUNT_FIELDS = [
   "serverWpmFlag",
   "unbannedAt",
   "unbannedBy",
+  // Cogs are the season crafting currency, and they convert to coins at 100:1
+  // on season end -- so a forged cog balance would be a 100x coin exploit. They
+  // are therefore FULLY server-owned: awarded only by verified Automaton wins,
+  // spent only through the Workbench purchase endpoint, and never accepted from
+  // a client save. This is the key difference from coins (which are delta-
+  // merged and client-authoritative).
+  "cogs",
+  // How many Workbench tiers the player has bought (server-owned for the same
+  // reason as cogs: it gates ordered unlocks and controls which nametag they
+  // hold, so a client must not be able to set it and skip paying).
+  "workbenchTier",
 ];
 
 // Contested fields are ones BOTH sides legitimately change: the player
@@ -2163,9 +2174,200 @@ router.post("/feature-config", async (req, res) => {
   res.json({ ok: true, carMasteryEnabled: cfg.carMasteryEnabled !== false });
 });
 
-// ── Black Market recent purchases ───────────────────────────────────────────
+// ── Season Perks (Steampunk season: Automaton + Workbench) ───────────────────
 //
-// A rolling log of the last N completed sales, shown in the "Recents" tab.
+// Super-admin-configured season features. Two perks:
+//   - automaton: a boss bot that awards cogs when beaten in a race
+//   - workbench: a 5-tier cog->nametag crafting shop in the garage
+// Both can be toggled independently. The config also holds the Automaton's
+// title/vehicle/reward and each Workbench tier's price + reward nametag.
+//
+// Cogs are the season currency (server-owned; see SERVER_OWNED_ACCOUNT_FIELDS).
+// They are earned ONLY from Automaton wins and spent ONLY at the Workbench.
+// When the workbench perk is turned OFF, every account's cogs convert to coins
+// at COG_TO_COIN and the cog balance is zeroed -- the conversion IS the cleanup.
+const SEASON_PERKS_KEY = "season_perks_config";
+const COG_TO_COIN = 100; // 1 cog -> 100 coins on deactivation
+
+function defaultSeasonPerks() {
+  return {
+    automatonEnabled: false,
+    workbenchEnabled: false,
+    automaton: {
+      title: "",       // title text shown on the Automaton in races
+      vehicleId: "",    // car id the Automaton drives (so it's recognizable)
+      cogReward: 1,     // cogs awarded for finishing ahead of it
+    },
+    // 5 tiers, each: cog price + reward nametag id. Unlocked in order.
+    workbenchTiers: [
+      { price: 0, nameTagId: "" },
+      { price: 0, nameTagId: "" },
+      { price: 0, nameTagId: "" },
+      { price: 0, nameTagId: "" },
+      { price: 0, nameTagId: "" },
+    ],
+  };
+}
+
+async function getSeasonPerks() {
+  try {
+    const row = await store.get("system", SEASON_PERKS_KEY, true);
+    if (!row || !row.value) return defaultSeasonPerks();
+    const cfg = JSON.parse(row.value);
+    // Merge over defaults so a partial/older stored config still has every
+    // field the code expects.
+    const base = defaultSeasonPerks();
+    return {
+      automatonEnabled: !!cfg.automatonEnabled,
+      workbenchEnabled: !!cfg.workbenchEnabled,
+      automaton: Object.assign(base.automaton, cfg.automaton || {}),
+      workbenchTiers: Array.isArray(cfg.workbenchTiers) && cfg.workbenchTiers.length === 5
+        ? cfg.workbenchTiers.map((t, i) => ({ price: _num((t && t.price)), nameTagId: (t && t.nameTagId) || "" }))
+        : base.workbenchTiers,
+    };
+  } catch (e) { return defaultSeasonPerks(); }
+}
+
+// Public read -- clients need this to know whether to show cog UI / the
+// Workbench, and the Automaton's identity. Safe to expose (no secrets).
+router.get("/season-perks", async (req, res) => {
+  const cfg = await getSeasonPerks();
+  res.json(cfg);
+});
+
+// Super-admin write. Also runs the cog->coin conversion sweep when the
+// workbench perk transitions from ON to OFF.
+router.post("/season-perks", async (req, res) => {
+  const session = await getSession(req);
+  if (!session || !session.isAdmin) return res.status(403).json({ error: "forbidden" });
+  const body = req.body || {};
+  const prev = await getSeasonPerks();
+  const next = defaultSeasonPerks();
+
+  next.automatonEnabled = !!body.automatonEnabled;
+  next.workbenchEnabled = !!body.workbenchEnabled;
+  if (body.automaton && typeof body.automaton === "object") {
+    next.automaton.title = String(body.automaton.title || "").slice(0, 60);
+    next.automaton.vehicleId = String(body.automaton.vehicleId || "").slice(0, 60);
+    next.automaton.cogReward = Math.max(0, Math.min(10000, _num(body.automaton.cogReward)));
+  }
+  if (Array.isArray(body.workbenchTiers) && body.workbenchTiers.length === 5) {
+    next.workbenchTiers = body.workbenchTiers.map((t) => ({
+      price: Math.max(0, Math.min(1000000, _num(t && t.price))),
+      nameTagId: String((t && t.nameTagId) || "").slice(0, 80),
+    }));
+  }
+
+  await store.set("system", SEASON_PERKS_KEY, JSON.stringify(next), true);
+  console.log("[admin] season perks updated by", session.username,
+    "automaton=" + next.automatonEnabled, "workbench=" + next.workbenchEnabled);
+
+  // Deactivation sweep: workbench went ON -> OFF. Convert every account's cogs
+  // to coins at COG_TO_COIN, then zero the cogs. Best-effort per account so one
+  // bad record doesn't abort the whole sweep.
+  let swept = 0, coinsGranted = 0;
+  if (prev.workbenchEnabled && !next.workbenchEnabled) {
+    try {
+      const rows = await store.listEntries("account:");
+      for (const row of rows) {
+        let acc;
+        try { acc = JSON.parse(row.value); } catch (e) { continue; }
+        if (!acc || !acc.username) continue;
+        const cogs = _num(acc.cogs);
+        if (cogs <= 0) { if (acc.cogs) { acc.cogs = 0; await storeAccount(acc); } continue; }
+        const payout = cogs * COG_TO_COIN;
+        acc.coins = _num(acc.coins) + payout;
+        acc.cogs = 0;
+        await storeAccount(acc);
+        swept++; coinsGranted += payout;
+      }
+      console.log("[season] cog->coin sweep: " + swept + " accounts, " + coinsGranted + " coins granted");
+    } catch (e) {
+      console.error("[season] cog sweep failed:", e.message);
+    }
+  }
+
+  res.json({ ok: true, perks: next, sweep: { accounts: swept, coinsGranted } });
+});
+
+// Server-side cog award. Called from the Automaton win path. Never trusts a
+// client -- it re-reads the account, adds the reward, and stores it.
+async function awardCogs(username, amount) {
+  const amt = Math.max(0, Math.min(10000, _num(amount)));
+  if (!amt) return;
+  const key = "account:" + String(username).toLowerCase();
+  try {
+    const row = await store.get("system", key, true);
+    if (!row || !row.value) return;
+    const acc = JSON.parse(row.value);
+    acc.cogs = _num(acc.cogs) + amt;
+    await storeAccount(acc);
+    console.log("[cogs] awarded " + amt + " to " + username + " (now " + acc.cogs + ")");
+  } catch (e) { console.error("[cogs] award failed:", e.message); }
+}
+
+// ── Workbench purchase ──────────────────────────────────────────────────────
+//
+// Buy the next Workbench tier with cogs. Tiers unlock IN ORDER: you must own
+// the current tier before buying the next. Buying a tier REMOVES the previous
+// tier's nametag and grants the new one -- a player only ever holds their
+// current Workbench nametag, never a stack. workbenchTier (server-owned) tracks
+// how far they've progressed.
+//
+// Fully server-authoritative: cogs are server-owned, so the balance check and
+// deduction happen here from stored data, never from anything the client sends.
+router.post("/workbench-buy", async (req, res) => {
+  const session = await getSession(req);
+  if (!session || !session.username) return res.status(401).json({ error: "auth" });
+
+  const perks = await getSeasonPerks();
+  if (!perks.workbenchEnabled) return res.status(403).json({ error: "workbench_disabled" });
+
+  const tierIndex = Math.floor(_num(req.body && req.body.tier)); // 0-based
+  if (!(tierIndex >= 0 && tierIndex < 5)) return res.status(400).json({ error: "bad_tier" });
+
+  const tier = perks.workbenchTiers[tierIndex];
+  if (!tier || !tier.nameTagId) return res.status(400).json({ error: "tier_unconfigured" });
+
+  const key = "account:" + session.username.toLowerCase();
+  let acc;
+  try {
+    const row = await store.get("system", key, true);
+    if (!row || !row.value) return res.status(404).json({ error: "no_account" });
+    acc = JSON.parse(row.value);
+  } catch (e) { return res.status(500).json({ error: "read_failed" }); }
+
+  const progressed = Math.floor(_num(acc.workbenchTier)); // highest tier owned, 0 = none
+  // Ordered unlock: tier 0 is buyable first; tier N needs tier N-1 already
+  // owned. Re-buying an owned/earlier tier is rejected.
+  if (tierIndex !== progressed) {
+    return res.status(400).json({ error: tierIndex < progressed ? "already_owned" : "locked",
+      needTier: progressed });
+  }
+
+  const price = _num(tier.price);
+  if (_num(acc.cogs) < price) return res.status(400).json({ error: "insufficient_cogs", have: _num(acc.cogs), need: price });
+
+  // Deduct cogs, remove the previous tier's nametag (so it's never duplicated),
+  // grant the new one, and record progress.
+  acc.cogs = _num(acc.cogs) - price;
+  if (tierIndex > 0) {
+    const prevTag = perks.workbenchTiers[tierIndex - 1] && perks.workbenchTiers[tierIndex - 1].nameTagId;
+    if (prevTag) removeNameTagFromInventory(acc, prevTag, 999); // remove all copies of the prior tier tag
+  }
+  addNameTagToInventory(acc, tier.nameTagId, 1);
+  acc.workbenchTier = tierIndex + 1; // now owns through this tier
+
+  try {
+    await storeAccount(acc);
+  } catch (e) { return res.status(500).json({ error: "save_failed" }); }
+
+  console.log("[workbench] " + session.username + " bought tier " + (tierIndex + 1) + " for " + price + " cogs");
+  res.json({ ok: true, tier: tierIndex + 1, cogs: acc.cogs, nameTagId: tier.nameTagId });
+});
+
+
+
 // Stored as a single JSON array under one key -- newest first, capped -- so
 // reading it is one fetch and it can never grow unbounded.
 const RECENT_PURCHASES_KEY = "bm_recent_purchases";
@@ -2463,3 +2665,7 @@ router.post("/admin/cleanup-auth-keys", async (req, res) => {
 });
 
 module.exports = router;
+// Also expose the cog award and perks config to the race server, which needs
+// to spawn the Automaton and award cogs on a verified win.
+module.exports.awardCogs = awardCogs;
+module.exports.getSeasonPerks = getSeasonPerks;
