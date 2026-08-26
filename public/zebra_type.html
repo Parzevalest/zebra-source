@@ -3181,8 +3181,24 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
   }
 
   // Number coercion: finite number or 0. Client-side twin of the server's
-  // _num, used by the Season Perks admin screen (and safe to reuse anywhere).
+  // _num, used by the Season Perks admin screen and the Workbench.
   function _num(v){ var n = Number(v); return Number.isFinite(n) ? n : 0; }
+
+  // Season perks (Automaton / Workbench) as the server reports them. Fetched at
+  // boot and cached; the garage reads it to decide whether to show cogs and the
+  // Workbench. Defaults to everything off so nothing seasonal shows until the
+  // server says it's enabled.
+  var seasonPerksCache = { automatonEnabled: false, workbenchEnabled: false, automaton: {}, workbenchTiers: [] };
+  async function fetchSeasonPerks(){
+    try{
+      var r = await fetch(SERVER_URL + "/api/season-perks");
+      var d = await r.json();
+      if(d && typeof d === "object") seasonPerksCache = d;
+    }catch(e){ /* keep defaults */ }
+    return seasonPerksCache;
+  }
+  function workbenchEnabled(){ return !!seasonPerksCache.workbenchEnabled; }
+  function cogBalance(){ return _num(state.user && state.user.cogs); }
 
   // Fallback colors used until handmade rarity icons are wired in below.
   var RARITY_COLORS = {
@@ -6215,6 +6231,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     else if(state.screen === "garageNameTags") renderGarageNameTags();
     else if(state.screen === "garageAvatars") renderGarageAvatars();
     else if(state.screen === "garageTitles") renderGarageTitles();
+    else if(state.screen === "garageWorkbench") renderGarageWorkbench();
     else if(state.screen === "profile") renderProfile();
     else if(state.screen === "friends") renderFriends();
     else if(state.screen === "friendLobby") renderFriendLobby();
@@ -7748,6 +7765,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
         '<div class="garage-header">' +
           '<div class="garage-title" style="color:var(--text);">Garage' +
             '<span class="garage-count" style="margin-left:14px;">' + COIN_ICON + coins.toLocaleString() + '</span>' +
+            (workbenchEnabled() ? '<span class="garage-count" style="margin-left:14px;color:var(--amber);" title="Cogs \u2014 earned by beating the Automaton">\u2699\uFE0F ' + cogBalance().toLocaleString() + '</span>' : '') +
           '</div>' +
         '</div>' +
         '<div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:14px;">' +
@@ -7755,6 +7773,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
           switcherBtn("nameTags", '\uD83C\uDFF7\uFE0F Name Tags ', '<span style="opacity:.75;font-weight:600;">| ' + nameTagOptionsFor(acc).length + '</span>') +
           switcherBtn("avatars", '\uD83E\uDDCD Avatar', '') +
           switcherBtn("titles", '\uD83D\uDCDC Titles ', '<span style="opacity:.75;font-weight:600;">| ' + (acc.ownedTitles||[]).length + '</span>') +
+          (workbenchEnabled() ? switcherBtn("workbench", '\uD83D\uDD27 Workbench', '') : '') +
         '</div>' +
       '</div>';
   }
@@ -7770,6 +7789,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
         else if(key === "nameTags") state.screen = "garageNameTags";
         else if(key === "avatars") state.screen = "garageAvatars";
         else if(key === "titles") state.screen = "garageTitles";
+        else if(key === "workbench") state.screen = "garageWorkbench";
         renderApp();
       });
     });
@@ -8500,6 +8520,112 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
         openBMItemListModal({ itemType: "avatar", itemId: p.id, itemName: p.name, itemImage: p.image, rarity: rarity, slot: p.slot }, acc, function(){ renderGarageAvatars(); });
       });
     }
+  }
+
+  // ---- The Workbench (seasonal cog -> nametag crafting) ----
+  function renderGarageWorkbench(){
+    var acc = state.user;
+    if(!workbenchEnabled()){ state.screen = "garageCars"; renderApp(); return; }
+
+    app.innerHTML =
+      brandHeader() +
+      renderNavBar("garage") +
+      garageStatsAndSwitcherHtml("workbench") +
+      '<div class="panel garage-panel" style="margin-top:18px;">' +
+        '<div class="center-note">Loading the Workbench\u2026</div>' +
+      '</div>';
+    attachNavListeners();
+
+    // Load the latest perks (tier prices/rewards) + nametag catalog (previews)
+    // + a fresh account (cog balance / progress) together.
+    Promise.all([
+      fetchSeasonPerks(),
+      (nameTagCatalogCache.length ? Promise.resolve(nameTagCatalogCache) : fetchNameTagCatalog()).catch(function(){ return []; }),
+      getAccount(acc.username)
+    ]).then(function(results){
+      if(state.screen !== "garageWorkbench") return;
+      var perks = results[0] || {};
+      if(results[2] && results[2].ok && results[2].account) state.user = results[2].account;
+      acc = state.user;
+      var tiers = (perks.workbenchTiers && perks.workbenchTiers.length === 5) ? perks.workbenchTiers : [];
+      var owned = _num(acc.workbenchTier); // number of tiers already bought (0..5)
+      var cogs = _num(acc.cogs);
+
+      var tileHtml = tiers.map(function(t, i){
+        var tierNum = i + 1;
+        var isOwned = owned > i;          // already bought this tier
+        var isCurrent = owned === i;      // the next one you can buy
+        var isLocked = owned < i;         // need earlier tiers first
+        var tagImg = t.nameTagId ? nameTagImageFor(t.nameTagId) : "";
+        var price = _num(t.price);
+
+        var statusBadge = isOwned ? '<span style="color:var(--green);font-weight:700;">\u2713 Built</span>'
+          : isCurrent ? '<span style="color:var(--amber);font-weight:700;">Available</span>'
+          : '<span style="color:var(--muted);">\uD83D\uDD12 Locked</span>';
+
+        var btn = isOwned ? ''
+          : isCurrent ? '<button class="btn btn-primary" data-buy-tier="' + i + '"' + (cogs < price ? ' disabled style="opacity:.5;"' : '') + '>Build \u2014 \u2699\uFE0F ' + price.toLocaleString() + '</button>'
+          : '<div style="font-size:12px;color:var(--muted);">Build Tier ' + i + ' first</div>';
+
+        return '<div style="position:relative;border:1px solid ' + (isCurrent ? "var(--amber)" : "var(--line)") + ';border-radius:12px;padding:16px;margin-bottom:12px;background:' + (isOwned ? "rgba(51,204,120,0.06)" : "var(--panel-2)") + ';opacity:' + (isLocked ? ".6" : "1") + ';">' +
+          '<div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;">' +
+            '<div style="font-family:\'Arial Black\',Impact,sans-serif;font-style:italic;font-size:20px;color:var(--amber);min-width:70px;">\u2699\uFE0F ' + tierNum + '</div>' +
+            (tagImg ? '<img src="' + tagImg + '" alt="" style="height:40px;max-width:180px;object-fit:contain;image-rendering:pixelated;border-radius:6px;" />' : '<span style="color:var(--muted);font-style:italic;">(reward not set)</span>') +
+            '<div style="flex:1;min-width:120px;">' + statusBadge + '</div>' +
+            '<div>' + btn + '</div>' +
+          '</div>' +
+        '</div>';
+      }).join("");
+
+      app.innerHTML =
+        brandHeader() +
+        renderNavBar("garage") +
+        garageStatsAndSwitcherHtml("workbench") +
+        '<div class="panel garage-panel" style="margin-top:18px;">' +
+          '<div class="garage-header" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;">' +
+            '<div class="garage-title" style="color:var(--text);">\uD83D\uDD27 The Workbench</div>' +
+            '<div style="font-family:\'Arial Black\',Impact,sans-serif;font-style:italic;font-size:20px;color:var(--amber);">\u2699\uFE0F ' + cogs.toLocaleString() + ' cogs</div>' +
+          '</div>' +
+          '<div class="hint-text" style="margin-top:6px;margin-bottom:16px;">Earn cogs by finishing ahead of the Automaton in races. Build tiers in order \u2014 each new nametag replaces the last, so you always wear your highest.</div>' +
+          (tiers.length ? tileHtml : '<div class="center-note">The Workbench isn\u2019t configured yet.</div>') +
+          '<div id="workbenchMsg" style="font-size:13px;margin-top:6px;min-height:18px;"></div>' +
+        '</div>';
+      attachNavListeners();
+
+      app.querySelectorAll("[data-buy-tier]").forEach(function(btn){
+        btn.addEventListener("click", async function(){
+          var tierIndex = parseInt(btn.getAttribute("data-buy-tier"), 10);
+          var msg = document.getElementById("workbenchMsg");
+          btn.disabled = true; btn.textContent = "Building\u2026";
+          msg.style.color = "var(--muted)"; msg.textContent = "";
+          try{
+            var r = await fetch(SERVER_URL + "/api/workbench-buy", {
+              method: "POST", headers: { "Content-Type": "application/json", "x-session-token": currentToken || "" },
+              body: JSON.stringify({ tier: tierIndex })
+            });
+            var d = await r.json().catch(function(){ return {}; });
+            if(r.ok){
+              // Refresh account (server updated cogs, workbenchTier, nametags)
+              // and repaint.
+              var fresh = await getAccount(acc.username);
+              if(fresh.ok && fresh.account) state.user = fresh.account;
+              renderGarageWorkbench();
+            } else {
+              msg.style.color = "var(--red)";
+              msg.textContent = d.error === "insufficient_cogs" ? "Not enough cogs for this tier."
+                : d.error === "locked" ? "Build the earlier tiers first."
+                : d.error === "workbench_disabled" ? "The Workbench is closed."
+                : d.error === "tier_unconfigured" ? "This tier has no reward set yet."
+                : "Couldn't build: " + (d.error || r.status);
+              btn.disabled = false;
+            }
+          }catch(e){
+            document.getElementById("workbenchMsg").textContent = "Error: " + ((e&&e.message)||e);
+            btn.disabled = false;
+          }
+        });
+      });
+    });
   }
 
   function renderGarageNameTags(){
@@ -20943,6 +21069,9 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     // whether to show mastery on first paint rather than flashing it and
     // hiding it a moment later.
     fetchFeatureConfig().catch(function(){});
+    // Season perks (Automaton / Workbench) so the garage shows cogs and the
+    // Workbench tab on first paint if the season is active.
+    fetchSeasonPerks().catch(function(){});
 
     // Route based on current URL path.
     navigate(window.location.pathname, false);
