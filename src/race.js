@@ -277,7 +277,11 @@ function makeRaceServer(httpServer) {
     let automatonCar = (liveAccount && liveAccount.equippedCarId) || bot.carId;
     try {
       const perks = await getSeasonPerks();
-      if (perks && perks.automatonEnabled && perks.automaton && perks.automaton.title && Math.random() < 0.025) {
+      // Spawn chance is admin-configurable (percent). Fall back to 2.5% if it's
+      // unset/invalid so behaviour matches the old hardcoded default.
+      const spawnPct = Number(perks.automaton.spawnChance);
+      const spawnProb = (Number.isFinite(spawnPct) ? spawnPct : 2.5) / 100;
+      if (perks && perks.automatonEnabled && perks.automaton && perks.automaton.title && Math.random() < spawnProb) {
         isAutomaton = true;
         automatonTitle = perks.automaton.title;
         if (perks.automaton.vehicleId) automatonCar = perks.automaton.vehicleId;
