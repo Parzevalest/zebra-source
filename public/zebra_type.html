@@ -8535,6 +8535,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
         '<div class="center-note">Loading the Workbench\u2026</div>' +
       '</div>';
     attachNavListeners();
+    attachGarageStatsAndSwitcherListeners();
 
     // Load the latest perks (tier prices/rewards) + nametag catalog (previews)
     // + a fresh account (cog balance / progress) together.
@@ -8591,6 +8592,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
           '<div id="workbenchMsg" style="font-size:13px;margin-top:6px;min-height:18px;"></div>' +
         '</div>';
       attachNavListeners();
+      attachGarageStatsAndSwitcherListeners();
 
       app.querySelectorAll("[data-buy-tier]").forEach(function(btn){
         btn.addEventListener("click", async function(){
