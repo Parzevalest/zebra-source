@@ -4095,7 +4095,10 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     });
     box.querySelector("#inviteDismissBtn").addEventListener("click", function(){ clearTimeout(auto); box.remove(); });
   }
-  setInterval(presencePing, 30000);
+  // Every 5s: refresh presence and pick up any pending race invites. Invites
+  // ride this heartbeat, so a 5s cadence means an invite lands within a few
+  // seconds instead of up to 30. One tiny POST every 5s is negligible.
+  setInterval(presencePing, 5000);
   // Ping immediately on regaining focus so a returning player shows online
   // without waiting up to 30s.
   if(typeof document !== "undefined"){
@@ -6235,6 +6238,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     else if(state.screen === "adminAbout") renderAdminAbout();
     else if(state.screen === "adminAnticheat") renderAdminAnticheat();
     else if(state.screen === "adminAutomod") renderAdminAutomod();
+    else if(state.screen === "adminSeasonPerks") renderAdminSeasonPerks();
     else if(state.screen === "account") renderAccount();
     else if(state.screen === "shop") renderShop();
     else if(state.screen === "leaderboard") renderLeaderboard();
@@ -9418,6 +9422,22 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
             lobbyState.iAmHost = (msg.host === acc.username.toLowerCase());
             if(state.screen === "friendLobby") paintLobby();
           },
+          lobby_closed: function(msg){
+            // The host left -- this lobby is gone. Return to the friends screen
+            // with a brief note rather than sitting in a dead room.
+            closeRaceSocket();
+            lobbyState = null;
+            if(state.screen === "friendLobby"){
+              state.screen = "friends";
+              history.pushState(null, "", "/");
+              renderApp();
+              var toast = document.createElement("div");
+              toast.textContent = "The host left \u2014 the lobby was closed.";
+              toast.style.cssText = "position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:var(--panel);border:1px solid var(--line);color:var(--text);padding:12px 20px;border-radius:10px;font-weight:600;font-size:14px;z-index:10000;";
+              document.body.appendChild(toast);
+              setTimeout(function(){ toast.remove(); }, 4000);
+            }
+          },
           opponent_left: function(msg){
             if(lobbyState){
               lobbyState.members = lobbyState.members.filter(function(m){ return m.username.toLowerCase() !== msg.username.toLowerCase(); });
@@ -11459,6 +11479,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
         (state.isSuperAdmin ? '<button class="admin-navbar-tab' + (activeTab==="about" ? " active" : "") + '" data-admin-tab="about">\uD83D\uDCD6 About</button>' : '') +
         (state.isSuperAdmin ? '<button class="admin-navbar-tab' + (activeTab==="anticheat" ? " active" : "") + '" data-admin-tab="anticheat">\uD83D\uDEE1\uFE0F Anti-Cheat</button>' : '') +
       (state.isSuperAdmin ? '<button class="admin-navbar-tab' + (activeTab==="automod" ? " active" : "") + '" data-admin-tab="automod">\uD83E\uDDF9 Automod</button>' : '') +
+      (state.isSuperAdmin ? '<button class="admin-navbar-tab' + (activeTab==="seasonperks" ? " active" : "") + '" data-admin-tab="seasonperks">\u2699\uFE0F Season Perks</button>' : '') +
       '</div>' +
       '<div class="admin-navbar-right">' +
         '<div class="userpill">Admin: <b>' + escapeHtml(state.adminUsername || "") + '</b></div>' +
@@ -11509,6 +11530,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
           : tab === "about" ? "adminAbout"
           : tab === "anticheat" ? "adminAnticheat"
           : tab === "automod" ? "adminAutomod"
+          : tab === "seasonperks" ? "adminSeasonPerks"
           : "adminAchievements";
         renderApp();
       });
@@ -11548,6 +11570,154 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
   // substring, and so rejected Peacock, Hancock, Dickens, Dickinson, Cockpit
   // and Cocktail -- real surnames and ordinary words.
   var automodDraft = null;
+
+  function renderAdminSeasonPerks(){
+    if(!state.isAdmin || !state.isSuperAdmin){ state.screen = "auth"; renderApp(); return; }
+    state.adminTab = "seasonperks";
+
+    app.innerHTML =
+      brandHeader() +
+      adminNavBar("seasonperks") +
+      '<div class="panel"><div class="center-note">Loading season perks\u2026</div></div>';
+
+    attachAdminNavListeners();
+
+    // Load perks + catalogs (for the vehicle / nametag pickers) together.
+    Promise.all([
+      fetch(SERVER_URL + "/api/season-perks").then(function(r){ return r.json(); }).catch(function(){ return null; }),
+      (nameTagCatalogCache.length ? Promise.resolve(nameTagCatalogCache) : fetchNameTagCatalog()).catch(function(){ return []; }),
+      (customCarsCache && customCarsCache.length ? Promise.resolve(customCarsCache) : fetchCustomCars()).catch(function(){ return []; })
+    ]).then(function(results){
+      if(state.screen !== "adminSeasonPerks") return;
+      var perks = results[0] || {};
+      var tags = nameTagCatalogCache || [];
+      var cars = customCarsCache || [];
+      var auto = perks.automaton || {};
+      var tiers = (perks.workbenchTiers && perks.workbenchTiers.length === 5) ? perks.workbenchTiers
+        : [{price:0,nameTagId:""},{price:0,nameTagId:""},{price:0,nameTagId:""},{price:0,nameTagId:""},{price:0,nameTagId:""}];
+
+      // Build a <select> of nametags by id, with the given one preselected.
+      function nameTagSelect(id, selected){
+        return '<select id="' + id + '" style="padding:6px;border-radius:6px;background:var(--panel-2);color:var(--text);border:1px solid var(--line);max-width:220px;">' +
+          '<option value="">\u2014 none \u2014</option>' +
+          tags.map(function(t){
+            var val = t.id || t.image;
+            return '<option value="' + escapeHtml(val) + '"' + (val === selected ? " selected" : "") + '>' + escapeHtml(t.name || val) + '</option>';
+          }).join("") +
+        '</select>';
+      }
+      function carSelect(id, selected){
+        var allCars = [STARTER_CAR].concat(cars || []);
+        return '<select id="' + id + '" style="padding:6px;border-radius:6px;background:var(--panel-2);color:var(--text);border:1px solid var(--line);max-width:220px;">' +
+          '<option value="">\u2014 none \u2014</option>' +
+          allCars.map(function(c){
+            return '<option value="' + escapeHtml(c.id) + '"' + (c.id === selected ? " selected" : "") + '>' + escapeHtml(c.name || c.id) + '</option>';
+          }).join("") +
+        '</select>';
+      }
+
+      var tierRows = tiers.map(function(t, i){
+        return '<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:10px;border:1px solid var(--line);border-radius:8px;margin-bottom:8px;">' +
+          '<div style="font-weight:700;color:var(--amber);min-width:60px;">Tier ' + (i+1) + '</div>' +
+          '<label style="font-size:13px;color:var(--muted);">Cog price: ' +
+            '<input type="number" id="wbPrice' + i + '" value="' + _num(t.price) + '" min="0" style="width:90px;padding:6px;border-radius:6px;background:var(--panel-2);color:var(--text);border:1px solid var(--line);margin-left:6px;" />' +
+          '</label>' +
+          '<label style="font-size:13px;color:var(--muted);">Reward: ' + nameTagSelect("wbTag" + i, t.nameTagId) + '</label>' +
+        '</div>';
+      }).join("");
+
+      app.innerHTML =
+        brandHeader() +
+        adminNavBar("seasonperks") +
+        '<div class="panel" style="margin-bottom:16px;">' +
+          '<div class="garage-title" style="color:var(--text);font-size:18px;margin-bottom:4px;">\u2699\uFE0F Season Perks</div>' +
+          '<div class="hint-text" style="margin-top:0;margin-bottom:14px;">Enable seasonal features and configure them. Turning the Workbench OFF converts every player\u2019s cogs to coins at 100:1 and clears cogs \u2014 that\u2019s the season cleanup, so only do it when the season ends.</div>' +
+
+          '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:8px;">' +
+            '<button class="small-btn" id="toggleAutomatonBtn" style="color:' + (perks.automatonEnabled ? "var(--green)" : "var(--red)") + ';border-color:' + (perks.automatonEnabled ? "var(--green)" : "var(--red)") + ';">\uD83E\uDD16 Automaton: ' + (perks.automatonEnabled ? "On" : "Off") + '</button>' +
+            '<button class="small-btn" id="toggleWorkbenchBtn" style="color:' + (perks.workbenchEnabled ? "var(--green)" : "var(--red)") + ';border-color:' + (perks.workbenchEnabled ? "var(--green)" : "var(--red)") + ';">\uD83D\uDD27 Workbench: ' + (perks.workbenchEnabled ? "On" : "Off") + '</button>' +
+          '</div>' +
+          '<div id="perksMsg" style="font-size:13px;color:var(--muted);min-height:18px;"></div>' +
+        '</div>' +
+
+        '<div class="panel" style="margin-bottom:16px;">' +
+          '<div class="garage-title" style="color:var(--text);font-size:16px;margin-bottom:10px;">\uD83E\uDD16 The Automaton</div>' +
+          '<div style="display:flex;flex-direction:column;gap:12px;max-width:520px;">' +
+            '<label style="font-size:13px;color:var(--muted);">Title shown on the Automaton:<br><input type="text" id="autoTitle" value="' + escapeHtml(auto.title || "") + '" maxlength="60" placeholder="e.g. The Automaton" style="width:100%;padding:8px;border-radius:6px;background:var(--panel-2);color:var(--text);border:1px solid var(--line);margin-top:4px;" /></label>' +
+            '<label style="font-size:13px;color:var(--muted);">Vehicle it drives: ' + carSelect("autoVehicle", auto.vehicleId || "") + '</label>' +
+            '<label style="font-size:13px;color:var(--muted);">Cogs awarded for beating it:<br><input type="number" id="autoReward" value="' + _num(auto.cogReward) + '" min="0" max="10000" style="width:120px;padding:8px;border-radius:6px;background:var(--panel-2);color:var(--text);border:1px solid var(--line);margin-top:4px;" /></label>' +
+          '</div>' +
+        '</div>' +
+
+        '<div class="panel" style="margin-bottom:16px;">' +
+          '<div class="garage-title" style="color:var(--text);font-size:16px;margin-bottom:4px;">\uD83D\uDD27 The Workbench</div>' +
+          '<div class="hint-text" style="margin-top:0;margin-bottom:12px;">5 tiers, unlocked in order. Each tier costs cogs and grants a nametag; buying a tier replaces the previous tier\u2019s nametag.</div>' +
+          tierRows +
+        '</div>' +
+
+        '<div class="panel">' +
+          '<button class="btn btn-primary" id="savePerksBtn">Save Season Perks</button>' +
+          '<div id="perksSaveMsg" style="font-size:13px;margin-top:8px;"></div>' +
+        '</div>';
+
+      attachAdminNavListeners();
+
+      // Local working copy of the enabled flags (buttons toggle these; Save
+      // sends everything together).
+      var enabled = { automaton: !!perks.automatonEnabled, workbench: !!perks.workbenchEnabled };
+      var autoBtn = document.getElementById("toggleAutomatonBtn");
+      var wbBtn = document.getElementById("toggleWorkbenchBtn");
+      function paintToggle(btn, on, label){
+        btn.textContent = label + (on ? "On" : "Off");
+        btn.style.color = on ? "var(--green)" : "var(--red)";
+        btn.style.borderColor = on ? "var(--green)" : "var(--red)";
+      }
+      autoBtn.addEventListener("click", function(){ enabled.automaton = !enabled.automaton; paintToggle(autoBtn, enabled.automaton, "\uD83E\uDD16 Automaton: "); });
+      wbBtn.addEventListener("click", function(){
+        // Warn on turning Workbench OFF -- that triggers the cog->coin sweep.
+        if(enabled.workbench){
+          document.getElementById("perksMsg").textContent = "\u26A0\uFE0F Saving with Workbench OFF will convert all players\u2019 cogs to coins and clear cogs.";
+        } else {
+          document.getElementById("perksMsg").textContent = "";
+        }
+        enabled.workbench = !enabled.workbench;
+        paintToggle(wbBtn, enabled.workbench, "\uD83D\uDD27 Workbench: ");
+      });
+
+      document.getElementById("savePerksBtn").addEventListener("click", async function(){
+        var btn = document.getElementById("savePerksBtn");
+        var msg = document.getElementById("perksSaveMsg");
+        btn.disabled = true; msg.style.color = "var(--muted)"; msg.textContent = "Saving\u2026";
+        var payload = {
+          automatonEnabled: enabled.automaton,
+          workbenchEnabled: enabled.workbench,
+          automaton: {
+            title: document.getElementById("autoTitle").value,
+            vehicleId: document.getElementById("autoVehicle").value,
+            cogReward: _num(document.getElementById("autoReward").value)
+          },
+          workbenchTiers: [0,1,2,3,4].map(function(i){
+            return { price: _num(document.getElementById("wbPrice"+i).value), nameTagId: document.getElementById("wbTag"+i).value };
+          })
+        };
+        try{
+          var r = await fetch(SERVER_URL + "/api/season-perks", {
+            method: "POST", headers: { "Content-Type": "application/json", "x-session-token": currentToken || "" },
+            body: JSON.stringify(payload)
+          });
+          var d = await r.json().catch(function(){ return {}; });
+          if(r.ok){
+            msg.style.color = "var(--green)";
+            var sweptNote = (d.sweep && d.sweep.accounts) ? (" \u2014 converted cogs for " + d.sweep.accounts + " player(s), " + d.sweep.coinsGranted.toLocaleString() + " coins granted") : "";
+            msg.textContent = "Saved." + sweptNote;
+          } else {
+            msg.style.color = "var(--red)"; msg.textContent = "Failed: " + (d.error || r.status);
+          }
+        }catch(e){ msg.style.color = "var(--red)"; msg.textContent = "Error: " + ((e&&e.message)||e); }
+        finally{ btn.disabled = false; }
+      });
+    });
+  }
 
   function renderAdminAutomod(){
     if(!state.isAdmin){ state.screen = "auth"; renderApp(); return; }
