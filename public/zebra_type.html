@@ -11778,7 +11778,6 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
             '<label style="font-size:13px;color:var(--muted);">Title shown on the Automaton:<br><input type="text" id="autoTitle" value="' + escapeHtml(auto.title || "") + '" maxlength="60" placeholder="e.g. The Automaton" style="width:100%;padding:8px;border-radius:6px;background:var(--panel-2);color:var(--text);border:1px solid var(--line);margin-top:4px;" /></label>' +
             '<label style="font-size:13px;color:var(--muted);">Vehicle it drives: ' + carSelect("autoVehicle", auto.vehicleId || "") + '</label>' +
             '<label style="font-size:13px;color:var(--muted);">Cogs awarded for beating it:<br><input type="number" id="autoReward" value="' + _num(auto.cogReward) + '" min="0" max="10000" style="width:120px;padding:8px;border-radius:6px;background:var(--panel-2);color:var(--text);border:1px solid var(--line);margin-top:4px;" /></label>' +
-            '<label style="font-size:13px;color:var(--muted);">Spawn chance (%) \u2014 how often it replaces a bot:<br><input type="number" id="autoSpawn" value="' + (auto.spawnChance !== undefined && auto.spawnChance !== null ? auto.spawnChance : 2.5) + '" min="0" max="100" step="0.1" style="width:120px;padding:8px;border-radius:6px;background:var(--panel-2);color:var(--text);border:1px solid var(--line);margin-top:4px;" /><span style="font-size:11px;color:var(--muted);margin-left:8px;">default 2.5</span></label>' +
           '</div>' +
         '</div>' +
 
@@ -11827,8 +11826,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
           automaton: {
             title: document.getElementById("autoTitle").value,
             vehicleId: document.getElementById("autoVehicle").value,
-            cogReward: _num(document.getElementById("autoReward").value),
-            spawnChance: _num(document.getElementById("autoSpawn").value)
+            cogReward: _num(document.getElementById("autoReward").value)
           },
           workbenchTiers: [0,1,2,3,4].map(function(i){
             return { price: _num(document.getElementById("wbPrice"+i).value), nameTagId: document.getElementById("wbTag"+i).value };
@@ -13759,6 +13757,15 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
             '<button class="btn btn-ghost" id="clearSeasonEndBtn" style="color:var(--red);border-color:var(--red);">Clear (Un-end)</button>' +
           '</div>' +
           '<span class="error-text" id="seasonEndMsg" style="margin:0;"></span>' +
+          '<div style="margin-top:14px;">' +
+            '<div class="garage-title" style="color:var(--text);font-size:15px;margin-bottom:6px;">Season-Over Message</div>' +
+            '<div class="hint-text" style="margin-top:0;margin-bottom:8px;">After the end date passes, the Season page is replaced with \u201c<b>[this text]</b> is over! Hold on tight, new season incoming!\u201d If left blank, the season\u2019s name is used.</div>' +
+            '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">' +
+              '<input id="seasonEndedMsgInput" maxlength="60" placeholder="e.g. The Steampunk Season" style="flex:1;min-width:180px;background:var(--panel-2);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:10px 12px;font-size:14px;" />' +
+              '<button class="btn btn-primary" id="saveSeasonEndedMsgBtn">Save Message</button>' +
+              '<span class="error-text" id="seasonEndedMsgStatus" style="margin:0;"></span>' +
+            '</div>' +
+          '</div>' +
         '</div>'
       : '') +
 
@@ -13921,6 +13928,25 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
       msg.textContent = res.ok ? "Saved." : ("Error: " + res.error);
       if(res.ok) setTimeout(function(){ if(msg) msg.textContent = ""; }, 1500);
     });
+
+    var savedEndedMsgBtn = document.getElementById("saveSeasonEndedMsgBtn");
+    if(savedEndedMsgBtn){
+      // Prefill the current ended-message.
+      fetchSeasonConfig().then(function(cfg){
+        var inp = document.getElementById("seasonEndedMsgInput");
+        if(inp && cfg.endedMessage) inp.value = cfg.endedMessage;
+      });
+      savedEndedMsgBtn.addEventListener("click", async function(){
+        var status = document.getElementById("seasonEndedMsgStatus");
+        var val = document.getElementById("seasonEndedMsgInput").value.trim();
+        status.textContent = "Saving...";
+        var cfg = await fetchSeasonConfig();
+        cfg.endedMessage = val; // blank is allowed -> falls back to season name
+        var res = await saveSeasonConfig(cfg);
+        status.textContent = res.ok ? "Saved." : ("Error: " + res.error);
+        if(res.ok) setTimeout(function(){ if(status) status.textContent = ""; }, 1500);
+      });
+    }
 
     if(state.isSuperAdmin){
       // Populate current end date
@@ -18634,16 +18660,26 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
       avatarCatalogCache = results[2];
       garageCachesLoaded = true;
 
-      // Show ended banner if season has finished
+      // Season over: take over the whole page with the admin-set message and
+      // stop -- no pass, no levels, nothing else renders.
       var seasonIsOver = cfg.seasonEndsAt && Date.now() > cfg.seasonEndsAt;
       var seasonPanel = document.getElementById("seasonPanel");
       if(seasonIsOver && seasonPanel){
-        var endDate = new Date(cfg.seasonEndsAt);
-        var bannerDiv = document.createElement("div");
-        bannerDiv.style.cssText = "background:rgba(220,38,38,0.12);border:1px solid var(--red);border-radius:10px;padding:14px 18px;margin-bottom:18px;display:flex;align-items:center;gap:12px;";
-        bannerDiv.innerHTML = '<span style="font-size:22px;">\u26D4</span><div><div style="font-weight:700;color:var(--red);font-size:15px;">Season Ended</div><div style="font-size:13px;color:var(--muted);">This season ended on ' + endDate.toLocaleString() + '. Races no longer count toward the season leaderboard and no more rewards can be earned.</div></div>';
-        seasonPanel.insertBefore(bannerDiv, seasonPanel.firstChild);
+        var overName = (cfg.endedMessage && cfg.endedMessage.trim()) ? cfg.endedMessage.trim()
+          : (cfg.name && cfg.name.trim()) ? cfg.name.trim() : "This season";
+        seasonPanel.innerHTML =
+          '<div style="text-align:center;padding:60px 24px;">' +
+            '<div style="font-size:52px;margin-bottom:16px;">\u2699\uFE0F</div>' +
+            '<div style="font-family:\'Arial Black\',Impact,sans-serif;font-style:italic;font-size:30px;color:var(--text);margin-bottom:10px;">' + escapeHtml(overName) + ' is over!</div>' +
+            '<div style="font-size:17px;color:var(--amber);font-weight:700;">Hold on tight, new season incoming!</div>' +
+          '</div>';
+        return; // nothing else renders once the season has ended
       }
+
+      // Season live with a set end date: countdown is folded into the panel
+      // content below (a DOM insert here would be wiped by panel.innerHTML).
+      if(cfg.seasonEndsAt){ state._seasonEndsAt = cfg.seasonEndsAt; }
+      else { state._seasonEndsAt = null; }
 
       var levels = cfg.levels || [];
       var maxLevel = levels.length;
@@ -18718,6 +18754,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
           (hasPremium ? '<span style="font-size:11px;color:var(--amber);font-weight:700;text-transform:uppercase;letter-spacing:1px;">\u2605 Premium Active</span>' : '') +
         '</div>' +
         '<div class="hint-text" style="margin-top:0;margin-bottom:16px;">' + escapeHtml(progressLine) + '</div>' +
+        (cfg.seasonEndsAt ? '<div id="seasonCountdown" style="background:rgba(255,193,7,0.10);border:1px solid var(--amber);border-radius:10px;padding:12px 16px;margin-bottom:16px;text-align:center;font-weight:700;color:var(--amber);"></div>' : '') +
         (maxLevel === 0 ? '<div class="center-note">Check back once the season has rewards configured.</div>' :
           '<div class="season-row">' +
             '<div class="season-label-col">' +
@@ -18753,6 +18790,40 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
         }
       });
     });
+
+    // Kick off the live countdown ticker (no-op if there's no end date or the
+    // element isn't present).
+    startSeasonCountdown();
+  }
+
+  // Updates the #seasonCountdown box once a second. When the timer reaches
+  // zero, it re-renders the season page, which then shows the takeover screen.
+  // One shared interval so navigating away and back doesn't stack timers.
+  function startSeasonCountdown(){
+    if(window._seasonCountdownTimer){ clearInterval(window._seasonCountdownTimer); window._seasonCountdownTimer = null; }
+    function tick(){
+      var box = document.getElementById("seasonCountdown");
+      var endsAt = state._seasonEndsAt;
+      if(!box || !endsAt){ if(window._seasonCountdownTimer){ clearInterval(window._seasonCountdownTimer); window._seasonCountdownTimer = null; } return; }
+      var ms = endsAt - Date.now();
+      if(ms <= 0){
+        clearInterval(window._seasonCountdownTimer); window._seasonCountdownTimer = null;
+        // Season just ended while the player was looking at it -- re-render to
+        // show the "___ is over!" takeover.
+        if(state.screen === "season") renderSeason();
+        return;
+      }
+      var s = Math.floor(ms/1000);
+      var d = Math.floor(s/86400); s -= d*86400;
+      var h = Math.floor(s/3600); s -= h*3600;
+      var m = Math.floor(s/60); s -= m*60;
+      var parts = [];
+      if(d) parts.push(d + "d");
+      parts.push(h + "h", m + "m", s + "s");
+      box.innerHTML = "\u23F3 Season ends in " + parts.join(" ");
+    }
+    tick();
+    window._seasonCountdownTimer = setInterval(tick, 1000);
   }
 
 
