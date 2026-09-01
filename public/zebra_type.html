@@ -4574,6 +4574,11 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
         .filter(function(m){ return !m.isBanned && !m.isSuspended; });
 
       var totalTeamRaces = members.reduce(function(sum, m){
+        // Season scope: season races for THIS guild. All-time: lifetime races.
+        if(guildScope === "season"){
+          var gsr = m.guildSeasonStats;
+          return sum + ((gsr && gsr.guildId === g.id) ? (gsr.races || 0) : 0);
+        }
         return sum + ((m.guildStats && m.guildStats.guildId === g.id) ? (m.guildStats.races || 0) : 0);
       }, 0);
       var totalTeamPoints = members.reduce(function(sum, m){
@@ -11010,6 +11015,34 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     // Before the season's start time, races don't count either -- the season
     // isn't live yet, so points earned pre-start would be illegitimate.
     var seasonNotStarted = seasonCfgForStats.seasonStartsAt && Date.now() < seasonCfgForStats.seasonStartsAt;
+
+    // ── Auto-reset at season start ──────────────────────────────────────────
+    // When a season has GENUINELY started (start timestamp exists and passed)
+    // and this account hasn't been reset into that season yet, zero the
+    // season-scoped stats once. Keyed to seasonResetFor so it fires exactly
+    // once per real season -- never on a bare seasonId mismatch, which is what
+    // previously caused data loss on config rebuilds. Only runs when a start
+    // time is configured (otherwise resets stay manual via the admin button).
+    //
+    // CRITICAL: this also bumps seasonRacesOffset to the current all-time race
+    // count. The season *level* (pass progress) is derived from
+    // max(seasonStats.races, acc.races - seasonRacesOffset). Zeroing only
+    // seasonStats.races leaves the offset stale, so the pass still shows last
+    // season's completed tiers -- which is exactly the bug this fixes.
+    if(seasonCfgForStats.seasonId && seasonCfgForStats.seasonStartsAt
+        && Date.now() >= seasonCfgForStats.seasonStartsAt
+        && acc.seasonResetFor !== seasonCfgForStats.seasonId){
+      acc.seasonStats = { seasonId: seasonCfgForStats.seasonId, races: 0, sumWpm: 0, sumAccuracy: 0, bestWpm: 0, points: 0 };
+      acc.guildSeasonStats = { seasonId: seasonCfgForStats.seasonId, guildId: acc.guildId || null, points: 0, races: 0 };
+      acc.seasonRacesOffset = acc.races || 0; // reset pass-level progress
+      acc.claimedSeasonLevels = [];
+      acc.claimedSeasonPremiumLevels = [];
+      acc.seasonFreeClaimedLevel = 0;
+      acc.seasonPremiumClaimedLevel = 0;
+      acc.seasonBonusClaimedCount = 0;
+      acc.seasonResetFor = seasonCfgForStats.seasonId; // fire once
+    }
+
     acc.seasonStats = acc.seasonStats || { seasonId: null, races: 0, sumWpm: 0, sumAccuracy: 0, bestWpm: 0 };
     if(acc.seasonStats.seasonId !== seasonCfgForStats.seasonId && seasonCfgForStats.seasonId){
       // Update the seasonId to match current config, but DON'T reset stats.
@@ -11046,13 +11079,14 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     // rebuilds); it's zeroed explicitly by the "Reset Full Season" admin
     // button. It does reset when the player switches guilds (points are
     // per-guild), and only accrues while the season is live.
-    acc.guildSeasonStats = acc.guildSeasonStats || { seasonId: seasonCfgForStats.seasonId, guildId: acc.guildId || null, points: 0 };
+    acc.guildSeasonStats = acc.guildSeasonStats || { seasonId: seasonCfgForStats.seasonId, guildId: acc.guildId || null, points: 0, races: 0 };
     if(acc.guildSeasonStats.guildId !== acc.guildId){
-      acc.guildSeasonStats = { seasonId: seasonCfgForStats.seasonId, guildId: acc.guildId, points: 0 };
+      acc.guildSeasonStats = { seasonId: seasonCfgForStats.seasonId, guildId: acc.guildId, points: 0, races: 0 };
     }
     if(seasonCfgForStats.seasonId) acc.guildSeasonStats.seasonId = seasonCfgForStats.seasonId;
     if(acc.guildId && !seasonIsOver && !seasonNotStarted){
       acc.guildSeasonStats.points = (acc.guildSeasonStats.points || 0) + racePoints;
+      acc.guildSeasonStats.races = (acc.guildSeasonStats.races || 0) + 1;
     }
 
     // Track races per car rarity for rarity-based achievements.
@@ -14559,7 +14593,8 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
               var accRes = await getAccount(username);
               if(accRes.ok && accRes.account){
                 accRes.account.seasonStats = { seasonId: cfg.seasonId, races: 0, sumWpm: 0, sumAccuracy: 0, bestWpm: 0 };
-                accRes.account.guildSeasonStats = { seasonId: cfg.seasonId, guildId: accRes.account.guildId || null, points: 0 };
+                accRes.account.guildSeasonStats = { seasonId: cfg.seasonId, guildId: accRes.account.guildId || null, points: 0, races: 0 };
+                accRes.account.seasonResetFor = cfg.seasonId; // keep auto-reset from re-firing
                 accRes.account.claimedSeasonLevels = [];
                 accRes.account.claimedSeasonPremiumLevels = [];
                 accRes.account.seasonRacesOffset = accRes.account.races || 0;
