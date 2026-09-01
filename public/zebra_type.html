@@ -7066,6 +7066,12 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     var titleEl = titleText
       ? '<span style="font-size:9px;font-style:italic;font-weight:700;' + styleForRarityText(titleRarity, '#fff') + 'text-shadow:-1px -1px 0 #000,1px -1px 0 #000,-1px 1px 0 #000,1px 1px 0 #000;line-height:1;">' + escapeHtml(titleText) + '</span>'
       : '';
+    // If the title is the same text as the name (e.g. the Automaton, whose
+    // display name IS its title), don't render it twice -- that overlap is the
+    // doubled-text bug. Compare trimmed/case-insensitively to be safe.
+    if(titleText && name && String(titleText).trim().toLowerCase() === String(name).trim().toLowerCase()){
+      titleEl = '';
+    }
     return '<div class="car-nametag">' +
       '<img src="' + (imageSrc || DEFAULT_NAME_TAG) + '" alt="" />' +
       '<div class="car-nametag-text">' +
@@ -9820,10 +9826,8 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
             if(raceState.opponents) raceState.opponents.forEach(function(opp){ moveOpponentCar(opp); });
             var trackEl = document.querySelector(".track.has-custom-track");
             if(trackEl) trackEl.style.animationPlayState = "running";
-            var nameTagEl = document.querySelector("#playerCar .car-nametag");
-            if(nameTagEl) nameTagEl.style.display = "none";
-            // Also hide opponent nametags
-            document.querySelectorAll(".car-nametag").forEach(function(el){ el.style.display = "none"; });
+            // Name tags stay visible for the whole race (players asked for them
+            // to persist), so we no longer hide them on GO.
             startRaceLoop();
           });
         },
@@ -10345,8 +10349,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
         input.focus();
         var trackEl = document.querySelector(".track.has-custom-track");
         if(trackEl) trackEl.style.animationPlayState = "running";
-        var nameTagEl = document.querySelector("#playerCar .car-nametag");
-        if(nameTagEl) nameTagEl.style.display = "none";
+        // Name tags persist for the whole race -- no longer hidden on start.
         startRaceLoop();
       });
     }
