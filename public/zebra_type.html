@@ -14796,8 +14796,18 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
             rpKeys = ["account:" + state.user.username.toLowerCase()];
           }
           var rpCount = 0;
+          var rpTotal = rpKeys.length;
+          // Throttle: this loop does ~2 requests per account (read + write).
+          // The API allows 600 requests/minute/IP, so without a delay a few
+          // hundred accounts would blow past the limit and start getting 429'd
+          // mid-run -- which is what made the button hang on "Resetting...".
+          // A 250ms gap keeps us near ~240 accounts/min, comfortably under.
+          // The tradeoff is speed: this is deliberately slow but reliable.
+          function rpSleep(ms){ return new Promise(function(r){ setTimeout(r, ms); }); }
           for(var rpi = 0; rpi < rpKeys.length; rpi++){
             var rpUser = rpKeys[rpi].replace(/^account:/, "");
+            // Live progress so it never looks frozen.
+            setMsg("Resetting " + (rpi+1) + " / " + rpTotal + "\u2026", "var(--muted)");
             try{
               var rpRes = await getAccount(rpUser);
               if(rpRes.ok && rpRes.account){
@@ -14814,6 +14824,8 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
                 }
               }
             }catch(e){ console.warn("Reset failed for", rpUser, e); }
+            // Pace the loop to stay under the rate limit.
+            await rpSleep(250);
           }
           setMsg("Done! " + rpCount + " account" + (rpCount===1?"":"s") + " reset to level 1.", "var(--green)");
         }catch(e){
