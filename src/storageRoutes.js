@@ -2251,8 +2251,6 @@ router.post("/season-perks", async (req, res) => {
     next.automaton.title = String(body.automaton.title || "").slice(0, 60);
     next.automaton.vehicleId = String(body.automaton.vehicleId || "").slice(0, 60);
     next.automaton.cogReward = Math.max(0, Math.min(10000, _num(body.automaton.cogReward)));
-    // Spawn chance as a percentage, 0-100. Clamped so a typo can't make every
-    // bot the Automaton (100) or a negative value.
     next.automaton.spawnChance = Math.max(0, Math.min(100, _num(body.automaton.spawnChance)));
   }
   if (Array.isArray(body.workbenchTiers) && body.workbenchTiers.length === 5) {

@@ -274,9 +274,8 @@ function makeRaceServer(httpServer) {
     // can't influence whether the Automaton appears or whether it was beaten.
     let isAutomaton = false;
     let automatonTitle = bot.titleText || "";
-    // Default to the bot's own (known-resolvable) car; only override if the
-    // admin actually configured a vehicle. This prevents an unset/blank
-    // vehicleId from rendering as an empty black car.
+    // Default to the bot's own (resolvable) car; only override if a vehicle is
+    // actually configured, so an unset vehicle never renders as a blank car.
     let automatonCar = bot.carId;
     try {
       const perks = await getSeasonPerks();
@@ -286,8 +285,6 @@ function makeRaceServer(httpServer) {
       if (perks && perks.automatonEnabled && perks.automaton && perks.automaton.title && Math.random() < spawnProb) {
         isAutomaton = true;
         automatonTitle = perks.automaton.title;
-        // Only override the car if a non-empty vehicle was configured; otherwise
-        // keep the bot's resolvable car so it never renders blank.
         if (perks.automaton.vehicleId) automatonCar = perks.automaton.vehicleId;
         room.automatonReward = Math.max(0, Number(perks.automaton.cogReward) || 0);
       }
@@ -298,7 +295,7 @@ function makeRaceServer(httpServer) {
       carId: isAutomaton ? automatonCar : ((liveAccount && liveAccount.equippedCarId) || bot.carId),
       recentWpm,
       // The Automaton presents as its OWN entity: its display name IS its title,
-      // so it never shows the hijacked bot's name. A normal bot keeps its name.
+      // so it never shows the hijacked bot's name.
       displayName: isAutomaton ? automatonTitle : ((liveAccount && liveAccount.displayName) || bot.displayName),
       guildTag: "", guildColor: "",
       titleText: isAutomaton ? automatonTitle : (bot.titleText || ""),
