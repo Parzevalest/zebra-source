@@ -6260,6 +6260,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     else if(state.screen === "adminAnticheat") renderAdminAnticheat();
     else if(state.screen === "adminAutomod") renderAdminAutomod();
     else if(state.screen === "adminSeasonPerks") renderAdminSeasonPerks();
+    else if(state.screen === "adminGrantAll") renderAdminGrantAll();
     else if(state.screen === "account") renderAccount();
     else if(state.screen === "shop") renderShop();
     else if(state.screen === "leaderboard") renderLeaderboard();
@@ -11612,6 +11613,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
         (state.isSuperAdmin ? '<button class="admin-navbar-tab' + (activeTab==="anticheat" ? " active" : "") + '" data-admin-tab="anticheat">\uD83D\uDEE1\uFE0F Anti-Cheat</button>' : '') +
       (state.isSuperAdmin ? '<button class="admin-navbar-tab' + (activeTab==="automod" ? " active" : "") + '" data-admin-tab="automod">\uD83E\uDDF9 Automod</button>' : '') +
       (state.isSuperAdmin ? '<button class="admin-navbar-tab' + (activeTab==="seasonperks" ? " active" : "") + '" data-admin-tab="seasonperks">\u2699\uFE0F Season Perks</button>' : '') +
+      (state.isSuperAdmin ? '<button class="admin-navbar-tab' + (activeTab==="grantall" ? " active" : "") + '" data-admin-tab="grantall">\uD83D\uDCE6 Send to All</button>' : '') +
       '</div>' +
       '<div class="admin-navbar-right">' +
         '<div class="userpill">Admin: <b>' + escapeHtml(state.adminUsername || "") + '</b></div>' +
@@ -11663,6 +11665,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
           : tab === "anticheat" ? "adminAnticheat"
           : tab === "automod" ? "adminAutomod"
           : tab === "seasonperks" ? "adminSeasonPerks"
+          : tab === "grantall" ? "adminGrantAll"
           : "adminAchievements";
         renderApp();
       });
@@ -11702,6 +11705,98 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
   // substring, and so rejected Peacock, Hancock, Dickens, Dickinson, Cockpit
   // and Cocktail -- real surnames and ordinary words.
   var automodDraft = null;
+
+  function renderAdminGrantAll(){
+    if(!state.isAdmin || !state.isSuperAdmin){ state.screen = "auth"; renderApp(); return; }
+    state.adminTab = "grantall";
+
+    app.innerHTML =
+      brandHeader() +
+      adminNavBar("grantall") +
+      '<div class="panel" style="margin-bottom:16px;">' +
+        '<div class="garage-title" style="color:var(--text);font-size:18px;margin-bottom:4px;">\uD83D\uDCE6 Send to All Players</div>' +
+        '<div class="hint-text" style="margin-top:0;margin-bottom:14px;">Grants coins and/or one item to <b>every</b> account. Banned/suspended accounts are skipped. Always preview first \u2014 this touches every player and can\u2019t be undone.</div>' +
+        '<div style="display:flex;flex-direction:column;gap:14px;max-width:520px;">' +
+          '<label style="font-size:13px;color:var(--muted);">Coins (optional):<br><input type="number" id="grantCoins" value="0" min="0" style="width:160px;padding:8px;border-radius:6px;background:var(--panel-2);color:var(--text);border:1px solid var(--line);margin-top:4px;" /></label>' +
+          '<label style="font-size:13px;color:var(--muted);">Item type (optional):<br>' +
+            '<select id="grantItemType" style="padding:8px;border-radius:6px;background:var(--panel-2);color:var(--text);border:1px solid var(--line);margin-top:4px;max-width:220px;">' +
+              '<option value="">\u2014 none \u2014</option>' +
+              '<option value="car">Car</option>' +
+              '<option value="nameTag">Name Tag</option>' +
+              '<option value="title">Title</option>' +
+              '<option value="avatar">Avatar Piece</option>' +
+            '</select>' +
+          '</label>' +
+          '<label style="font-size:13px;color:var(--muted);">Item ID (required if an item type is chosen):<br><input type="text" id="grantItemId" placeholder="the item\u2019s id" style="width:100%;padding:8px;border-radius:6px;background:var(--panel-2);color:var(--text);border:1px solid var(--line);margin-top:4px;" /></label>' +
+          '<label style="font-size:13px;color:var(--muted);" id="grantSlotWrap" style="display:none;">Avatar slot (avatar only):<br><input type="text" id="grantSlot" placeholder="e.g. hat / face / body" style="width:220px;padding:8px;border-radius:6px;background:var(--panel-2);color:var(--text);border:1px solid var(--line);margin-top:4px;" /></label>' +
+        '</div>' +
+        '<div style="display:flex;gap:10px;margin-top:16px;flex-wrap:wrap;">' +
+          '<button class="small-btn" id="grantPreviewBtn">\uD83D\uDD0D Preview (dry run)</button>' +
+          '<button class="btn btn-primary" id="grantConfirmBtn" disabled style="opacity:.5;">Send to All</button>' +
+        '</div>' +
+        '<div id="grantMsg" style="font-size:13px;margin-top:12px;min-height:18px;"></div>' +
+      '</div>';
+
+    attachAdminNavListeners();
+
+    // Show the avatar slot field only when the avatar type is picked.
+    var typeSel = document.getElementById("grantItemType");
+    typeSel.addEventListener("change", function(){
+      document.getElementById("grantSlotWrap").style.display = typeSel.value === "avatar" ? "block" : "none";
+    });
+
+    var previewed = false; // must preview before the real send is enabled
+    function buildPayload(dryRun){
+      var p = { dryRun: dryRun, coins: _num(document.getElementById("grantCoins").value) };
+      var it = document.getElementById("grantItemType").value;
+      if(it){
+        p.itemType = it;
+        p.itemId = document.getElementById("grantItemId").value.trim();
+        if(it === "avatar") p.slot = document.getElementById("grantSlot").value.trim();
+      }
+      return p;
+    }
+    async function callGrant(dryRun){
+      var msg = document.getElementById("grantMsg");
+      var payload = buildPayload(dryRun);
+      if(!payload.coins && !payload.itemType){ msg.style.color = "var(--red)"; msg.textContent = "Enter coins or pick an item first."; return null; }
+      msg.style.color = "var(--muted)"; msg.textContent = dryRun ? "Previewing\u2026" : "Sending to all players\u2026";
+      try{
+        var r = await fetch(SERVER_URL + "/api/grant-all", {
+          method: "POST", headers: { "Content-Type": "application/json", "x-session-token": currentToken || "" },
+          body: JSON.stringify(payload)
+        });
+        var d = await r.json().catch(function(){ return {}; });
+        if(!r.ok){ msg.style.color = "var(--red)"; msg.textContent = "Failed: " + (d.message || d.error || r.status); return null; }
+        return d;
+      }catch(e){ msg.style.color = "var(--red)"; msg.textContent = "Error: " + ((e&&e.message)||e); return null; }
+    }
+
+    document.getElementById("grantPreviewBtn").addEventListener("click", async function(){
+      var d = await callGrant(true);
+      if(!d) return;
+      var msg = document.getElementById("grantMsg");
+      msg.style.color = "var(--amber)";
+      msg.innerHTML = "Preview: this would grant to <b>" + d.granted + "</b> account(s), skip " + d.skipped + " banned, " + d.failed + " unreadable. Press <b>Send to All</b> to apply.";
+      previewed = true;
+      var confirm = document.getElementById("grantConfirmBtn");
+      confirm.disabled = false; confirm.style.opacity = "1";
+    });
+
+    document.getElementById("grantConfirmBtn").addEventListener("click", async function(){
+      if(!previewed) return;
+      if(!window.confirm("Grant to EVERY player? This cannot be undone.")) return;
+      var d = await callGrant(false);
+      if(!d) return;
+      var msg = document.getElementById("grantMsg");
+      msg.style.color = "var(--green)";
+      msg.innerHTML = "\u2705 Done. Granted to <b>" + d.granted + "</b> account(s), skipped " + d.skipped + ", failed " + d.failed + ".";
+      // Require a fresh preview before another send.
+      previewed = false;
+      var confirm = document.getElementById("grantConfirmBtn");
+      confirm.disabled = true; confirm.style.opacity = ".5";
+    });
+  }
 
   function renderAdminSeasonPerks(){
     if(!state.isAdmin || !state.isSuperAdmin){ state.screen = "auth"; renderApp(); return; }
@@ -13757,15 +13852,6 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
             '<button class="btn btn-ghost" id="clearSeasonEndBtn" style="color:var(--red);border-color:var(--red);">Clear (Un-end)</button>' +
           '</div>' +
           '<span class="error-text" id="seasonEndMsg" style="margin:0;"></span>' +
-          '<div style="margin-top:14px;">' +
-            '<div class="garage-title" style="color:var(--text);font-size:15px;margin-bottom:6px;">Season-Over Message</div>' +
-            '<div class="hint-text" style="margin-top:0;margin-bottom:8px;">After the end date passes, the Season page is replaced with \u201c<b>[this text]</b> is over! Hold on tight, new season incoming!\u201d If left blank, the season\u2019s name is used.</div>' +
-            '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">' +
-              '<input id="seasonEndedMsgInput" maxlength="60" placeholder="e.g. The Steampunk Season" style="flex:1;min-width:180px;background:var(--panel-2);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:10px 12px;font-size:14px;" />' +
-              '<button class="btn btn-primary" id="saveSeasonEndedMsgBtn">Save Message</button>' +
-              '<span class="error-text" id="seasonEndedMsgStatus" style="margin:0;"></span>' +
-            '</div>' +
-          '</div>' +
         '</div>'
       : '') +
 
@@ -13928,25 +14014,6 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
       msg.textContent = res.ok ? "Saved." : ("Error: " + res.error);
       if(res.ok) setTimeout(function(){ if(msg) msg.textContent = ""; }, 1500);
     });
-
-    var savedEndedMsgBtn = document.getElementById("saveSeasonEndedMsgBtn");
-    if(savedEndedMsgBtn){
-      // Prefill the current ended-message.
-      fetchSeasonConfig().then(function(cfg){
-        var inp = document.getElementById("seasonEndedMsgInput");
-        if(inp && cfg.endedMessage) inp.value = cfg.endedMessage;
-      });
-      savedEndedMsgBtn.addEventListener("click", async function(){
-        var status = document.getElementById("seasonEndedMsgStatus");
-        var val = document.getElementById("seasonEndedMsgInput").value.trim();
-        status.textContent = "Saving...";
-        var cfg = await fetchSeasonConfig();
-        cfg.endedMessage = val; // blank is allowed -> falls back to season name
-        var res = await saveSeasonConfig(cfg);
-        status.textContent = res.ok ? "Saved." : ("Error: " + res.error);
-        if(res.ok) setTimeout(function(){ if(status) status.textContent = ""; }, 1500);
-      });
-    }
 
     if(state.isSuperAdmin){
       // Populate current end date
@@ -18660,26 +18727,16 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
       avatarCatalogCache = results[2];
       garageCachesLoaded = true;
 
-      // Season over: take over the whole page with the admin-set message and
-      // stop -- no pass, no levels, nothing else renders.
+      // Show ended banner if season has finished
       var seasonIsOver = cfg.seasonEndsAt && Date.now() > cfg.seasonEndsAt;
       var seasonPanel = document.getElementById("seasonPanel");
       if(seasonIsOver && seasonPanel){
-        var overName = (cfg.endedMessage && cfg.endedMessage.trim()) ? cfg.endedMessage.trim()
-          : (cfg.name && cfg.name.trim()) ? cfg.name.trim() : "This season";
-        seasonPanel.innerHTML =
-          '<div style="text-align:center;padding:60px 24px;">' +
-            '<div style="font-size:52px;margin-bottom:16px;">\u2699\uFE0F</div>' +
-            '<div style="font-family:\'Arial Black\',Impact,sans-serif;font-style:italic;font-size:30px;color:var(--text);margin-bottom:10px;">' + escapeHtml(overName) + ' is over!</div>' +
-            '<div style="font-size:17px;color:var(--amber);font-weight:700;">Hold on tight, new season incoming!</div>' +
-          '</div>';
-        return; // nothing else renders once the season has ended
+        var endDate = new Date(cfg.seasonEndsAt);
+        var bannerDiv = document.createElement("div");
+        bannerDiv.style.cssText = "background:rgba(220,38,38,0.12);border:1px solid var(--red);border-radius:10px;padding:14px 18px;margin-bottom:18px;display:flex;align-items:center;gap:12px;";
+        bannerDiv.innerHTML = '<span style="font-size:22px;">\u26D4</span><div><div style="font-weight:700;color:var(--red);font-size:15px;">Season Ended</div><div style="font-size:13px;color:var(--muted);">This season ended on ' + endDate.toLocaleString() + '. Races no longer count toward the season leaderboard and no more rewards can be earned.</div></div>';
+        seasonPanel.insertBefore(bannerDiv, seasonPanel.firstChild);
       }
-
-      // Season live with a set end date: countdown is folded into the panel
-      // content below (a DOM insert here would be wiped by panel.innerHTML).
-      if(cfg.seasonEndsAt){ state._seasonEndsAt = cfg.seasonEndsAt; }
-      else { state._seasonEndsAt = null; }
 
       var levels = cfg.levels || [];
       var maxLevel = levels.length;
@@ -18754,7 +18811,6 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
           (hasPremium ? '<span style="font-size:11px;color:var(--amber);font-weight:700;text-transform:uppercase;letter-spacing:1px;">\u2605 Premium Active</span>' : '') +
         '</div>' +
         '<div class="hint-text" style="margin-top:0;margin-bottom:16px;">' + escapeHtml(progressLine) + '</div>' +
-        (cfg.seasonEndsAt ? '<div id="seasonCountdown" style="background:rgba(255,193,7,0.10);border:1px solid var(--amber);border-radius:10px;padding:12px 16px;margin-bottom:16px;text-align:center;font-weight:700;color:var(--amber);"></div>' : '') +
         (maxLevel === 0 ? '<div class="center-note">Check back once the season has rewards configured.</div>' :
           '<div class="season-row">' +
             '<div class="season-label-col">' +
@@ -18790,40 +18846,6 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
         }
       });
     });
-
-    // Kick off the live countdown ticker (no-op if there's no end date or the
-    // element isn't present).
-    startSeasonCountdown();
-  }
-
-  // Updates the #seasonCountdown box once a second. When the timer reaches
-  // zero, it re-renders the season page, which then shows the takeover screen.
-  // One shared interval so navigating away and back doesn't stack timers.
-  function startSeasonCountdown(){
-    if(window._seasonCountdownTimer){ clearInterval(window._seasonCountdownTimer); window._seasonCountdownTimer = null; }
-    function tick(){
-      var box = document.getElementById("seasonCountdown");
-      var endsAt = state._seasonEndsAt;
-      if(!box || !endsAt){ if(window._seasonCountdownTimer){ clearInterval(window._seasonCountdownTimer); window._seasonCountdownTimer = null; } return; }
-      var ms = endsAt - Date.now();
-      if(ms <= 0){
-        clearInterval(window._seasonCountdownTimer); window._seasonCountdownTimer = null;
-        // Season just ended while the player was looking at it -- re-render to
-        // show the "___ is over!" takeover.
-        if(state.screen === "season") renderSeason();
-        return;
-      }
-      var s = Math.floor(ms/1000);
-      var d = Math.floor(s/86400); s -= d*86400;
-      var h = Math.floor(s/3600); s -= h*3600;
-      var m = Math.floor(s/60); s -= m*60;
-      var parts = [];
-      if(d) parts.push(d + "d");
-      parts.push(h + "h", m + "m", s + "s");
-      box.innerHTML = "\u23F3 Season ends in " + parts.join(" ");
-    }
-    tick();
-    window._seasonCountdownTimer = setInterval(tick, 1000);
   }
 
 
