@@ -5920,6 +5920,8 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     var cfg = await fetchSeasonConfig();
     // Don't grant rewards after season ends
     if(cfg.seasonEndsAt && Date.now() > cfg.seasonEndsAt) return [];
+    // ...or before it starts.
+    if(cfg.seasonStartsAt && Date.now() < cfg.seasonStartsAt) return [];
     var levels = cfg.levels || [];
     var maxLevel = levels.length;
 
@@ -10998,6 +11000,9 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
 
     var seasonCfgForStats = await fetchSeasonConfig();
     var seasonIsOver = seasonCfgForStats.seasonEndsAt && Date.now() > seasonCfgForStats.seasonEndsAt;
+    // Before the season's start time, races don't count either -- the season
+    // isn't live yet, so points earned pre-start would be illegitimate.
+    var seasonNotStarted = seasonCfgForStats.seasonStartsAt && Date.now() < seasonCfgForStats.seasonStartsAt;
     acc.seasonStats = acc.seasonStats || { seasonId: null, races: 0, sumWpm: 0, sumAccuracy: 0, bestWpm: 0 };
     if(acc.seasonStats.seasonId !== seasonCfgForStats.seasonId && seasonCfgForStats.seasonId){
       // Update the seasonId to match current config, but DON'T reset stats.
@@ -11006,7 +11011,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
       // Auto-resetting here caused data loss whenever the config was rebuilt.
       acc.seasonStats.seasonId = seasonCfgForStats.seasonId;
     }
-    if(!seasonIsOver){
+    if(!seasonIsOver && !seasonNotStarted){
       acc.seasonStats.races += 1;
       acc.seasonStats.sumWpm += wpm;
       acc.seasonStats.sumAccuracy += accuracy;
@@ -11873,7 +11878,6 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
             '<label style="font-size:13px;color:var(--muted);">Title shown on the Automaton:<br><input type="text" id="autoTitle" value="' + escapeHtml(auto.title || "") + '" maxlength="60" placeholder="e.g. The Automaton" style="width:100%;padding:8px;border-radius:6px;background:var(--panel-2);color:var(--text);border:1px solid var(--line);margin-top:4px;" /></label>' +
             '<label style="font-size:13px;color:var(--muted);">Vehicle it drives: ' + carSelect("autoVehicle", auto.vehicleId || "") + '</label>' +
             '<label style="font-size:13px;color:var(--muted);">Cogs awarded for beating it:<br><input type="number" id="autoReward" value="' + _num(auto.cogReward) + '" min="0" max="10000" style="width:120px;padding:8px;border-radius:6px;background:var(--panel-2);color:var(--text);border:1px solid var(--line);margin-top:4px;" /></label>' +
-            '<label style="font-size:13px;color:var(--muted);">Spawn chance (%) \u2014 how often it replaces a bot:<br><input type="number" id="autoSpawn" value="' + (auto.spawnChance !== undefined && auto.spawnChance !== null ? auto.spawnChance : 2.5) + '" min="0" max="100" step="0.1" style="width:120px;padding:8px;border-radius:6px;background:var(--panel-2);color:var(--text);border:1px solid var(--line);margin-top:4px;" /><span style="font-size:11px;color:var(--muted);margin-left:8px;">default 2.5</span></label>' +
           '</div>' +
         '</div>' +
 
@@ -11922,8 +11926,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
           automaton: {
             title: document.getElementById("autoTitle").value,
             vehicleId: document.getElementById("autoVehicle").value,
-            cogReward: _num(document.getElementById("autoReward").value),
-            spawnChance: _num(document.getElementById("autoSpawn").value)
+            cogReward: _num(document.getElementById("autoReward").value)
           },
           workbenchTiers: [0,1,2,3,4].map(function(i){
             return { price: _num(document.getElementById("wbPrice"+i).value), nameTagId: document.getElementById("wbTag"+i).value };
@@ -13854,6 +13857,37 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
             '<button class="btn btn-ghost" id="clearSeasonEndBtn" style="color:var(--red);border-color:var(--red);">Clear (Un-end)</button>' +
           '</div>' +
           '<span class="error-text" id="seasonEndMsg" style="margin:0;"></span>' +
+
+          '<div style="border-top:1px solid var(--line);margin-top:14px;padding-top:14px;">' +
+            '<div class="garage-title" style="color:var(--text);font-size:15px;margin-bottom:6px;">Season Start Date</div>' +
+            '<div class="hint-text" style="margin-top:0;margin-bottom:10px;">Set when the season begins. Before this time, the Season page shows a countdown and the upcoming season name instead of the pass. At the start time it flips over automatically and the pass goes live.</div>' +
+            '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:6px;">' +
+              '<input type="datetime-local" id="seasonStartsAtInput" style="background:var(--panel-2);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:9px 12px;font-size:14px;" />' +
+              '<button class="btn btn-primary" id="setSeasonStartBtn">Set Start Date</button>' +
+              '<button class="btn btn-ghost" id="clearSeasonStartBtn" style="color:var(--red);border-color:var(--red);">Clear</button>' +
+            '</div>' +
+            '<span class="error-text" id="seasonStartMsg" style="margin:0;"></span>' +
+          '</div>' +
+
+          '<div style="border-top:1px solid var(--line);margin-top:14px;padding-top:14px;">' +
+            '<div class="garage-title" style="color:var(--text);font-size:15px;margin-bottom:6px;">Pre-Season Name (countdown screen)</div>' +
+            '<div class="hint-text" style="margin-top:0;margin-bottom:8px;">Shown big on the pre-start countdown screen (e.g. \u201cThe Steampunk Season\u201d). If blank, the season\u2019s name is used.</div>' +
+            '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">' +
+              '<input id="seasonUpcomingNameInput" maxlength="60" placeholder="e.g. The Steampunk Season" style="flex:1;min-width:180px;background:var(--panel-2);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:10px 12px;font-size:14px;" />' +
+              '<button class="btn btn-primary" id="saveUpcomingNameBtn">Save</button>' +
+              '<span class="error-text" id="seasonUpcomingNameStatus" style="margin:0;"></span>' +
+            '</div>' +
+          '</div>' +
+
+          '<div style="border-top:1px solid var(--line);margin-top:14px;padding-top:14px;">' +
+            '<div class="garage-title" style="color:var(--text);font-size:15px;margin-bottom:6px;">Season-Over Name (ended screen)</div>' +
+            '<div class="hint-text" style="margin-top:0;margin-bottom:8px;">After the end date passes, the page shows \u201c<b>[this]</b> is over! Hold on tight, new season incoming!\u201d If blank, the season\u2019s name is used.</div>' +
+            '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">' +
+              '<input id="seasonEndedMsgInput" maxlength="60" placeholder="e.g. The Steampunk Season" style="flex:1;min-width:180px;background:var(--panel-2);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:10px 12px;font-size:14px;" />' +
+              '<button class="btn btn-primary" id="saveSeasonEndedMsgBtn">Save</button>' +
+              '<span class="error-text" id="seasonEndedMsgStatus" style="margin:0;"></span>' +
+            '</div>' +
+          '</div>' +
         '</div>'
       : '') +
 
@@ -14058,6 +14092,64 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
           msg.style.color = "var(--green)"; msg.textContent = "Season un-ended. Active again.";
           setTimeout(function(){ renderAdminSeason(); }, 800);
         } else { msg.textContent = "Error: " + res.error; }
+      });
+
+      // --- Season START date ---
+      fetchSeasonConfig().then(function(cfg){
+        var inp = document.getElementById("seasonStartsAtInput");
+        if(inp && cfg.seasonStartsAt){
+          var d = new Date(cfg.seasonStartsAt);
+          inp.value = new Date(cfg.seasonStartsAt - d.getTimezoneOffset()*60000).toISOString().slice(0,16);
+        }
+        var upc = document.getElementById("seasonUpcomingNameInput");
+        if(upc && cfg.upcomingName) upc.value = cfg.upcomingName;
+        var em = document.getElementById("seasonEndedMsgInput");
+        if(em && cfg.endedMessage) em.value = cfg.endedMessage;
+      });
+
+      document.getElementById("setSeasonStartBtn").addEventListener("click", async function(){
+        var msg = document.getElementById("seasonStartMsg");
+        var inp = document.getElementById("seasonStartsAtInput");
+        if(!inp || !inp.value){ msg.textContent = "Pick a date and time."; return; }
+        var ts = new Date(inp.value).getTime();
+        if(isNaN(ts)){ msg.textContent = "Invalid date."; return; }
+        var cfg = await fetchSeasonConfig();
+        cfg.seasonStartsAt = ts;
+        var res = await saveSeasonConfig(cfg);
+        msg.style.color = res.ok ? "var(--green)" : "var(--red)";
+        msg.textContent = res.ok ? "Start date saved." : ("Error: " + res.error);
+      });
+
+      document.getElementById("clearSeasonStartBtn").addEventListener("click", async function(){
+        var msg = document.getElementById("seasonStartMsg");
+        var cfg = await fetchSeasonConfig();
+        cfg.seasonStartsAt = null;
+        var res = await saveSeasonConfig(cfg);
+        msg.style.color = res.ok ? "var(--green)" : "var(--red)";
+        msg.textContent = res.ok ? "Start date cleared \u2014 season is live now." : ("Error: " + res.error);
+        if(res.ok){ var inp = document.getElementById("seasonStartsAtInput"); if(inp) inp.value = ""; }
+      });
+
+      document.getElementById("saveUpcomingNameBtn").addEventListener("click", async function(){
+        var status = document.getElementById("seasonUpcomingNameStatus");
+        status.textContent = "Saving...";
+        var cfg = await fetchSeasonConfig();
+        cfg.upcomingName = document.getElementById("seasonUpcomingNameInput").value.trim();
+        var res = await saveSeasonConfig(cfg);
+        status.style.color = res.ok ? "var(--green)" : "var(--red)";
+        status.textContent = res.ok ? "Saved." : ("Error: " + res.error);
+        if(res.ok) setTimeout(function(){ if(status) status.textContent = ""; }, 1500);
+      });
+
+      document.getElementById("saveSeasonEndedMsgBtn").addEventListener("click", async function(){
+        var status = document.getElementById("seasonEndedMsgStatus");
+        status.textContent = "Saving...";
+        var cfg = await fetchSeasonConfig();
+        cfg.endedMessage = document.getElementById("seasonEndedMsgInput").value.trim();
+        var res = await saveSeasonConfig(cfg);
+        status.style.color = res.ok ? "var(--green)" : "var(--red)";
+        status.textContent = res.ok ? "Saved." : ("Error: " + res.error);
+        if(res.ok) setTimeout(function(){ if(status) status.textContent = ""; }, 1500);
       });
     }
 
@@ -18729,16 +18821,43 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
       avatarCatalogCache = results[2];
       garageCachesLoaded = true;
 
-      // Show ended banner if season has finished
-      var seasonIsOver = cfg.seasonEndsAt && Date.now() > cfg.seasonEndsAt;
       var seasonPanel = document.getElementById("seasonPanel");
-      if(seasonIsOver && seasonPanel){
-        var endDate = new Date(cfg.seasonEndsAt);
-        var bannerDiv = document.createElement("div");
-        bannerDiv.style.cssText = "background:rgba(220,38,38,0.12);border:1px solid var(--red);border-radius:10px;padding:14px 18px;margin-bottom:18px;display:flex;align-items:center;gap:12px;";
-        bannerDiv.innerHTML = '<span style="font-size:22px;">\u26D4</span><div><div style="font-weight:700;color:var(--red);font-size:15px;">Season Ended</div><div style="font-size:13px;color:var(--muted);">This season ended on ' + endDate.toLocaleString() + '. Races no longer count toward the season leaderboard and no more rewards can be earned.</div></div>';
-        seasonPanel.insertBefore(bannerDiv, seasonPanel.firstChild);
+      var nowT = Date.now();
+
+      // ── Not started yet: full pre-season takeover with a countdown to start ──
+      if(cfg.seasonStartsAt && nowT < cfg.seasonStartsAt && seasonPanel){
+        var startName = (cfg.upcomingName && cfg.upcomingName.trim()) ? cfg.upcomingName.trim()
+          : (cfg.name && cfg.name.trim()) ? cfg.name.trim() : "The new season";
+        seasonPanel.innerHTML =
+          '<div style="text-align:center;padding:60px 24px;">' +
+            '<div style="font-size:52px;margin-bottom:16px;">\u2699\uFE0F</div>' +
+            '<div style="font-family:\'Arial Black\',Impact,sans-serif;font-style:italic;font-size:30px;color:var(--text);margin-bottom:10px;">' + escapeHtml(startName) + '</div>' +
+            '<div style="font-size:17px;color:var(--amber);font-weight:700;margin-bottom:18px;">Starting soon \u2014 get ready!</div>' +
+            '<div id="seasonCountdown" style="display:inline-block;background:rgba(255,193,7,0.10);border:1px solid var(--amber);border-radius:10px;padding:12px 20px;font-weight:700;color:var(--amber);font-size:18px;"></div>' +
+          '</div>';
+        state._seasonCountdownTarget = cfg.seasonStartsAt;
+        state._seasonCountdownMode = "start";
+        startSeasonCountdown();
+        return; // nothing else renders before the season begins
       }
+
+      // ── Over: full takeover with the admin-set ended message ──
+      var seasonIsOver = cfg.seasonEndsAt && nowT > cfg.seasonEndsAt;
+      if(seasonIsOver && seasonPanel){
+        var overName = (cfg.endedMessage && cfg.endedMessage.trim()) ? cfg.endedMessage.trim()
+          : (cfg.name && cfg.name.trim()) ? cfg.name.trim() : "This season";
+        seasonPanel.innerHTML =
+          '<div style="text-align:center;padding:60px 24px;">' +
+            '<div style="font-size:52px;margin-bottom:16px;">\u2699\uFE0F</div>' +
+            '<div style="font-family:\'Arial Black\',Impact,sans-serif;font-style:italic;font-size:30px;color:var(--text);margin-bottom:10px;">' + escapeHtml(overName) + ' is over!</div>' +
+            '<div style="font-size:17px;color:var(--amber);font-weight:700;">Hold on tight, new season incoming!</div>' +
+          '</div>';
+        return;
+      }
+
+      // ── Live: fold a countdown-to-end into the panel content below. ──
+      state._seasonCountdownTarget = cfg.seasonEndsAt || null;
+      state._seasonCountdownMode = "end";
 
       var levels = cfg.levels || [];
       var maxLevel = levels.length;
@@ -18813,6 +18932,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
           (hasPremium ? '<span style="font-size:11px;color:var(--amber);font-weight:700;text-transform:uppercase;letter-spacing:1px;">\u2605 Premium Active</span>' : '') +
         '</div>' +
         '<div class="hint-text" style="margin-top:0;margin-bottom:16px;">' + escapeHtml(progressLine) + '</div>' +
+        (cfg.seasonEndsAt ? '<div id="seasonCountdown" style="background:rgba(255,193,7,0.10);border:1px solid var(--amber);border-radius:10px;padding:12px 16px;margin-bottom:16px;text-align:center;font-weight:700;color:var(--amber);"></div>' : '') +
         (maxLevel === 0 ? '<div class="center-note">Check back once the season has rewards configured.</div>' :
           '<div class="season-row">' +
             '<div class="season-label-col">' +
@@ -18847,7 +18967,44 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
           claimBtn.textContent = 'Claim Now';
         }
       });
+
+      // Live season countdown-to-end ticker (folded into the panel above).
+      startSeasonCountdown();
     });
+  }
+
+  // Shared season countdown ticker. Updates #seasonCountdown once a second in
+  // whichever mode was set: "start" counts down to the season beginning (then
+  // re-renders to reveal the pass), "end" counts down to the season finishing
+  // (then re-renders to show the "___ is over!" takeover). One shared interval
+  // so navigating away and back doesn't stack timers.
+  function startSeasonCountdown(){
+    if(window._seasonCountdownTimer){ clearInterval(window._seasonCountdownTimer); window._seasonCountdownTimer = null; }
+    function tick(){
+      var box = document.getElementById("seasonCountdown");
+      var target = state._seasonCountdownTarget;
+      var mode = state._seasonCountdownMode;
+      if(!box || !target){ if(window._seasonCountdownTimer){ clearInterval(window._seasonCountdownTimer); window._seasonCountdownTimer = null; } return; }
+      var ms = target - Date.now();
+      if(ms <= 0){
+        clearInterval(window._seasonCountdownTimer); window._seasonCountdownTimer = null;
+        // Crossed the boundary while the player was watching -- re-render so the
+        // pass appears (start) or the takeover shows (end).
+        if(state.screen === "season") renderSeason();
+        return;
+      }
+      var s = Math.floor(ms/1000);
+      var d = Math.floor(s/86400); s -= d*86400;
+      var h = Math.floor(s/3600); s -= h*3600;
+      var m = Math.floor(s/60); s -= m*60;
+      var parts = [];
+      if(d) parts.push(d + "d");
+      parts.push(h + "h", m + "m", s + "s");
+      var verb = mode === "start" ? "Season starts in " : "\u23F3 Season ends in ";
+      box.innerHTML = verb + parts.join(" ");
+    }
+    tick();
+    window._seasonCountdownTimer = setInterval(tick, 1000);
   }
 
 
