@@ -11878,6 +11878,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
             '<label style="font-size:13px;color:var(--muted);">Title shown on the Automaton:<br><input type="text" id="autoTitle" value="' + escapeHtml(auto.title || "") + '" maxlength="60" placeholder="e.g. The Automaton" style="width:100%;padding:8px;border-radius:6px;background:var(--panel-2);color:var(--text);border:1px solid var(--line);margin-top:4px;" /></label>' +
             '<label style="font-size:13px;color:var(--muted);">Vehicle it drives: ' + carSelect("autoVehicle", auto.vehicleId || "") + '</label>' +
             '<label style="font-size:13px;color:var(--muted);">Cogs awarded for beating it:<br><input type="number" id="autoReward" value="' + _num(auto.cogReward) + '" min="0" max="10000" style="width:120px;padding:8px;border-radius:6px;background:var(--panel-2);color:var(--text);border:1px solid var(--line);margin-top:4px;" /></label>' +
+            '<label style="font-size:13px;color:var(--muted);">Spawn chance (%) \u2014 how often it replaces a bot:<br><input type="number" id="autoSpawn" value="' + (auto.spawnChance !== undefined && auto.spawnChance !== null ? auto.spawnChance : 2.5) + '" min="0" max="100" step="0.1" style="width:120px;padding:8px;border-radius:6px;background:var(--panel-2);color:var(--text);border:1px solid var(--line);margin-top:4px;" /><span style="font-size:11px;color:var(--muted);margin-left:8px;">default 2.5</span></label>' +
           '</div>' +
         '</div>' +
 
@@ -11926,7 +11927,8 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
           automaton: {
             title: document.getElementById("autoTitle").value,
             vehicleId: document.getElementById("autoVehicle").value,
-            cogReward: _num(document.getElementById("autoReward").value)
+            cogReward: _num(document.getElementById("autoReward").value),
+            spawnChance: _num(document.getElementById("autoSpawn").value)
           },
           workbenchTiers: [0,1,2,3,4].map(function(i){
             return { price: _num(document.getElementById("wbPrice"+i).value), nameTagId: document.getElementById("wbTag"+i).value };
