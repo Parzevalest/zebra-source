@@ -4535,6 +4535,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
   // member's guild-scoped race count), with the guild's average WPM and
   // accuracy shown as the mean of its members' all-time averages.
   async function loadGuildsLeaderboard(){
+    var guildScope = state.guildLbScope || "allTime"; // "season" | "allTime"
     var guilds = await fetchAllGuilds();
     if(!guilds.length) return [];
 
@@ -4576,9 +4577,12 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
         return sum + ((m.guildStats && m.guildStats.guildId === g.id) ? (m.guildStats.races || 0) : 0);
       }, 0);
       var totalTeamPoints = members.reduce(function(sum, m){
-        // Only count points earned since the member joined this guild.
-        // guildPointsOffset is saved at join time so pre-join points
-        // don't inflate the guild's total.
+        // Season scope: sum each member's season-scoped guild points (only for
+        // THIS guild, current season). All-time: points since joining.
+        if(guildScope === "season"){
+          var gss = m.guildSeasonStats;
+          return sum + Math.max(0, (gss && gss.guildId === g.id) ? (gss.points || 0) : 0);
+        }
         var offset = (m.guildStats && m.guildStats.guildId === g.id) ? (m.guildStats.pointsOffset || 0) : (m.totalPoints || 0);
         return sum + Math.max(0, (m.totalPoints || 0) - offset);
       }, 0);
@@ -11035,6 +11039,22 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
       if(guildLbActive) acc.guildStats.races += 1;
     }
 
+    // Season-scoped guild points: a parallel total counting points earned for
+    // the CURRENT guild. Read by the guild board's "Season" toggle; the all-
+    // time guild total is untouched. Like player seasonStats, this does NOT
+    // auto-zero when the seasonId changes (that caused data loss on config
+    // rebuilds); it's zeroed explicitly by the "Reset Full Season" admin
+    // button. It does reset when the player switches guilds (points are
+    // per-guild), and only accrues while the season is live.
+    acc.guildSeasonStats = acc.guildSeasonStats || { seasonId: seasonCfgForStats.seasonId, guildId: acc.guildId || null, points: 0 };
+    if(acc.guildSeasonStats.guildId !== acc.guildId){
+      acc.guildSeasonStats = { seasonId: seasonCfgForStats.seasonId, guildId: acc.guildId, points: 0 };
+    }
+    if(seasonCfgForStats.seasonId) acc.guildSeasonStats.seasonId = seasonCfgForStats.seasonId;
+    if(acc.guildId && !seasonIsOver && !seasonNotStarted){
+      acc.guildSeasonStats.points = (acc.guildSeasonStats.points || 0) + racePoints;
+    }
+
     // Track races per car rarity for rarity-based achievements.
     var racedCar = resolveCarById(carId);
     var racedRarity = racedCar && racedCar.rarity ? racedCar.rarity : "Common";
@@ -14539,6 +14559,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
               var accRes = await getAccount(username);
               if(accRes.ok && accRes.account){
                 accRes.account.seasonStats = { seasonId: cfg.seasonId, races: 0, sumWpm: 0, sumAccuracy: 0, bestWpm: 0 };
+                accRes.account.guildSeasonStats = { seasonId: cfg.seasonId, guildId: accRes.account.guildId || null, points: 0 };
                 accRes.account.claimedSeasonLevels = [];
                 accRes.account.claimedSeasonPremiumLevels = [];
                 accRes.account.seasonRacesOffset = accRes.account.races || 0;
@@ -20362,6 +20383,10 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
     }
 
     body.innerHTML = bannerHtml +
+      '<div class="lb-tabs" style="margin-top:10px;">' +
+        '<div class="lb-tab' + ((state.guildLbScope||"allTime")==="season" ? " active" : "") + '" data-guild-lb-scope="season">Season</div>' +
+        '<div class="lb-tab' + ((state.guildLbScope||"allTime")==="allTime" ? " active" : "") + '" data-guild-lb-scope="allTime">All-Time</div>' +
+      '</div>' +
       '<table class="lb-table" style="margin-top:10px;">' +
         '<thead><tr>' +
           '<th style="width:36px;">#</th>' +
@@ -20384,6 +20409,14 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
         }).join("") +
         '</tbody>' +
       '</table>';
+
+    // Season / All-Time toggle for the guild board.
+    body.querySelectorAll("[data-guild-lb-scope]").forEach(function(tab){
+      tab.addEventListener("click", function(){
+        state.guildLbScope = tab.getAttribute("data-guild-lb-scope");
+        renderGuildsLeaderboard();
+      });
+    });
   }
 
   /* ============ ABOUT PAGE ============ */
