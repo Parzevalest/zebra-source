@@ -14812,6 +14812,13 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
               var rpRes = await getAccount(rpUser);
               if(rpRes.ok && rpRes.account){
                 rpRes.account.seasonRacesOffset = rpRes.account.races || 0;
+                // CRITICAL: also zero the season race counter. The pass level
+                // is computed as max(seasonStats.races, races - seasonRacesOffset).
+                // Bumping only the offset leaves seasonStats.races high, so the
+                // pass still thinks you've "reached" your old level and offers
+                // all those rewards to re-claim. Zero both halves so the level
+                // genuinely drops to 1.
+                rpRes.account.seasonStats = { seasonId: (rpRes.account.seasonStats && rpRes.account.seasonStats.seasonId) || null, races: 0, sumWpm: 0, sumAccuracy: 0, bestWpm: 0, points: 0 };
                 rpRes.account.seasonFreeClaimedLevel = 0;
                 rpRes.account.seasonPremiumClaimedLevel = 0;
                 rpRes.account.seasonBonusClaimedCount = 0;
