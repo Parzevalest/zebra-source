@@ -17301,6 +17301,7 @@ console.log(fp.stability);   // 0-100: fingerprint reliability
           '<div style="flex:1;">' +
             '<div style="font-size:14px;font-weight:700;color:' + color + ';font-style:italic;">&ldquo;' + escapeHtml(t.text) + '&rdquo;' + seasonalBadge + '</div>' +
             '<div style="font-size:11px;">' + rarityTextHtml(t.rarity||"Common") + '</div>' +
+            '<div style="font-size:11px;color:var(--muted);margin-top:2px;">ID: <code style="color:var(--text);">' + escapeHtml(t.id) + '</code></div>' +
           '</div>' +
           '<button class="small-btn" data-edit-title="' + escapeHtml(t.id) + '" style="margin-right:6px;">Edit</button>' +
           '<button class="small-btn" data-add-to-wheel-title="' + escapeHtml(t.id) + '" style="margin-right:6px;">Add to Wheel</button>' +
